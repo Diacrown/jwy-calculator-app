@@ -204,7 +204,7 @@ const fmt = (n, dp = 2) =>
 const fmtCurrency = (n, dp = 2) => "$" + fmt(n, dp);
 
 function emptyRow() {
-  return { sizeCode: "", quality: "TW SI1", lgdGrade: "Non-cert", lgdShape: "RND", pcs: "" };
+  return { mode: "natural", sizeCode: "", quality: "TW SI1", lgdGrade: "Non-cert", lgdShape: "RND", pcs: "" };
 }
 
 function netRatePerGm(alloy, metalRates) {
@@ -245,8 +245,14 @@ export default function JwyCalculator() {
   const [primaryGramWt, setPrimaryGramWt] = useState(3.6);
   const [secondaryAlloyShort, setSecondaryAlloyShort] = useState("14KT WG-PD");
   const [secondaryGramWt, setSecondaryGramWt] = useState(0.5);
-  const [diamondMode, setDiamondMode] = useState("natural"); // natural | lgd
   const [rows, setRows] = useState(Array.from({ length: 12 }, emptyRow));
+  const [savedQuotes, setSavedQuotes] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem("jwyQuotes") || "[]");
+    } catch {
+      return [];
+    }
+  });
   const [pdfStatus, setPdfStatus] = useState(""); // "", "loading", "unmapped", "error", "done"
   const [pdfFileName, setPdfFileName] = useState("");
   const [pdfImport, setPdfImport] = useState(null);
@@ -357,22 +363,17 @@ export default function JwyCalculator() {
         setSecondaryGramWt(metals.secondary.wt);
       }
 
-      // Apply stones -> calculator rows. If any stone is LGD, switch the
-      // grid to LGD mode (the grid is single-mode today; mixed natural+LGD
-      // cards are surfaced in the review panel below for manual handling).
-      const anyLgd = stones.some((s) => s.diamondMode === "lgd");
-      const anyNatural = stones.some((s) => s.diamondMode === "natural");
-      if (anyLgd && !anyNatural) setDiamondMode("lgd");
-      else setDiamondMode("natural");
-
+      // Apply stones -> calculator rows. Each row carries its own pricing
+      // mode, so cards mixing mined and lab-grown stones import fully.
       const newRows = Array.from({ length: 12 }, emptyRow);
       stones.slice(0, 12).forEach((s, i) => {
         newRows[i] = {
+          mode: s.diamondMode || "natural",
           sizeCode: s.sizeCode || "",
           quality: "TW SI1",
           lgdGrade: "Non-cert",
           lgdShape: s.lgdShape || "RND",
-          pcs: s.priced && s.sizeCode ? String(s.qty) : s.priced ? String(s.qty) : "",
+          pcs: s.priced ? String(s.qty) : "",
         };
       });
       setRows(newRows);
@@ -382,13 +383,60 @@ export default function JwyCalculator() {
         metalWarnings,
         metals,
         stones,
-        mixedModes: anyLgd && anyNatural,
       });
       setPdfStatus("done");
     } catch (err) {
       setPdfStatus("error");
-      setPdfImport({ error: err.message || String(err) });
+      setPdfImport({ error: (err && err.message) || String(err) });
     }
+  };
+
+  const clearAll = () => {
+    setJobInfo({ designer: "", jobNo: "", customer: "", cadType: "Medium" });
+    setPrimaryGramWt(0);
+    setSecondaryGramWt(0);
+    setRows(Array.from({ length: 12 }, emptyRow));
+    setPdfImport(null);
+    setPdfStatus("");
+    setPdfFileName("");
+  };
+
+  const persistQuotes = (list) => {
+    setSavedQuotes(list);
+    try {
+      localStorage.setItem("jwyQuotes", JSON.stringify(list));
+    } catch {}
+  };
+
+  const saveQuote = () => {
+    const snapshot = {
+      id: Date.now(),
+      label: `${jobInfo.jobNo || "no-job"} · ${new Date().toLocaleString()}`,
+      jobInfo,
+      location,
+      primaryAlloyShort,
+      primaryGramWt,
+      secondaryAlloyShort,
+      secondaryGramWt,
+      rows,
+    };
+    persistQuotes([snapshot, ...savedQuotes].slice(0, 50));
+  };
+
+  const loadQuote = (id) => {
+    const q = savedQuotes.find((s) => s.id === id);
+    if (!q) return;
+    setJobInfo(q.jobInfo);
+    setLocation(q.location);
+    setPrimaryAlloyShort(q.primaryAlloyShort);
+    setPrimaryGramWt(q.primaryGramWt);
+    setSecondaryAlloyShort(q.secondaryAlloyShort);
+    setSecondaryGramWt(q.secondaryGramWt);
+    setRows(q.rows.map((r) => ({ ...emptyRow(), ...r })));
+  };
+
+  const deleteQuote = (id) => {
+    persistQuotes(savedQuotes.filter((s) => s.id !== id));
   };
 
   const metalRates = liveData.metalRates;
@@ -415,7 +463,7 @@ export default function JwyCalculator() {
       const totalWt = sizeEntry.wt * pcs;
 
       let perCt = 0;
-      if (diamondMode === "natural") {
+      if ((row.mode || "natural") === "natural") {
         const grid = DIA_SSP[sizeEntry.group];
         perCt = grid?.[row.quality] || 0;
       } else {
@@ -450,7 +498,7 @@ export default function JwyCalculator() {
         settingType: tier.type,
       };
     });
-  }, [rows, diamondMode, settingTiersLive]);
+  }, [rows, settingTiersLive]);
 
   const totals = useMemo(() => {
     const totalWt = rowCalcs.reduce((s, r) => s + r.totalWt, 0);
@@ -486,7 +534,9 @@ export default function JwyCalculator() {
         jobInfo={jobInfo}
         pdfFileName={pdfFileName}
         pdfStatus={pdfStatus}
+        pdfImport={pdfImport}
         onPdfUpload={handlePdfUpload}
+        onClear={clearAll}
       />
 
       <div style={styles.shell}>
@@ -530,9 +580,15 @@ export default function JwyCalculator() {
           />
         </div>
 
-        <DiamondModeToggle diamondMode={diamondMode} setDiamondMode={setDiamondMode} />
+        <QuotesToolbar
+          savedQuotes={savedQuotes}
+          onSave={saveQuote}
+          onLoad={loadQuote}
+          onDelete={deleteQuote}
+          onPrint={() => window.print()}
+        />
 
-        <StoneGrid rows={rows} updateRow={updateRow} rowCalcs={rowCalcs} totals={totals} diamondMode={diamondMode} />
+        <StoneGrid rows={rows} updateRow={updateRow} rowCalcs={rowCalcs} totals={totals} />
 
         <BreakupSummary
           casting={casting}
@@ -567,11 +623,15 @@ function GlobalStyles() {
       th, td { text-align: left; }
       ::-webkit-scrollbar { height: 8px; width: 8px; }
       ::-webkit-scrollbar-thumb { background: #E3C3CD; border-radius: 4px; }
+      @media print {
+        button, label, select, input[type="file"] { display: none !important; }
+        input { border: none !important; }
+      }
     `}</style>
   );
 }
 
-function TopBar({ jobInfo, pdfFileName, pdfStatus, onPdfUpload }) {
+function TopBar({ jobInfo, pdfFileName, pdfStatus, pdfImport, onPdfUpload, onClear }) {
   return (
     <div style={styles.topBar}>
       <div style={styles.topBarInner}>
@@ -583,6 +643,9 @@ function TopBar({ jobInfo, pdfFileName, pdfStatus, onPdfUpload }) {
           </div>
         </div>
         <div style={styles.topBarActions}>
+          <button style={styles.uploadBtn} onClick={onClear} type="button">
+            Clear form
+          </button>
           <label style={styles.uploadBtn}>
             <i className="ti ti-file-upload" aria-hidden="true" style={{ fontSize: 15, marginRight: 6 }} />
             Load CAD order form
@@ -600,7 +663,9 @@ function TopBar({ jobInfo, pdfFileName, pdfStatus, onPdfUpload }) {
               structured data your CAD system embeds; a scanned or hand-made PDF won't carry it.
             </>
           )}
-          {pdfStatus === "error" && <>Couldn't read {pdfFileName}. Try re-exporting the card from your CAD system.</>}
+          {pdfStatus === "error" && (
+            <>Couldn't read {pdfFileName}. {pdfImport && pdfImport.error ? `Error: ${pdfImport.error}` : "Try re-exporting the card from your CAD system."}</>
+          )}
         </div>
       )}
     </div>
@@ -616,7 +681,7 @@ function PdfImportReview({ pdfImport }) {
       </div>
     );
   }
-  const { metals, metalWarnings, stones, mixedModes } = pdfImport;
+  const { metals, metalWarnings, stones } = pdfImport;
   const flagged = stones.filter((s) => s.flag);
   return (
     <div style={{ ...styles.card, borderColor: "#C9A35C", borderWidth: 1 }}>
@@ -635,17 +700,11 @@ function PdfImportReview({ pdfImport }) {
         <span style={styles.importChip}>{stones.length} stone row(s)</span>
       </div>
 
-      {(metalWarnings.length > 0 || mixedModes || flagged.length > 0) && (
+      {(metalWarnings.length > 0 || flagged.length > 0) && (
         <div style={styles.warnBanner}>
           {metalWarnings.map((w, i) => (
             <div key={"mw" + i}>• {w}</div>
           ))}
-          {mixedModes && (
-            <div>
-              • This card mixes natural and lab-grown stones. The grid shows one pricing mode at a time —
-              switch modes to price each set, or split into two quotes.
-            </div>
-          )}
           {flagged.map((s, i) => (
             <div key={"sf" + i}>
               • {s.pos} {s.shape} ({s.stoneType}): {s.flag}
@@ -840,29 +899,58 @@ function MetalPanel({ title, alloyShort, setAlloyShort, alloyList, gramWt, setGr
   );
 }
 
-function DiamondModeToggle({ diamondMode, setDiamondMode }) {
+function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint }) {
+  const [selected, setSelected] = useState("");
   return (
-    <div style={{ ...styles.card, display: "flex", alignItems: "center", gap: 14 }}>
-      <SectionLabel eyebrow="03" title="Stone pricing source" noMargin />
-      <div style={styles.toggleGroup}>
-        <button
-          style={{ ...styles.toggleBtn, ...(diamondMode === "natural" ? styles.toggleBtnActive : {}) }}
-          onClick={() => setDiamondMode("natural")}
-        >
-          Natural diamonds
-        </button>
-        <button
-          style={{ ...styles.toggleBtn, ...(diamondMode === "lgd" ? styles.toggleBtnActive : {}) }}
-          onClick={() => setDiamondMode("lgd")}
-        >
-          Lab grown
-        </button>
-      </div>
+    <div style={{ ...styles.card, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+      <SectionLabel eyebrow="03" title="Quotes" noMargin />
+      <button style={styles.toggleBtn} onClick={onSave} type="button">
+        Save current quote
+      </button>
+      <select
+        style={{ ...styles.input, minWidth: 220 }}
+        value={selected}
+        onChange={(e) => setSelected(e.target.value)}
+      >
+        <option value="">Saved quotes…</option>
+        {savedQuotes.map((q) => (
+          <option key={q.id} value={q.id}>
+            {q.label}
+          </option>
+        ))}
+      </select>
+      <button
+        style={styles.toggleBtn}
+        type="button"
+        disabled={!selected}
+        onClick={() => selected && onLoad(Number(selected))}
+      >
+        Load
+      </button>
+      <button
+        style={styles.toggleBtn}
+        type="button"
+        disabled={!selected}
+        onClick={() => {
+          if (selected) {
+            onDelete(Number(selected));
+            setSelected("");
+          }
+        }}
+      >
+        Delete
+      </button>
+      <button style={{ ...styles.toggleBtn, ...styles.toggleBtnActive }} onClick={onPrint} type="button">
+        Print / PDF
+      </button>
+      <span style={{ fontSize: 11, color: "var(--muted)" }}>
+        Saved on this device (browser storage) — clearing browser data removes them.
+      </span>
     </div>
   );
 }
 
-function StoneGrid({ rows, updateRow, rowCalcs, totals, diamondMode }) {
+function StoneGrid({ rows, updateRow, rowCalcs, totals }) {
   return (
     <div style={styles.card}>
       <SectionLabel eyebrow="04" title="Stone schedule" />
@@ -871,10 +959,11 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, diamondMode }) {
           <thead>
             <tr style={styles.theadRow}>
               <th style={styles.th}>Pos</th>
+              <th style={styles.th}>Type</th>
               <th style={styles.th}>Size</th>
               <th style={styles.th}>Shape</th>
               <th style={styles.th}>Spec</th>
-              <th style={styles.th}>{diamondMode === "natural" ? "Quality" : "Grade"}</th>
+              <th style={styles.th}>Quality</th>
               <th style={styles.thRight}>Wt/pc</th>
               <th style={styles.thRight}>Pcs</th>
               <th style={styles.thRight}>Total wt</th>
@@ -895,6 +984,16 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, diamondMode }) {
                   </td>
                   <td style={styles.td}>
                     <select
+                      style={{ ...styles.inputSm, width: 74 }}
+                      value={row.mode || "natural"}
+                      onChange={(e) => updateRow(i, { mode: e.target.value })}
+                    >
+                      <option value="natural">Mined</option>
+                      <option value="lgd">LGD</option>
+                    </select>
+                  </td>
+                  <td style={styles.td}>
+                    <select
                       style={styles.inputSm}
                       value={row.sizeCode}
                       onChange={(e) => updateRow(i, { sizeCode: e.target.value })}
@@ -910,7 +1009,7 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, diamondMode }) {
                   <td style={styles.td}>{calc.shape}</td>
                   <td style={{ ...styles.td, fontSize: 12, color: "var(--muted)" }}>{calc.size}</td>
                   <td style={styles.td}>
-                    {diamondMode === "natural" ? (
+                    {(row.mode || "natural") === "natural" ? (
                       <select
                         style={styles.inputSm}
                         value={row.quality}
@@ -968,7 +1067,7 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, diamondMode }) {
           </tbody>
           <tfoot>
             <tr style={styles.totalRow}>
-              <td style={styles.td} colSpan={6}>
+              <td style={styles.td} colSpan={7}>
                 Totals
               </td>
               <td style={styles.tdRight}>{fmt(totals.totalPcs, 0)}</td>

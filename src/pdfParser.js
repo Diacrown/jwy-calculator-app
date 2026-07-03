@@ -14,18 +14,26 @@ const END_MARK = "%%CAD_FORM_DATA_END%%";
 
 let pdfjsLoading = null;
 function loadPdfJs() {
-  if (window.pdfjsLib) return Promise.resolve(window.pdfjsLib);
+  if (window.pdfjsLib && window.__pdfWorkerReady) return Promise.resolve(window.pdfjsLib);
   if (pdfjsLoading) return pdfjsLoading;
   pdfjsLoading = new Promise((resolve, reject) => {
     const script = document.createElement("script");
     script.src = PDFJS_SRC;
-    script.onload = () => {
-      if (window.pdfjsLib) {
+    script.onload = async () => {
+      if (!window.pdfjsLib) return reject(new Error("pdf.js failed to initialize"));
+      // Workers must be same-origin; a CDN worker URL throws in most
+      // environments. Fetch the worker code and serve it from a blob URL
+      // (same-origin), falling back to the direct URL if blob fails.
+      try {
+        const resp = await fetch(PDFJS_WORKER);
+        const code = await resp.text();
+        const blobUrl = URL.createObjectURL(new Blob([code], { type: "text/javascript" }));
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc = blobUrl;
+      } catch {
         window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER;
-        resolve(window.pdfjsLib);
-      } else {
-        reject(new Error("pdf.js failed to initialize"));
       }
+      window.__pdfWorkerReady = true;
+      resolve(window.pdfjsLib);
     };
     script.onerror = () => reject(new Error("Could not load pdf.js from CDN"));
     document.head.appendChild(script);
@@ -41,8 +49,10 @@ async function extractPdfText(file) {
   for (let p = 1; p <= pdf.numPages; p++) {
     const page = await pdf.getPage(p);
     const content = await page.getTextContent();
-    // Join with newlines preserved where pdf.js marks end-of-line.
-    text += content.items.map((it) => it.str + (it.hasEOL ? "\n" : "")).join("");
+    // Join fragments with NOTHING. Injecting newlines here breaks the
+    // embedded JSON block (raw control chars inside JSON string values
+    // are invalid and make JSON.parse fail).
+    text += content.items.map((it) => it.str).join("");
   }
   return text;
 }
@@ -51,12 +61,14 @@ function extractEmbeddedJson(text) {
   const start = text.indexOf(START_MARK);
   const end = text.indexOf(END_MARK);
   if (start === -1 || end === -1 || end <= start) return null;
-  const raw = text.slice(start + START_MARK.length, end);
+  // Strip any control characters pdf.js may have preserved; literal
+  // newlines/tabs inside JSON string values are invalid JSON. Escaped
+  // sequences like \\n in field values are two printable chars and are
+  // unaffected by this.
+  const raw = text.slice(start + START_MARK.length, end).replace(/[\u0000-\u001F]/g, "");
   try {
     return JSON.parse(raw);
   } catch (e) {
-    // The base64 render image can occasionally include stray characters
-    // that break a naive slice; try trimming to the last closing brace.
     const lastBrace = raw.lastIndexOf("}");
     if (lastBrace !== -1) {
       try {
