@@ -1,6 +1,8 @@
 import { useState, useMemo, useCallback, useEffect } from "react";
 
-const __memStore = { _d: {}, getItem(k){ return k in this._d ? this._d[k] : null; }, setItem(k,v){ this._d[k]=String(v); } };
+if (typeof window !== "undefined" && !window.__jwyMemStore) {
+  window.__jwyMemStore = { _d: {}, getItem(k){ return k in this._d ? this._d[k] : null; }, setItem(k,v){ this._d[k]=String(v); } };
+}
 
 /* config */
 // Paste your six published-CSV URLs here after building the sheet per
@@ -12,13 +14,25 @@ const __memStore = { _d: {}, getItem(k){ return k in this._d ? this._d[k] : null
 // Once all six are filled in, the app needs zero human interaction to
 // stay current -- it polls these URLs on an interval and recalculates.
 
+// Using Google's gviz/tq endpoint rather than the "Publish to web" /pub
+// CSV links. Both expose the same published data, but /pub frequently
+// omits CORS headers needed for cross-origin fetch() from another site
+// (it works fine opened directly in a browser tab, which is misleading --
+// that's plain navigation, not a fetch, so CORS never applies there).
+// gviz/tq is Google's own endpoint for exactly this use case and reliably
+// supports cross-origin reads. It requires the sheet's general access to
+// be "Anyone with the link — Viewer" (Share button, not just Publish to
+// web) since it reads live off the actual document permissions.
+const SHEET_ID = "1wPI7Ujbc9F4GEarje0BbCnUXVYKwyCa_vyqtB3mbciE";
+const gvizUrl = (gid) => `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=${gid}`;
+
 const SHEET_URLS = {
-  metalRates: "https://docs.google.com/spreadsheets/d/e/2PACX-1vRXfsmDWYS82tPGIWDsVB3BAKSmnKhhLgXWaiRRvlqKLJ45d0vTs1yXOb4Vb9u1no7JmtoBJbMTEprH/pub?gid=0&single=true&output=csv", // Tab 1: MetalRates
-  alloys: "https://docs.google.com/spreadsheets/d/e/2PACX-1vRXfsmDWYS82tPGIWDsVB3BAKSmnKhhLgXWaiRRvlqKLJ45d0vTs1yXOb4Vb9u1no7JmtoBJbMTEprH/pub?gid=1405483371&single=true&output=csv", // Tab 2: Alloys
-  currencyRates: "https://docs.google.com/spreadsheets/d/e/2PACX-1vRXfsmDWYS82tPGIWDsVB3BAKSmnKhhLgXWaiRRvlqKLJ45d0vTs1yXOb4Vb9u1no7JmtoBJbMTEprH/pub?gid=1536480790&single=true&output=csv", // Tab 3: CurrencyRates
-  locations: "https://docs.google.com/spreadsheets/d/e/2PACX-1vRXfsmDWYS82tPGIWDsVB3BAKSmnKhhLgXWaiRRvlqKLJ45d0vTs1yXOb4Vb9u1no7JmtoBJbMTEprH/pub?gid=1786149102&single=true&output=csv", // Tab 4: Locations
-  cadFeesAndLabor: "https://docs.google.com/spreadsheets/d/e/2PACX-1vRXfsmDWYS82tPGIWDsVB3BAKSmnKhhLgXWaiRRvlqKLJ45d0vTs1yXOb4Vb9u1no7JmtoBJbMTEprH/pub?gid=386901877&single=true&output=csv", // Tab 5: CadFeesAndLabor
-  settingTiers: "https://docs.google.com/spreadsheets/d/e/2PACX-1vRXfsmDWYS82tPGIWDsVB3BAKSmnKhhLgXWaiRRvlqKLJ45d0vTs1yXOb4Vb9u1no7JmtoBJbMTEprH/pub?gid=1907251116&single=true&output=csv", // Tab 6: SettingTiers
+  metalRates: gvizUrl(0), // Tab 1: MetalRates
+  alloys: gvizUrl(1405483371), // Tab 2: Alloys
+  currencyRates: gvizUrl(1536480790), // Tab 3: CurrencyRates
+  locations: gvizUrl(1786149102), // Tab 4: Locations
+  cadFeesAndLabor: gvizUrl(386901877), // Tab 5: CadFeesAndLabor
+  settingTiers: gvizUrl(1907251116), // Tab 6: SettingTiers
 };
 
 // How often (ms) the app re-fetches all six sheets while open.
@@ -85,6 +99,29 @@ const num = (v, fallback = 0) => {
   return isFinite(n) ? n : fallback;
 };
 
+// Normalizes a header for comparison: lowercase, strip everything that
+// isn't a letter or digit. This makes "PM Rate/Oz", "pm_rate_oz", and
+// "pmRateOz" all match the same alias -- people naturally paste in
+// whatever headers their existing sheet already uses.
+function normHeader(h) {
+  return String(h).toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+// Finds the first column in a row whose header matches any of the given
+// aliases (order = priority). Both the app's own short names (metal,
+// pmRateOz...) and real-world sheet headers (Metal Type, PM Rate/Oz...)
+// are listed as aliases so either naming style works without the user
+// renaming their columns.
+function pick(row, aliases) {
+  const keys = Object.keys(row);
+  const normKeys = keys.map(normHeader);
+  for (const alias of aliases) {
+    const idx = normKeys.indexOf(normHeader(alias));
+    if (idx !== -1) return row[keys[idx]];
+  }
+  return undefined;
+}
+
 async function fetchCsvObjects(url) {
   if (!url) return null;
   const res = await fetch(url, { cache: "no-store" });
@@ -95,20 +132,22 @@ async function fetchCsvObjects(url) {
 
 /* ============================================================
    Per-tab transformers: raw CSV rows -> the shape the calculator
-   engine expects.
+   engine expects. Each field lists both the plain template header
+   and the real MetalMaster/Master-sheet header it may appear as.
    ============================================================ */
 
 function transformMetalRates(rawRows) {
   const out = {};
   for (const r of rawRows) {
-    if (!r.metal) continue;
-    out[r.metal.trim().toUpperCase()] = {
-      label: r.label || r.metal,
-      pmRateOz: num(r.pmRateOz),
-      spotOz: num(r.spotOz),
-      spotSurcharge: num(r.spotSurcharge, 1.05),
-      wastage: num(r.wastage, 1),
-      asOf: r.asOf || "",
+    const metal = pick(r, ["metal", "Metal Type"]);
+    if (!metal) continue;
+    out[metal.trim().toUpperCase()] = {
+      label: pick(r, ["label", "Rate Type"]) || metal,
+      pmRateOz: num(pick(r, ["pmRateOz", "PM Rate/Oz", "PM Rate Oz"])),
+      spotOz: num(pick(r, ["spotOz", "SpotRate", "Spot Rate"])),
+      spotSurcharge: num(pick(r, ["spotSurcharge", "SpotSurcharge", "Spot Surcharge"]), 1.05),
+      wastage: num(pick(r, ["wastage", "Wastage"]), 1),
+      asOf: pick(r, ["asOf", "PM Rate As On", "Rate As On"]) || "",
     };
   }
   return out;
@@ -116,44 +155,91 @@ function transformMetalRates(rawRows) {
 
 function transformAlloys(rawRows) {
   return rawRows
-    .filter((r) => r.short)
-    .map((r) => ({
-      name: r.name || r.short,
-      short: r.short.trim(),
-      sg: num(r.sg),
-      purity: num(r.purity),
-      metal: (r.metal || "").trim().toUpperCase(),
-      castingGm: num(r.castingGm),
-      surchargeGm: num(r.surchargeGm),
-    }));
+    .map((r) => {
+      const short = pick(r, ["short", "Alloy Short Name"]);
+      if (!short) return null;
+      return {
+        name: pick(r, ["name", "Alloy Name"]) || short,
+        short: short.trim(),
+        sg: num(pick(r, ["sg", "Specific Gravity"])),
+        purity: num(pick(r, ["purity", "Purity"])),
+        metal: (pick(r, ["metal", "Metal Type"]) || "").trim().toUpperCase(),
+        castingGm: num(pick(r, ["castingGm", "Casting/Gm", "Casting Gm"])),
+        surchargeGm: num(pick(r, ["surchargeGm", "Surcharge/Gm", "Surcharge Gm"])),
+      };
+    })
+    .filter(Boolean);
 }
 
 function transformCurrencyRates(rawRows) {
   const out = {};
   let markup = 1.05;
   for (const r of rawRows) {
-    if (!r.currency) continue;
-    out[r.currency.trim().toUpperCase()] = num(r.rateToUSD, 1);
-    if (r.markup) markup = num(r.markup, markup);
+    // Template layout: currency, rateToUSD, markup
+    // Original "Other Master" layout: USD | to | <currency> | <rate> | <rate*markup>
+    let currency = pick(r, ["currency"]);
+    let rate = pick(r, ["rateToUSD"]);
+    let mk = pick(r, ["markup"]);
+    if (!currency) {
+      // Fall back to positional original layout (3rd column = currency
+      // code, 4th = raw rate, 5th = rate with markup already applied).
+      const vals = Object.values(r);
+      if (vals.length >= 4) {
+        currency = vals[2];
+        rate = vals[3];
+        if (vals.length >= 5 && num(vals[3]) > 0) {
+          mk = num(vals[4]) / num(vals[3]);
+        }
+      }
+    }
+    if (!currency) continue;
+    out[String(currency).trim().toUpperCase()] = num(rate, 1);
+    if (mk) markup = num(mk, markup);
   }
   return { rates: out, markup };
 }
 
 function transformLocations(rawRows) {
   return rawRows
-    .filter((r) => r.code)
-    .map((r) => ({
-      code: r.code.trim(),
-      currency: (r.currency || "USD").trim().toUpperCase(),
-      duty: num(r.duty),
-    }));
+    .map((r) => {
+      const code = pick(r, ["code", "Loc"]);
+      if (!code) return null;
+      const dutyRaw = pick(r, ["duty", "Duty%", "Duty"]);
+      let duty = num(dutyRaw);
+      // "5.00%" style values: if it parses >1 assume it was a percent.
+      if (duty > 1) duty = duty / 100;
+      return {
+        code: code.trim(),
+        currency: (pick(r, ["currency", "Currency"]) || "USD").trim().toUpperCase(),
+        duty,
+      };
+    })
+    .filter(Boolean);
 }
 
 function transformCadFeesAndLabor(rawRows) {
   const map = {};
   for (const r of rawRows) {
-    if (!r.key) continue;
-    map[r.key.trim()] = num(r.value);
+    const key = pick(r, ["key"]);
+    const value = pick(r, ["value"]);
+    if (key) {
+      map[key.trim()] = num(value);
+      continue;
+    }
+    // Original layout has no "key" column -- it's a label + blanks +
+    // value row, e.g. "Labor charges per gm | | | $22.00 /gm". Match by
+    // the label text in the first non-empty cell instead.
+    const cells = Object.values(r).map((v) => (v || "").trim());
+    const labelCell = cells.find((c) => c) || "";
+    const valueCell = [...cells].reverse().find((c) => c) || "";
+    const l = labelCell.toLowerCase();
+    if (l.includes("labor") && l.includes("per gm")) map.laborPerGm = num(valueCell);
+    else if (l.includes("minimum labor")) map.laborMinFlat = num(valueCell);
+    else if (l === "none") map.cadNone = num(valueCell);
+    else if (l === "simple") map.cadSimple = num(valueCell);
+    else if (l === "medium") map.cadMedium = num(valueCell);
+    else if (l === "complex") map.cadComplex = num(valueCell);
+    else if (l === "advanced") map.cadAdvanced = num(valueCell);
   }
   return {
     laborPerGm: map.laborPerGm ?? 22.0,
@@ -170,12 +256,16 @@ function transformCadFeesAndLabor(rawRows) {
 
 function transformSettingTiers(rawRows) {
   return rawRows
-    .filter((r) => r.uptoCt)
-    .map((r) => ({
-      uptoCt: num(r.uptoCt),
-      rate: num(r.rate),
-      type: (r.type || "PER PC").trim(),
-    }))
+    .map((r) => {
+      const uptoRaw = pick(r, ["uptoCt", "Upto Ct Wt/Pc", "Upto Ct"]);
+      if (!uptoRaw) return null;
+      return {
+        uptoCt: num(uptoRaw),
+        rate: num(pick(r, ["rate", "Rate"])),
+        type: (pick(r, ["type", "Rate Type"]) || "PER PC").trim(),
+      };
+    })
+    .filter(Boolean)
     .sort((a, b) => a.uptoCt - b.uptoCt);
 }
 
@@ -373,14 +463,32 @@ function extractEmbeddedJson(text) {
    bands when the weight lands in a band, else flagged.
    ============================================================ */
 
-// Map card metal (type + color) to a calculator alloy short code.
-function cardMetalToAlloyShort(type, color) {
-  const t = (type || "").toUpperCase().replace("KT", "").trim(); // "09" -> "9"
-  const kt = String(parseInt(t, 10)); // normalizes 09 -> 9
+// Map card metal (Type + Color + Extra) to a calculator alloy short code.
+// Type covers two different families: direct-match metals (Wax, Brass,
+// AG925/935, PT600/900/950) that need no color combination, and karat
+// golds (9KT-24KT) that combine with Color (WG/YG/RG) and Extra (NF/PD)
+// to form names like "14KT WG-PD". Unmatched combinations are returned
+// as-is so the caller's alloy-list check can flag them rather than
+// silently guessing.
+function cardMetalToAlloyShort(type, color, extra) {
+  const t = (type || "").toUpperCase().trim();
   const c = (color || "").toUpperCase().trim();
-  const colorMap = { WG: "WG", YG: "YG", RG: "RG", "WG-PD": "WG-PD", "WG-NF": "WG-NF" };
-  const suffix = colorMap[c] || c;
-  // e.g. "9" + "KT " + "WG" => "9KT WG"; "14" + "RG" => "14KT RG"
+  const ex = (extra || "").toUpperCase().trim();
+
+  const directCase = { WAX: "Wax", BRASS: "Brass" };
+  if (directCase[t]) return directCase[t];
+  if (["AG925", "AG935", "PT600", "PT900", "PT950"].includes(t)) return t;
+
+  const ktMatch = t.match(/(\d+)\s*KT/);
+  if (!ktMatch) return t; // unrecognized type; flagged upstream via validShort()
+  const kt = ktMatch[1];
+
+  if (kt === "22" || kt === "24") return `${kt}KT`; // no color variants for these
+  if (!c) return `${kt}KT`;
+
+  let suffix = c;
+  if (ex === "PD") suffix = `${c}-PD`;
+  else if (ex === "NF") suffix = `${c}-NF`;
   return `${kt}KT ${suffix}`;
 }
 
@@ -389,56 +497,124 @@ function pnum(v, d = 0) {
   return isFinite(n) ? n : d;
 }
 
-// Given the card's stone record, decide how the calculator should treat it.
-// Returns { diamondMode, sizeCode|null, quality|lgdGrade, priced, flag }.
+// Given the card's stone record, decide how the calculator should treat
+// it. Only exact "Mined" and exact "LGD" stone types get real pricing --
+// every other value (CZ, Zircon, Color, Mount, Plain, Semi variants,
+// combo types like "Mined+LGD") lands as a custom row since there's no
+// pricing data for them yet, with the real stone type preserved in the
+// flag so it's clear what it actually is. Rows the form itself marked
+// Mode: "custom" are always treated as custom, no exceptions.
 function bridgeStone(stone, diaSize) {
   const shapeRaw = (stone.Shape || "").toLowerCase();
   const isRound = shapeRaw.includes("round") || shapeRaw === "rnd";
-  const isLGD = (stone.Stone || "").toUpperCase().includes("LGD");
+  const stoneTypeRaw = (stone.Stone || "").trim();
+  const stoneTypeUpper = stoneTypeRaw.toUpperCase();
   const avgWt = pnum(stone.AvgWt);
+  const isExplicitCustom = (stone.Mode || "").toLowerCase() === "custom";
+  const isPureMined = stoneTypeUpper === "MINED";
+  const isPureLGD = stoneTypeUpper === "LGD";
 
-  if (isRound) {
-    const rounds = diaSize.filter((d) => d.code.startsWith("RND"));
+  // Matches by shape name (case-insensitive) against the full catalog,
+  // then nearest carat weight within that shape. Used for every shape,
+  // not just Round -- this is what lets fancy shapes land in the same
+  // Select Size dropdown a manual user would pick from, rather than a
+  // disconnected free-text row, even though pricing for fancy naturals
+  // still has to be entered manually (no DiaSSP data for those yet).
+  const nearestByShape = (shapeName) => {
+    const norm = (shapeName || "").toLowerCase().trim();
+    const candidates = diaSize.filter((d) => d.shape.toLowerCase() === norm);
     let best = null, bestDiff = Infinity;
-    for (const d of rounds) {
+    for (const d of candidates) {
       const diff = Math.abs(d.wt - avgWt);
       if (diff < bestDiff) { bestDiff = diff; best = d; }
     }
+    return best;
+  };
+
+  if (!isExplicitCustom && isPureMined && isRound) {
+    const best = nearestByShape("Round");
     return {
-      diamondMode: isLGD ? "lgd" : "natural",
-      sizeCode: best ? best.code : "",
+      diamondMode: "natural",
+      sizeCode: best ? best.key : "",
+      matchedShape: best ? best.shape : "",
       priced: true,
       flag: best ? "" : "no round size match",
     };
   }
 
-  // Fancy LGD: auto-classify ODD shapes (trillion, kite, hexagon,
-  // step cuts, etc.) to the ODD band, everything else to FANCY. User
-  // can override via the LGD shape selector on the schedule row.
-  if (isLGD) {
+  if (!isExplicitCustom && isPureLGD) {
+    if (isRound) {
+      const best = nearestByShape("Round");
+      return {
+        diamondMode: "lgd",
+        sizeCode: best ? best.key : "",
+        matchedShape: best ? best.shape : "",
+        priced: true,
+        flag: best ? "" : "no round size match",
+      };
+    }
     const isOdd = isOddShape(stone.Shape);
     const lgdShape = isOdd ? "ODD" : "FANCY";
     const inBand = avgWt >= 0.01 && avgWt <= 3.99;
+    // LGD fancy prices from the band tables regardless of DiaSize match,
+    // but matching still gives the row a proper shape/size selection
+    // instead of leaving it blank.
+    const best = nearestByShape(stone.Shape);
     return {
       diamondMode: "lgd",
-      sizeCode: "",
+      sizeCode: best ? best.key : "",
+      matchedShape: best ? best.shape : "",
       lgdShape,
       priced: inBand,
       flag: inBand ? (isOdd ? "auto-classified as ODD — verify" : "") : "LGD below priced bands",
     };
   }
 
-  // Fancy natural: no DiaSSP price. Populate as a custom row so it
-  // lands in the schedule with shape / ct / qty; quoter enters $/ct
-  // manually until a fancy natural price table is provided.
-  const oddNat = isOddShape(stone.Shape);
+  if (!isExplicitCustom && isPureMined) {
+    // Mined but fancy-shaped: no DiaSSP price for fancy naturals. Try to
+    // match the shape+weight against the full catalog anyway, so the row
+    // gets a real Select Size entry (dims, canonical weight) with an
+    // editable $/ct rather than free text. Only fall back to a true
+    // custom row if the shape genuinely isn't in the catalog at all.
+    const best = nearestByShape(stone.Shape);
+    const oddNat = isOddShape(stone.Shape);
+    if (best) {
+      return {
+        diamondMode: "natural",
+        sizeCode: best.key,
+        matchedShape: best.shape,
+        priced: false,
+        flag: oddNat ? "odd shape — enter $/ct manually" : "fancy natural — enter $/ct manually",
+      };
+    }
+    return {
+      diamondMode: "natural",
+      isCustom: true,
+      customShape: stone.Shape || "",
+      customWt: avgWt,
+      priced: false,
+      flag: "shape not in catalog — enter details manually",
+    };
+  }
+
+  // Explicit custom-mode rows, and any stone type without pricing data
+  // (CZ, Zircon, Color, Mount, Plain, Semi variants, "Mined+LGD" and
+  // other combos). Always lands as an editable custom row.
+  let flag;
+  if (isExplicitCustom) {
+    flag = "custom row from form — enter $/ct manually";
+  } else if (!stoneTypeRaw) {
+    flag = "no stone type specified — enter $/ct manually";
+  } else {
+    flag = `"${stoneTypeRaw}" has no pricing data yet — enter $/ct manually`;
+  }
   return {
     diamondMode: "natural",
     isCustom: true,
     customShape: stone.Shape || "",
     customWt: avgWt,
     priced: false,
-    flag: oddNat ? "odd shape — enter $/ct manually" : "fancy natural — enter $/ct manually",
+    flag,
   };
 }
 
@@ -476,11 +652,11 @@ async function parseOrderFormPdf(file, { alloys = [], diaSize = [] } = {}) {
   // --- Metals (assign by weight, heavier = primary) ---
   const metalCandidates = [
     {
-      short: cardMetalToAlloyShort(data["Metal Type 1"], data["Metal Col 1"]),
+      short: cardMetalToAlloyShort(data["Metal Type 1"], data["Metal Col 1"], data["Metal Extra 1"]),
       wt: pnum(data["Metal 1 Weight"]),
     },
     {
-      short: cardMetalToAlloyShort(data["Metal Type 2"], data["Metal Col 2"]),
+      short: cardMetalToAlloyShort(data["Metal Type 2"], data["Metal Col 2"], data["Metal Extra 2"]),
       wt: pnum(data["Metal 2 Weight"]),
     },
   ].filter((m) => m.wt > 0);
@@ -523,6 +699,7 @@ async function parseOrderFormPdf(file, { alloys = [], diaSize = [] } = {}) {
   };
 }
 
+
 /* main */
 
 /* ============================================================
@@ -563,7 +740,17 @@ const LOCATIONS = [
   { code: "DMR", currency: "INR", duty: 0.0 },
 ];
 
+// Shape display order for the Select Size dropdown, matching the CAD
+// Order Form's own shape dropdown sequence.
+const SHAPE_ORDER = [
+  "Round", "Baguette", "Carre", "Emerald", "Heart", "Marquise", "Oval",
+  "Princess", "Pear", "Radiant", "Single Cut", "Sq. Cushion", "Sq. Emerald",
+  "Tappered Bagguette", "Triangle", "Trilliant",
+];
+
 const ALLOYS = [
+  { name: "Standard Injection Wax", short: "Wax", sg: 0.96, purity: 1.0, metal: "WX", castingGm: 1.0, surchargeGm: 1.0 },
+  { name: "United Casting Bronze #342", short: "Brass", sg: 8.5, purity: 1.0, metal: "AY", castingGm: 10.0, surchargeGm: 5.0 },
   { name: "9KT White (Nickel Safe - USA)", short: "9KT WG", sg: 11.0, purity: 0.375, metal: "AU" },
   { name: "9KT White (Nickel Free - EU)", short: "9KT WG-NF", sg: 11.75, purity: 0.375, metal: "AU" },
   { name: "9KT Yellow Gold", short: "9KT YG", sg: 11.3, purity: 0.375, metal: "AU" },
@@ -617,50 +804,387 @@ function settingRateFor(wtPerPc, tiers = SETTING_TIERS) {
 
 // DiaSize: shape/size catalog (trimmed to representative + commonly used entries)
 const DIA_SIZE = [
-  { code: "RND0.7M", shape: "Round", size: "0.7 mm (0.002 ct ±)", wt: 0.002, group: "R00" },
-  { code: "RND0.8M", shape: "Round", size: "0.8 mm (0.003 ct ±)", wt: 0.003, group: "R00" },
-  { code: "RND0.9M", shape: "Round", size: "0.9 mm (0.004 ct ±)", wt: 0.004, group: "R00" },
-  { code: "RND1.0M", shape: "Round", size: "1.0 mm (0.005 ct ±)", wt: 0.005, group: "R00" },
-  { code: "RND1.1M", shape: "Round", size: "1.1 mm (0.006 ct ±)", wt: 0.006, group: "R00" },
-  { code: "RND1.2M", shape: "Round", size: "1.2 mm (0.008 ct ±)", wt: 0.008, group: "R02" },
-  { code: "RND1.3M", shape: "Round", size: "1.3 mm (0.01 ct ±)", wt: 0.01, group: "R02" },
-  { code: "RND1.4M", shape: "Round", size: "1.4 mm (0.012 ct ±)", wt: 0.012, group: "R02" },
-  { code: "RND1.5M", shape: "Round", size: "1.5 mm (0.015 ct ±)", wt: 0.015, group: "R02" },
-  { code: "RND1.6M", shape: "Round", size: "1.6 mm (0.017 ct ±)", wt: 0.017, group: "R09" },
-  { code: "RND1.7M", shape: "Round", size: "1.7 mm (0.02 ct ±)", wt: 0.02, group: "R09" },
-  { code: "RND1.8M", shape: "Round", size: "1.8 mm (0.023 ct ±)", wt: 0.023, group: "R09" },
-  { code: "RND1.9M", shape: "Round", size: "1.9 mm (0.027 ct ±)", wt: 0.028, group: "R09" },
-  { code: "RND2.0M", shape: "Round", size: "2.0 mm (0.03 ct ±)", wt: 0.032, group: "R11" },
-  { code: "RND2.1M", shape: "Round", size: "2.1 mm (0.04 ct ±)", wt: 0.04, group: "R11" },
-  { code: "RND2.2M", shape: "Round", size: "2.2 mm (0.045 ct ±)", wt: 0.045, group: "R11" },
-  { code: "RND2.3M", shape: "Round", size: "2.3 mm (0.05 ct ±)", wt: 0.05, group: "R12" },
-  { code: "RND2.4M", shape: "Round", size: "2.4 mm (0.055 ct ±)", wt: 0.055, group: "R12" },
-  { code: "RND2.5M", shape: "Round", size: "2.5 mm (0.06 ct ±)", wt: 0.063, group: "R12" },
-  { code: "RND2.6M", shape: "Round", size: "2.6 mm (0.07 ct ±)", wt: 0.073, group: "R14" },
-  { code: "RND2.7M", shape: "Round", size: "2.7 mm (0.08ct ±)", wt: 0.08, group: "R14" },
-  { code: "RND2.8M", shape: "Round", size: "2.8 mm (0.08-0.09 ct ±)", wt: 0.087, group: "R18" },
-  { code: "RND2.9M", shape: "Round", size: "2.9 mm (0.09-0.10 ct ±)", wt: 0.097, group: "R18" },
-  { code: "RND3.0M", shape: "Round", size: "3.0 mm (0.10-0.11 ct ±)", wt: 0.107, group: "R20" },
-  { code: "RND3.1M", shape: "Round", size: "3.1 mm (0.11-0.12 ct ±)", wt: 0.117, group: "R20" },
-  { code: "RND3.2M", shape: "Round", size: "3.2 mm (0.12-0.13 ct ±)", wt: 0.127, group: "R23" },
-  { code: "RND3.3M", shape: "Round", size: "3.3 mm (0.14-0.145 ct ±)", wt: 0.143, group: "R23" },
-  { code: "RND3.4M", shape: "Round", size: "3.4 mm (0.15-0.16 ct ±)", wt: 0.155, group: "R25" },
-  { code: "RND3.5M", shape: "Round", size: "3.5 mm (0.16-0.17 ct ±)", wt: 0.165, group: "R25" },
-  { code: "RND3.6M", shape: "Round", size: "3.6 mm (0.17-0.18 ct ±)", wt: 0.175, group: "R25" },
-  { code: "RND3.7M", shape: "Round", size: "3.7 mm (0.19-0.21 ct ±)", wt: 0.2, group: "R30" },
-  { code: "RND3.8M", shape: "Round", size: "3.8 mm (0.21-0.23 ct ±)", wt: 0.22, group: "R30" },
-  { code: "RND3.9M", shape: "Round", size: "3.9 mm (0.23-0.24 ct ±)", wt: 0.235, group: "R30" },
-  { code: "RND4.0M", shape: "Round", size: "4.0 mm (0.24-0.26 ct ±)", wt: 0.255, group: "R30" },
-  { code: "RND4.1M", shape: "Round", size: "4.1 mm (0.26-0.29 ct ±)", wt: 0.275, group: "R30" },
-  { code: "RND030W", shape: "Round", size: "4.2-4.4 mm ± (0.30-0.34 ct)", wt: 0.32, group: "R30" },
-  { code: "RND038W", shape: "Round", size: "4.4-4.6 mm ± (0.35-0.39 ct)", wt: 0.365, group: "R38" },
-  { code: "RND040W", shape: "Round", size: "4.6-4.8 mm ± (0.40-0.44 ct)", wt: 0.415, group: "R40" },
-  { code: "RND046W", shape: "Round", size: "4.7-4.9 mm ± (0.45-0.49 ct)", wt: 0.47, group: "R46" },
-  { code: "RND050W", shape: "Round", size: "5.0-5.2 mm ± (0.50-0.59 ct)", wt: 0.51, group: "R50" },
-  { code: "RND060W", shape: "Round", size: "5.3-5.5 mm ± (0.60-0.69 ct)", wt: 0.61, group: "R60" },
-  { code: "RND070W", shape: "Round", size: "5.5-5.7 mm ± (0.70-0.73 ct)", wt: 0.72, group: "R70" },
-  { code: "RND075W", shape: "Round", size: "5.7-5.8 mm ± (0.74-0.79 ct)", wt: 0.76, group: "R75" },
-  { code: "RND080W", shape: "Round", size: "5.8-6.0 mm ± (0.80-0.89 ct)", wt: 0.81, group: "R80" },
+  { code: "RND0.7M", key: "RND0.7M", shape: "Round", size: "0.7 mm (0.002 ct ±)", wt: 0.002, group: "R00" },
+  { code: "RND0.8M", key: "RND0.8M", shape: "Round", size: "0.8 mm (0.003 ct ±)", wt: 0.003, group: "R00" },
+  { code: "RND0.9M", key: "RND0.9M", shape: "Round", size: "0.9 mm (0.004 ct ±)", wt: 0.004, group: "R00" },
+  { code: "RND1.0M", key: "RND1.0M", shape: "Round", size: "1.0 mm (0.005 ct ±)", wt: 0.005, group: "R00" },
+  { code: "RND1.1M", key: "RND1.1M", shape: "Round", size: "1.1 mm (0.006 ct ±)", wt: 0.006, group: "R00" },
+  { code: "RND1.2M", key: "RND1.2M", shape: "Round", size: "1.2 mm (0.008 ct ±)", wt: 0.008, group: "R02" },
+  { code: "RND1.3M", key: "RND1.3M", shape: "Round", size: "1.3 mm (0.01 ct ±)", wt: 0.01, group: "R02" },
+  { code: "RND1.4M", key: "RND1.4M", shape: "Round", size: "1.4 mm (0.012 ct ±)", wt: 0.012, group: "R02" },
+  { code: "RND1.5M", key: "RND1.5M", shape: "Round", size: "1.5 mm (0.015 ct ±)", wt: 0.015, group: "R02" },
+  { code: "RND1.6M", key: "RND1.6M", shape: "Round", size: "1.6 mm (0.017 ct ±)", wt: 0.017, group: "R09" },
+  { code: "RND1.7M", key: "RND1.7M", shape: "Round", size: "1.7 mm (0.02 ct ±)", wt: 0.02, group: "R09" },
+  { code: "RND1.8M", key: "RND1.8M", shape: "Round", size: "1.8 mm (0.023 ct ±)", wt: 0.023, group: "R09" },
+  { code: "RND1.9M", key: "RND1.9M", shape: "Round", size: "1.9 mm (0.027 ct ±)", wt: 0.028, group: "R09" },
+  { code: "RND2.0M", key: "RND2.0M", shape: "Round", size: "2.0 mm (0.03 ct ±)", wt: 0.032, group: "R11" },
+  { code: "RND2.1M", key: "RND2.1M", shape: "Round", size: "2.1 mm (0.04 ct ±)", wt: 0.04, group: "R11" },
+  { code: "RND2.2M", key: "RND2.2M", shape: "Round", size: "2.2 mm (0.045 ct ±)", wt: 0.045, group: "R11" },
+  { code: "RND2.3M", key: "RND2.3M", shape: "Round", size: "2.3 mm (0.05 ct ±)", wt: 0.05, group: "R12" },
+  { code: "RND2.4M", key: "RND2.4M", shape: "Round", size: "2.4 mm (0.055 ct ±)", wt: 0.055, group: "R12" },
+  { code: "RND2.5M", key: "RND2.5M", shape: "Round", size: "2.5 mm (0.06 ct ±)", wt: 0.063, group: "R12" },
+  { code: "RND2.6M", key: "RND2.6M", shape: "Round", size: "2.6 mm (0.07 ct ±)", wt: 0.073, group: "R14" },
+  { code: "RND2.7M", key: "RND2.7M", shape: "Round", size: "2.7 mm (0.08ct ±)", wt: 0.08, group: "R14" },
+  { code: "RND2.8M", key: "RND2.8M", shape: "Round", size: "2.8 mm (0.08-0.09 ct ±)", wt: 0.087, group: "R18" },
+  { code: "RND2.9M", key: "RND2.9M", shape: "Round", size: "2.9 mm (0.09-0.10 ct ±)", wt: 0.097, group: "R18" },
+  { code: "RND3.0M", key: "RND3.0M", shape: "Round", size: "3.0 mm (0.10-0.11 ct ±)", wt: 0.107, group: "R20" },
+  { code: "RND3.1M", key: "RND3.1M", shape: "Round", size: "3.1 mm (0.11-0.12 ct ±)", wt: 0.117, group: "R20" },
+  { code: "RND3.2M", key: "RND3.2M", shape: "Round", size: "3.2 mm (0.12-0.13 ct ±)", wt: 0.127, group: "R23" },
+  { code: "RND3.3M", key: "RND3.3M", shape: "Round", size: "3.3 mm (0.14-0.145 ct ±)", wt: 0.143, group: "R23" },
+  { code: "RND3.4M", key: "RND3.4M", shape: "Round", size: "3.4 mm (0.15-0.16 ct ±)", wt: 0.155, group: "R25" },
+  { code: "RND3.5M", key: "RND3.5M", shape: "Round", size: "3.5 mm (0.16-0.17 ct ±)", wt: 0.165, group: "R25" },
+  { code: "RND3.6M", key: "RND3.6M", shape: "Round", size: "3.6 mm (0.17-0.18 ct ±)", wt: 0.175, group: "R25" },
+  { code: "RND3.7M", key: "RND3.7M", shape: "Round", size: "3.7 mm (0.19-0.21 ct ±)", wt: 0.2, group: "R30" },
+  { code: "RND3.8M", key: "RND3.8M", shape: "Round", size: "3.8 mm (0.21-0.23 ct ±)", wt: 0.22, group: "R30" },
+  { code: "RND3.9M", key: "RND3.9M", shape: "Round", size: "3.9 mm (0.23-0.24 ct ±)", wt: 0.235, group: "R30" },
+  { code: "RND4.0M", key: "RND4.0M", shape: "Round", size: "4.0 mm (0.24-0.26 ct ±)", wt: 0.255, group: "R30" },
+  { code: "RND4.1M", key: "RND4.1M", shape: "Round", size: "4.1 mm (0.26-0.29 ct ±)", wt: 0.275, group: "R30" },
+  { code: "RND030W", key: "RND030W", shape: "Round", size: "4.2-4.4 mm ± (0.30-0.34 ct)", wt: 0.32, group: "R30" },
+  { code: "RND038W", key: "RND038W", shape: "Round", size: "4.4-4.6 mm ± (0.35-0.39 ct)", wt: 0.365, group: "R38" },
+  { code: "RND040W", key: "RND040W", shape: "Round", size: "4.6-4.8 mm ± (0.40-0.44 ct)", wt: 0.415, group: "R40" },
+  { code: "RND046W", key: "RND046W", shape: "Round", size: "4.7-4.9 mm ± (0.45-0.49 ct)", wt: 0.47, group: "R46" },
+  { code: "RND050W", key: "RND050W", shape: "Round", size: "5.0-5.2 mm ± (0.50-0.59 ct)", wt: 0.51, group: "R50" },
+  { code: "RND060W", key: "RND060W", shape: "Round", size: "5.3-5.5 mm ± (0.60-0.69 ct)", wt: 0.61, group: "R60" },
+  { code: "RND070W", key: "RND070W", shape: "Round", size: "5.5-5.7 mm ± (0.70-0.73 ct)", wt: 0.72, group: "R70" },
+  { code: "RND075W", key: "RND075W", shape: "Round", size: "5.7-5.8 mm ± (0.74-0.79 ct)", wt: 0.76, group: "R75" },
+  { code: "RND080W", key: "RND080W", shape: "Round", size: "5.8-6.0 mm ± (0.80-0.89 ct)", wt: 0.81, group: "R80" },
+  { code: "BAG1210M", key: "BAG1210M", shape: "Baguette", size: "1.25 x 1.00 mm", wt: 0.009, group: null },
+  { code: "BAG1507M", key: "BAG1507M", shape: "Baguette", size: "1.50 x 0.75 mm", wt: 0.008, group: null },
+  { code: "BAG1510M", key: "BAG1510M", shape: "Baguette", size: "1.50 x 1.00 mm", wt: 0.01, group: null },
+  { code: "BAG1512M", key: "BAG1512M", shape: "Baguette", size: "1.50 x 1.25 mm", wt: 0.02, group: null },
+  { code: "BAG1707M", key: "BAG1707M", shape: "Baguette", size: "1.75 x 0.75 mm", wt: 0.02, group: null },
+  { code: "BAG1710M", key: "BAG1710M", shape: "Baguette", size: "1.75 x 1.00 mm", wt: 0.01, group: null },
+  { code: "BAG1712M", key: "BAG1712M", shape: "Baguette", size: "1.75 x 1.25 mm", wt: 0.02, group: null },
+  { code: "BAG1715M", key: "BAG1715M", shape: "Baguette", size: "1.75 x 1.50 mm", wt: 0.03, group: null },
+  { code: "BAG2007M", key: "BAG2007M", shape: "Baguette", size: "2.00 x 0.75 mm", wt: 0.01, group: null },
+  { code: "BAG2010M", key: "BAG2010M", shape: "Baguette", size: "2.00 x 1.00 mm", wt: 0.02, group: null },
+  { code: "BAG2012M", key: "BAG2012M", shape: "Baguette", size: "2.00 x 1.25 mm", wt: 0.02, group: null },
+  { code: "BAG2015M", key: "BAG2015M", shape: "Baguette", size: "2.00 x 1.50 mm", wt: 0.03, group: null },
+  { code: "BAG2017M", key: "BAG2017M", shape: "Baguette", size: "2.00 x 1.75 mm", wt: 0.04, group: null },
+  { code: "BAG2207M", key: "BAG2207M", shape: "Baguette", size: "2.25 x 0.75 mm", wt: 0.01, group: null },
+  { code: "BAG2210M", key: "BAG2210M", shape: "Baguette", size: "2.25 x 1.00 mm", wt: 0.02, group: null },
+  { code: "BAG2212M", key: "BAG2212M", shape: "Baguette", size: "2.25 x 1.25 mm", wt: 0.03, group: null },
+  { code: "BAG2215M", key: "BAG2215M", shape: "Baguette", size: "2.25 x 1.50 mm", wt: 0.04, group: null },
+  { code: "BAG2217M", key: "BAG2217M", shape: "Baguette", size: "2.25 x 1.75 mm", wt: 0.05, group: null },
+  { code: "BAG2507M", key: "BAG2507M", shape: "Baguette", size: "2.50 x 0.75 mm", wt: 0.02, group: null },
+  { code: "BAG2510M", key: "BAG2510M", shape: "Baguette", size: "2.50 x 1.00 mm", wt: 0.02, group: null },
+  { code: "BAG2512M", key: "BAG2512M", shape: "Baguette", size: "2.50 x 1.25 mm", wt: 0.03, group: null },
+  { code: "BAG2515M", key: "BAG2515M", shape: "Baguette", size: "2.50 x 1.50 mm", wt: 0.04, group: null },
+  { code: "BAG2517M", key: "BAG2517M", shape: "Baguette", size: "2.50 x 1.75 mm", wt: 0.06, group: null },
+  { code: "BAG2520M", key: "BAG2520M", shape: "Baguette", size: "2.50 x 2.00 mm", wt: 0.07, group: null },
+  { code: "BAG2710M", key: "BAG2710M", shape: "Baguette", size: "2.75 x 1.00 mm", wt: 0.02, group: null },
+  { code: "BAG2712M", key: "BAG2712M", shape: "Baguette", size: "2.75 x 1.25 mm", wt: 0.04, group: null },
+  { code: "BAG2715M", key: "BAG2715M", shape: "Baguette", size: "2.75 x 1.50 mm", wt: 0.05, group: null },
+  { code: "BAG2717M", key: "BAG2717M", shape: "Baguette", size: "2.75 x 1.75 mm", wt: 0.06, group: null },
+  { code: "BAG2720M", key: "BAG2720M", shape: "Baguette", size: "2.75 x 2.00 mm", wt: 0.08, group: null },
+  { code: "BAG2722M", key: "BAG2722M", shape: "Baguette", size: "2.75 x 2.25 mm", wt: 0.1, group: null },
+  { code: "BAG3010M", key: "BAG3010M", shape: "Baguette", size: "3.00 x 1.00 mm", wt: 0.03, group: null },
+  { code: "BAG3012M", key: "BAG3012M", shape: "Baguette", size: "3.00 x 1.25 mm", wt: 0.04, group: null },
+  { code: "BAG3015M", key: "BAG3015M", shape: "Baguette", size: "3.00 x 1.50 mm", wt: 0.06, group: null },
+  { code: "BAG3017M", key: "BAG3017M", shape: "Baguette", size: "3.00 x 1.75 mm", wt: 0.07, group: null },
+  { code: "BAG3020M", key: "BAG3020M", shape: "Baguette", size: "3.00 x 2.00 mm", wt: 0.09, group: null },
+  { code: "BAG3022M", key: "BAG3022M", shape: "Baguette", size: "3.00 x 2.25 mm", wt: 0.11, group: null },
+  { code: "BAG3025M", key: "BAG3025M", shape: "Baguette", size: "3.00 x 2.50 mm", wt: 0.12, group: null },
+  { code: "BAG3210M", key: "BAG3210M", shape: "Baguette", size: "3.25 x 1.00 mm", wt: 0.03, group: null },
+  { code: "BAG3212M", key: "BAG3212M", shape: "Baguette", size: "3.25 x 1.25 mm", wt: 0.04, group: null },
+  { code: "BAG3215M", key: "BAG3215M", shape: "Baguette", size: "3.25 x 1.50 mm", wt: 0.06, group: null },
+  { code: "BAG3217M", key: "BAG3217M", shape: "Baguette", size: "3.25 x 1.75 mm", wt: 0.08, group: null },
+  { code: "BAG3220M", key: "BAG3220M", shape: "Baguette", size: "3.25 x 2.00 mm", wt: 0.1, group: null },
+  { code: "BAG3222M", key: "BAG3222M", shape: "Baguette", size: "3.25 x 2.25 mm", wt: 0.12, group: null },
+  { code: "BAG3225M", key: "BAG3225M", shape: "Baguette", size: "3.25 x 2.50 mm", wt: 0.14, group: null },
+  { code: "BAG3510M", key: "BAG3510M", shape: "Baguette", size: "3.50 x 1.00 mm", wt: 0.04, group: null },
+  { code: "BAG3512M", key: "BAG3512M", shape: "Baguette", size: "3.50 x 1.25 mm", wt: 0.05, group: null },
+  { code: "BAG3515M", key: "BAG3515M", shape: "Baguette", size: "3.50 x 1.50 mm", wt: 0.07, group: null },
+  { code: "BAG3517M", key: "BAG3517M", shape: "Baguette", size: "3.50 x 1.75 mm", wt: 0.09, group: null },
+  { code: "BAG3520M", key: "BAG3520M", shape: "Baguette", size: "3.50 x 2.00 mm", wt: 0.11, group: null },
+  { code: "BAG3522M", key: "BAG3522M", shape: "Baguette", size: "3.50 x 2.25 mm", wt: 0.12, group: null },
+  { code: "BAG3525M", key: "BAG3525M", shape: "Baguette", size: "3.50 x 2.50 mm", wt: 0.14, group: null },
+  { code: "BAG3710M", key: "BAG3710M", shape: "Baguette", size: "3.75 x 1.00 mm", wt: 0.04, group: null },
+  { code: "BAG3712M", key: "BAG3712M", shape: "Baguette", size: "3.75 x 1.25 mm", wt: 0.05, group: null },
+  { code: "BAG3715M", key: "BAG3715M", shape: "Baguette", size: "3.75 x 1.50 mm", wt: 0.07, group: null },
+  { code: "BAG3717M", key: "BAG3717M", shape: "Baguette", size: "3.75 x 1.75 mm", wt: 0.09, group: null },
+  { code: "BAG3720M", key: "BAG3720M", shape: "Baguette", size: "3.75 x 2.00 mm", wt: 0.12, group: null },
+  { code: "BAG3722M", key: "BAG3722M", shape: "Baguette", size: "3.75 x 2.25 mm", wt: 0.14, group: null },
+  { code: "BAG3725M", key: "BAG3725M", shape: "Baguette", size: "3.75 x 2.50 mm", wt: 0.16, group: null },
+  { code: "BAG4012M", key: "BAG4012M", shape: "Baguette", size: "4.00 x 1.25 mm", wt: 0.05, group: null },
+  { code: "BAG4015M", key: "BAG4015M", shape: "Baguette", size: "4.00 x 1.50 mm", wt: 0.07, group: null },
+  { code: "BAG4017M", key: "BAG4017M", shape: "Baguette", size: "4.00 x 1.75 mm", wt: 0.1, group: null },
+  { code: "BAG4020M", key: "BAG4020M", shape: "Baguette", size: "4.00 x 2.00 mm", wt: 0.13, group: null },
+  { code: "BAG4022M", key: "BAG4022M", shape: "Baguette", size: "4.00 x 2.25 mm", wt: 0.16, group: null },
+  { code: "BAG4025M", key: "BAG4025M", shape: "Baguette", size: "4.00 x 2.50 mm", wt: 0.19, group: null },
+  { code: "BAG4027M", key: "BAG4027M", shape: "Baguette", size: "4.00 x 2.75 mm", wt: 0.2, group: null },
+  { code: "BAG4030M", key: "BAG4030M", shape: "Baguette", size: "4.00 x 3.00 mm", wt: 0.23, group: null },
+  { code: "BAG4212M", key: "BAG4212M", shape: "Baguette", size: "4.25 x 1.25 mm", wt: 0.06, group: null },
+  { code: "BAG4215M", key: "BAG4215M", shape: "Baguette", size: "4.25 x 1.50 mm", wt: 0.08, group: null },
+  { code: "BAG4217M", key: "BAG4217M", shape: "Baguette", size: "4.25 x 1.75 mm", wt: 0.1, group: null },
+  { code: "BAG4220M", key: "BAG4220M", shape: "Baguette", size: "4.25 x 2.00 mm", wt: 0.14, group: null },
+  { code: "BAG4222M", key: "BAG4222M", shape: "Baguette", size: "4.25 x 2.25 mm", wt: 0.15, group: null },
+  { code: "BAG4225M", key: "BAG4225M", shape: "Baguette", size: "4.25 x 2.50 mm", wt: 0.19, group: null },
+  { code: "BAG4227M", key: "BAG4227M", shape: "Baguette", size: "4.25 x 2.75 mm", wt: 0.24, group: null },
+  { code: "BAG4512M", key: "BAG4512M", shape: "Baguette", size: "4.50 x 1.25 mm", wt: 0.06, group: null },
+  { code: "BAG4515M", key: "BAG4515M", shape: "Baguette", size: "4.50 x 1.50 mm", wt: 0.09, group: null },
+  { code: "BAG4517M", key: "BAG4517M", shape: "Baguette", size: "4.50 x 1.75 mm", wt: 0.12, group: null },
+  { code: "BAG4520M", key: "BAG4520M", shape: "Baguette", size: "4.50 x 2.00 mm", wt: 0.15, group: null },
+  { code: "BAG4522M", key: "BAG4522M", shape: "Baguette", size: "4.50 x 2.25 mm", wt: 0.18, group: null },
+  { code: "BAG4525M", key: "BAG4525M", shape: "Baguette", size: "4.50 x 2.50 mm", wt: 0.21, group: null },
+  { code: "BAG4527M", key: "BAG4527M", shape: "Baguette", size: "4.50 x 2.75 mm", wt: 0.25, group: null },
+  { code: "BAG4530M", key: "BAG4530M", shape: "Baguette", size: "4.50 x 3.00 mm", wt: 0.28, group: null },
+  { code: "BAG4715M", key: "BAG4715M", shape: "Baguette", size: "4.75 x 1.50 mm", wt: 0.09, group: null },
+  { code: "BAG4720M", key: "BAG4720M", shape: "Baguette", size: "4.75 x 2.00 mm", wt: 0.15, group: null },
+  { code: "BAG4725M", key: "BAG4725M", shape: "Baguette", size: "4.75 x 2.50 mm", wt: 0.22, group: null },
+  { code: "BAG5020M", key: "BAG5020M", shape: "Baguette", size: "5.00 x 2.00 mm", wt: 0.17, group: null },
+  { code: "BAG5025M", key: "BAG5025M", shape: "Baguette", size: "5.00 x 2.50 mm", wt: 0.24, group: null },
+  { code: "BAG5030M", key: "BAG5030M", shape: "Baguette", size: "5.00 x 3.00 mm", wt: 0.32, group: null },
+  { code: "BAG5525M", key: "BAG5525M", shape: "Baguette", size: "5.50 x 2.50 mm", wt: 0.27, group: null },
+  { code: "BAG5530M", key: "BAG5530M", shape: "Baguette", size: "5.50 x 3.00 mm", wt: 0.36, group: null },
+  { code: "BAG6030M", key: "BAG6030M", shape: "Baguette", size: "6.00 x 3.00 mm", wt: 0.42, group: null },
+  { code: "CAR1.5M", key: "CAR1.5M", shape: "Carre", size: "1.5 mm", wt: 0.02, group: null },
+  { code: "CAR1.6M", key: "CAR1.6M", shape: "Carre", size: "1.6 mm", wt: 0.025, group: null },
+  { code: "CAR1.7M", key: "CAR1.7M", shape: "Carre", size: "1.7 mm", wt: 0.03, group: null },
+  { code: "CAR1.8M", key: "CAR1.8M", shape: "Carre", size: "1.8 mm", wt: 0.035, group: null },
+  { code: "CAR1.9M", key: "CAR1.9M", shape: "Carre", size: "1.9 mm", wt: 0.04, group: null },
+  { code: "CAR2.0M", key: "CAR2.0M", shape: "Carre", size: "2.0 mm", wt: 0.05, group: null },
+  { code: "CAR2.1M", key: "CAR2.1M", shape: "Carre", size: "2.1 mm", wt: 0.06, group: null },
+  { code: "CAR2.2M", key: "CAR2.2M", shape: "Carre", size: "2.2 mm", wt: 0.07, group: null },
+  { code: "CAR2.3M", key: "CAR2.3M", shape: "Carre", size: "2.3 mm", wt: 0.08, group: null },
+  { code: "CAR2.4M", key: "CAR2.4M", shape: "Carre", size: "2.4 mm", wt: 0.09, group: null },
+  { code: "CAR2.5M", key: "CAR2.5M", shape: "Carre", size: "2.5 mm", wt: 0.1, group: null },
+  { code: "CAR2.6M", key: "CAR2.6M", shape: "Carre", size: "2.6 mm", wt: 0.11, group: null },
+  { code: "CAR2.7M", key: "CAR2.7M", shape: "Carre", size: "2.7 mm", wt: 0.12, group: null },
+  { code: "CAR2.8M", key: "CAR2.8M", shape: "Carre", size: "2.8 mm", wt: 0.13, group: null },
+  { code: "CAR3.0M", key: "CAR3.0M", shape: "Carre", size: "3.0 mm", wt: 0.15, group: null },
+  { code: "CAR3.2M", key: "CAR3.2M", shape: "Carre", size: "3.2 mm", wt: 0.2, group: null },
+  { code: "CAR3.5M", key: "CAR3.5M", shape: "Carre", size: "3.5 mm", wt: 0.25, group: null },
+  { code: "CAR3.8M", key: "CAR3.8M", shape: "Carre", size: "3.8 mm", wt: 0.33, group: null },
+  { code: "CAR4.0M", key: "CAR4.0M", shape: "Carre", size: "4.0 mm", wt: 0.4, group: null },
+  { code: "EME033W", key: "EME033W", shape: "Emerald", size: "4.50 x 3.30 mm", wt: 0.33, group: null },
+  { code: "EME040W", key: "EME040W", shape: "Emerald", size: "5.00 x 3.50 mm", wt: 0.37, group: null },
+  { code: "EME3023M", key: "EME3023M", shape: "Emerald", size: "3.00 x 2.30 mm", wt: 0.1, group: null },
+  { code: "EME3223M", key: "EME3223M", shape: "Emerald", size: "3.20 x 2.30 mm", wt: 0.1, group: null },
+  { code: "EME3725M", key: "EME3725M", shape: "Emerald", size: "3.75 x 2.50 mm", wt: 0.15, group: null },
+  { code: "EME3727M", key: "EME3727M", shape: "Emerald", size: "3.75 x 2.75 mm", wt: 0.19, group: null },
+  { code: "EME4030M", key: "EME4030M", shape: "Emerald", size: "4.00 x 3.00 mm", wt: 0.24, group: null },
+  { code: "EME4430M", key: "EME4430M", shape: "Emerald", size: "4.45 x 3.00 mm", wt: 0.275, group: null },
+  { code: "HRT033W", key: "HRT033W", shape: "Heart", size: "4.10 x 4.60 mm", wt: 0.33, group: null },
+  { code: "HRT037W", key: "HRT037W", shape: "Heart", size: "4.20 x 4.80 mm", wt: 0.37, group: null },
+  { code: "HRT2730M", key: "HRT2730M", shape: "Heart", size: "2.70 x 3.00 mm", wt: 0.1, group: null },
+  { code: "HRT3235M", key: "HRT3235M", shape: "Heart", size: "3.20 x 3.50 mm", wt: 0.15, group: null },
+  { code: "HRT3638M", key: "HRT3638M", shape: "Heart", size: "3.60 x 3.80 mm", wt: 0.2, group: null },
+  { code: "HRT3943M", key: "HRT3943M", shape: "Heart", size: "3.90 x 4.30 mm", wt: 0.25, group: null },
+  { code: "MQS033W", key: "MQS033W", shape: "Marquise", size: "6.00 x 3.50 mm", wt: 0.33, group: null },
+  { code: "MQS2512M", key: "MQS2512M", shape: "Marquise", size: "2.50 x 1.25 mm", wt: 0.02, group: null },
+  { code: "MQS3015M", key: "MQS3015M", shape: "Marquise", size: "3.00 x 1.50 mm", wt: 0.04, group: null },
+  { code: "MQS3116M", key: "MQS3116M", shape: "Marquise", size: "3.10 x 1.60 mm", wt: 0.04, group: null },
+  { code: "MQS3517M", key: "MQS3517M", shape: "Marquise", size: "3.50 x 1.75 mm", wt: 0.05, group: null },
+  { code: "MQS3520M", key: "MQS3520M", shape: "Marquise", size: "3.50 x 2.00 mm", wt: 0.05, group: null },
+  { code: "MQS3717M", key: "MQS3717M", shape: "Marquise", size: "3.75 x 1.75 mm", wt: 0.05, group: null },
+  { code: "MQS4020M", key: "MQS4020M", shape: "Marquise", size: "4.00 x 2.00 mm", wt: 0.065, group: null },
+  { code: "MQS4222M", key: "MQS4222M", shape: "Marquise", size: "4.25 x 2.25 mm", wt: 0.07, group: null },
+  { code: "MQS4525M", key: "MQS4525M", shape: "Marquise", size: "4.50 x 2.25 mm", wt: 0.09, group: null },
+  { code: "MQS5025M", key: "MQS5025M", shape: "Marquise", size: "5.00 x 2.50 mm", wt: 0.12, group: null },
+  { code: "MQS5030M", key: "MQS5030M", shape: "Marquise", size: "5.00 x 3.00 mm", wt: 0.2, group: null },
+  { code: "MQS6030M", key: "MQS6030M", shape: "Marquise", size: "6.00 x 3.00 mm", wt: 0.25, group: null },
+  { code: "OVL030W", key: "OVL030W", shape: "Oval", size: "5.40 x 3.80 mm", wt: 0.33, group: null },
+  { code: "OVL3020M", key: "OVL3020M", shape: "Oval", size: "3.00 x 2.00 mm", wt: 0.055, group: null },
+  { code: "OVL3023M", key: "OVL3023M", shape: "Oval", size: "3.00 x 2.30 mm", wt: 0.07, group: null },
+  { code: "OVL3525M", key: "OVL3525M", shape: "Oval", size: "3.50 x 2.50 mm", wt: 0.09, group: null },
+  { code: "OVL3627M", key: "OVL3627M", shape: "Oval", size: "3.60 x 2.70 mm", wt: 0.1, group: null },
+  { code: "OVL4030M", key: "OVL4030M", shape: "Oval", size: "4.00 x 3.00 mm", wt: 0.15, group: null },
+  { code: "OVL4535M", key: "OVL4535M", shape: "Oval", size: "4.50 x 3.50 mm", wt: 0.2, group: null },
+  { code: "OVL4833M", key: "OVL4833M", shape: "Oval", size: "4.80 x 3.30 mm", wt: 0.21, group: null },
+  { code: "OVL5035M", key: "OVL5035M", shape: "Oval", size: "5.00 x 3.50 mm", wt: 0.25, group: null },
+  { code: "PRN014W", key: "PRN014W#1", shape: "Princess", size: "2.9 mm", wt: 0.14, group: null },
+  { code: "PRN014W", key: "PRN014W#2", shape: "Princess", size: "3.0 mm", wt: 0.15, group: null },
+  { code: "PRN014W", key: "PRN014W#3", shape: "Princess", size: "3.1 mm", wt: 0.17, group: null },
+  { code: "PRN020W", key: "PRN020W#1", shape: "Princess", size: "3.2 mm", wt: 0.19, group: null },
+  { code: "PRN020W", key: "PRN020W#2", shape: "Princess", size: "3.3 mm", wt: 0.22, group: null },
+  { code: "PRN025W", key: "PRN025W#1", shape: "Princess", size: "3.4 mm", wt: 0.24, group: null },
+  { code: "PRN025W", key: "PRN025W#2", shape: "Princess", size: "3.5 mm", wt: 0.26, group: null },
+  { code: "PRN025W", key: "PRN025W#3", shape: "Princess", size: "3.6 mm", wt: 0.28, group: null },
+  { code: "PRN030W", key: "PRN030W", shape: "Princess", size: "3.7 mm", wt: 0.33, group: null },
+  { code: "PRN040W", key: "PRN040W", shape: "Princess", size: "4.0 mm", wt: 0.4, group: null },
+  { code: "PRN046W", key: "PRN046W", shape: "Princess", size: "4.1 mm", wt: 0.46, group: null },
+  { code: "PRN050W", key: "PRN050W", shape: "Princess", size: "4.3 mm", wt: 0.5, group: null },
+  { code: "PRN060W", key: "PRN060W", shape: "Princess", size: "4.5 mm", wt: 0.6, group: null },
+  { code: "PRN1.4M", key: "PRN1.4M", shape: "Princess", size: "1.4 mm", wt: 0.015, group: null },
+  { code: "PRN1.5M", key: "PRN1.5M", shape: "Princess", size: "1.5 mm", wt: 0.02, group: null },
+  { code: "PRN1.6M", key: "PRN1.6M", shape: "Princess", size: "1.6 mm", wt: 0.025, group: null },
+  { code: "PRN1.7M", key: "PRN1.7M", shape: "Princess", size: "1.7 mm", wt: 0.03, group: null },
+  { code: "PRN1.8M", key: "PRN1.8M", shape: "Princess", size: "1.8 mm", wt: 0.035, group: null },
+  { code: "PRN1.9M", key: "PRN1.9M", shape: "Princess", size: "1.9 mm", wt: 0.04, group: null },
+  { code: "PRN2.0M", key: "PRN2.0M", shape: "Princess", size: "2.0 mm", wt: 0.05, group: null },
+  { code: "PRN2.1M", key: "PRN2.1M", shape: "Princess", size: "2.1 mm", wt: 0.06, group: null },
+  { code: "PRN2.2M", key: "PRN2.2M", shape: "Princess", size: "2.2 mm", wt: 0.07, group: null },
+  { code: "PRN2.3M", key: "PRN2.3M", shape: "Princess", size: "2.3 mm", wt: 0.08, group: null },
+  { code: "PRN2.4M", key: "PRN2.4M", shape: "Princess", size: "2.4 mm", wt: 0.09, group: null },
+  { code: "PRN2.5M", key: "PRN2.5M", shape: "Princess", size: "2.5 mm", wt: 0.1, group: null },
+  { code: "PRN2.6M", key: "PRN2.6M", shape: "Princess", size: "2.6 mm", wt: 0.11, group: null },
+  { code: "PRN2.7M", key: "PRN2.7M", shape: "Princess", size: "2.7 mm", wt: 0.12, group: null },
+  { code: "PRN2.8M", key: "PRN2.8M", shape: "Princess", size: "2.8 mm", wt: 0.13, group: null },
+  { code: "PSH030W", key: "PSH030W", shape: "Pear", size: "5.70 x 3.70 mm", wt: 0.33, group: null },
+  { code: "PSH040W", key: "PSH040W", shape: "Pear", size: "6.00 x 4.00 mm", wt: 0.33, group: null },
+  { code: "PSH2517M", key: "PSH2517M", shape: "Pear", size: "2.50 x 1.7 mm", wt: 0.03, group: null },
+  { code: "PSH3020M", key: "PSH3020M", shape: "Pear", size: "3.00 x 2.00 mm", wt: 0.05, group: null },
+  { code: "PSH3522M", key: "PSH3522M", shape: "Pear", size: "3.50 x 2.20 mm", wt: 0.07, group: null },
+  { code: "PSH4025M", key: "PSH4025M", shape: "Pear", size: "4.00 x 2.50 mm", wt: 0.1, group: null },
+  { code: "PSH4030M", key: "PSH4030M", shape: "Pear", size: "4.00 x 3.00 mm", wt: 0.14, group: null },
+  { code: "PSH4127M", key: "PSH4127M", shape: "Pear", size: "4.10 x 2.70 mm", wt: 0.11, group: null },
+  { code: "PSH4530M", key: "PSH4530M", shape: "Pear", size: "4.50 x 3.00 mm", wt: 0.15, group: null },
+  { code: "PSH5030M", key: "PSH5030M", shape: "Pear", size: "5.00 x 3.00 mm", wt: 0.2, group: null },
+  { code: "PSH5535M", key: "PSH5535M", shape: "Pear", size: "5.50 x 3.50 mm", wt: 0.25, group: null },
+  { code: "RAD2320M", key: "RAD2320M", shape: "Radiant", size: "2.30 x 2.00 mm", wt: 0.05, group: null },
+  { code: "RAD2723M", key: "RAD2723M", shape: "Radiant", size: "2.70 x 2.30 mm", wt: 0.1, group: null },
+  { code: "RAD3024M", key: "RAD3024M", shape: "Radiant", size: "3.00 x 2.40 mm", wt: 0.1, group: null },
+  { code: "RAD3528M", key: "RAD3528M", shape: "Radiant", size: "3.50 x 2.80 mm", wt: 0.15, group: null },
+  { code: "RAD3830M", key: "RAD3830M", shape: "Radiant", size: "3.80 x 3.00 mm", wt: 0.2, group: null },
+  { code: "RAD4035M", key: "RAD4035M", shape: "Radiant", size: "4.00 x 3.50 mm", wt: 0.25, group: null },
+  { code: "SCU30M", key: "SCU30M", shape: "Sq. Cushion", size: "3.00 x 3.00 mm", wt: 0.15, group: null },
+  { code: "SCU33M", key: "SCU33M", shape: "Sq. Cushion", size: "3.30 x 3.30 mm", wt: 0.2, group: null },
+  { code: "SCU36M", key: "SCU36M", shape: "Sq. Cushion", size: "3.60 x 3.60 mm", wt: 0.25, group: null },
+  { code: "SCU38M", key: "SCU38M", shape: "Sq. Cushion", size: "3.80 x 3.80 mm", wt: 0.33, group: null },
+  { code: "SCU42M", key: "SCU42M", shape: "Sq. Cushion", size: "4.25 x 4.25 mm", wt: 0.37, group: null },
+  { code: "SEM033W", key: "SEM033W", shape: "Sq. Emerald", size: "4.00 x 4.00 mm", wt: 0.4, group: null },
+  { code: "SEM15M", key: "SEM15M", shape: "Sq. Emerald", size: "1.50 x 1.50 mm", wt: 0.02, group: null },
+  { code: "SEM16M", key: "SEM16M", shape: "Sq. Emerald", size: "1.60 x 1.60 mm", wt: 0.025, group: null },
+  { code: "SEM17M", key: "SEM17M", shape: "Sq. Emerald", size: "1.70 x 1.70 mm", wt: 0.03, group: null },
+  { code: "SEM18M", key: "SEM18M", shape: "Sq. Emerald", size: "1.80 x 1.80 mm", wt: 0.035, group: null },
+  { code: "SEM19M", key: "SEM19M", shape: "Sq. Emerald", size: "1.90 x 1.90 mm", wt: 0.04, group: null },
+  { code: "SEM20M", key: "SEM20M", shape: "Sq. Emerald", size: "2.00 x 2.00 mm", wt: 0.05, group: null },
+  { code: "SEM21M", key: "SEM21M", shape: "Sq. Emerald", size: "2.10 x 2.10 mm", wt: 0.06, group: null },
+  { code: "SEM22M", key: "SEM22M", shape: "Sq. Emerald", size: "2.20 x 2.20 mm", wt: 0.07, group: null },
+  { code: "SEM23M", key: "SEM23M", shape: "Sq. Emerald", size: "2.30 x 2.30 mm", wt: 0.08, group: null },
+  { code: "SEM24M", key: "SEM24M", shape: "Sq. Emerald", size: "2.40 x 2.40 mm", wt: 0.08, group: null },
+  { code: "SEM25M", key: "SEM25M", shape: "Sq. Emerald", size: "2.50 x 2.50 mm", wt: 0.095, group: null },
+  { code: "SEM26M", key: "SEM26M", shape: "Sq. Emerald", size: "2.60 x 2.60 mm", wt: 0.1, group: null },
+  { code: "SEM27M", key: "SEM27M", shape: "Sq. Emerald", size: "2.70 x 2.70 mm", wt: 0.11, group: null },
+  { code: "SEM28M", key: "SEM28M", shape: "Sq. Emerald", size: "2.80 x 2.80 mm", wt: 0.12, group: null },
+  { code: "SEM29M", key: "SEM29M", shape: "Sq. Emerald", size: "2.90 x 2.90 mm", wt: 0.135, group: null },
+  { code: "SEM30M", key: "SEM30M", shape: "Sq. Emerald", size: "3.00 x 3.00 mm", wt: 0.15, group: null },
+  { code: "SEM31M", key: "SEM31M", shape: "Sq. Emerald", size: "3.10 x 3.10 mm", wt: 0.17, group: null },
+  { code: "SEM32M", key: "SEM32M", shape: "Sq. Emerald", size: "3.20 x 3.20 mm", wt: 0.19, group: null },
+  { code: "SEM33M", key: "SEM33M", shape: "Sq. Emerald", size: "3.30 x 3.30 mm", wt: 0.2, group: null },
+  { code: "SEM34M", key: "SEM34M", shape: "Sq. Emerald", size: "3.40 x 3.40 mm", wt: 0.24, group: null },
+  { code: "SEM35M", key: "SEM35M", shape: "Sq. Emerald", size: "3.50 x 3.50 mm", wt: 0.26, group: null },
+  { code: "SEM36M", key: "SEM36M", shape: "Sq. Emerald", size: "3.60 x 3.60 mm", wt: 0.33, group: null },
+  { code: "TAP151007", key: "TAP151007", shape: "Tappered Bagguette", size: "1.50 x 1.00 x 0.75 mm", wt: 0.01, group: null },
+  { code: "TAP151210", key: "TAP151210", shape: "Tappered Bagguette", size: "1.50 x 1.25 x 1.00 mm", wt: 0.01, group: null },
+  { code: "TAP170705", key: "TAP170705", shape: "Tappered Bagguette", size: "1.75 x 0.75 x 0.50 mm", wt: 0.008, group: null },
+  { code: "TAP171005", key: "TAP171005", shape: "Tappered Bagguette", size: "1.75 x 1.00 x 0.50 mm", wt: 0.01, group: null },
+  { code: "TAP171007", key: "TAP171007", shape: "Tappered Bagguette", size: "1.75 x 1.00 x 0.75 mm", wt: 0.01, group: null },
+  { code: "TAP171210", key: "TAP171210", shape: "Tappered Bagguette", size: "1.75 x 1.25 x 1.00 mm", wt: 0.02, group: null },
+  { code: "TAP171510", key: "TAP171510", shape: "Tappered Bagguette", size: "1.75 x 1.50 x 1.00 mm", wt: 0.02, group: null },
+  { code: "TAP171512", key: "TAP171512", shape: "Tappered Bagguette", size: "1.75 x 1.50 x 1.25 mm", wt: 0.02, group: null },
+  { code: "TAP201005", key: "TAP201005", shape: "Tappered Bagguette", size: "2.00 x 1.00 x 0.50 mm", wt: 0.01, group: null },
+  { code: "TAP201007", key: "TAP201007", shape: "Tappered Bagguette", size: "2.00 x 1.00 x 0.75 mm", wt: 0.01, group: null },
+  { code: "TAP201210", key: "TAP201210", shape: "Tappered Bagguette", size: "2.00 x 1.25 x 1.00 mm", wt: 0.02, group: null },
+  { code: "TAP201510", key: "TAP201510", shape: "Tappered Bagguette", size: "2.00 x 1.50 x 1.00 mm", wt: 0.02, group: null },
+  { code: "TAP201512", key: "TAP201512", shape: "Tappered Bagguette", size: "2.00 x 1.50 x 1.25 mm", wt: 0.03, group: null },
+  { code: "TAP221005", key: "TAP221005", shape: "Tappered Bagguette", size: "2.25 x 1.00 x 0.50 mm", wt: 0.01, group: null },
+  { code: "TAP221207", key: "TAP221207", shape: "Tappered Bagguette", size: "2.25 x 1.25 x 0.75 mm", wt: 0.02, group: null },
+  { code: "TAP221210", key: "TAP221210", shape: "Tappered Bagguette", size: "2.25 x 1.25 x 1.00 mm", wt: 0.02, group: null },
+  { code: "TAP221510", key: "TAP221510", shape: "Tappered Bagguette", size: "2.25 x 1.50 x 1.00 mm", wt: 0.03, group: null },
+  { code: "TAP221512", key: "TAP221512", shape: "Tappered Bagguette", size: "2.25 x 1.50 x 1.25 mm", wt: 0.04, group: null },
+  { code: "TAP221712", key: "TAP221712", shape: "Tappered Bagguette", size: "2.25 x 1.75 x 1.25 mm", wt: 0.04, group: null },
+  { code: "TAP221715", key: "TAP221715", shape: "Tappered Bagguette", size: "2.25 x 1.75 x 1.50 mm", wt: 0.05, group: null },
+  { code: "TAP222015", key: "TAP222015", shape: "Tappered Bagguette", size: "2.25 x 2.00 x 1.50 mm", wt: 0.05, group: null },
+  { code: "TAP251005", key: "TAP251005", shape: "Tappered Bagguette", size: "2.50 x 1.00 x 0.50 mm", wt: 0.02, group: null },
+  { code: "TAP251007", key: "TAP251007", shape: "Tappered Bagguette", size: "2.50 x 1.00 x 0.75 mm", wt: 0.02, group: null },
+  { code: "TAP251210", key: "TAP251210", shape: "Tappered Bagguette", size: "2.50 x 1.25 x 1.00 mm", wt: 0.03, group: null },
+  { code: "TAP251510", key: "TAP251510", shape: "Tappered Bagguette", size: "2.50 x 1.50 x 1.00 mm", wt: 0.03, group: null },
+  { code: "TAP251512", key: "TAP251512", shape: "Tappered Bagguette", size: "2.50 x 1.50 x 1.25 mm", wt: 0.04, group: null },
+  { code: "TAP251710", key: "TAP251710", shape: "Tappered Bagguette", size: "2.50 x 1.75 x 1.00 mm", wt: 0.04, group: null },
+  { code: "TAP251712", key: "TAP251712", shape: "Tappered Bagguette", size: "2.50 x 1.75 x 1.25 mm", wt: 0.05, group: null },
+  { code: "TAP252015", key: "TAP252015", shape: "Tappered Bagguette", size: "2.50 x 2.00 x 1.50 mm", wt: 0.05, group: null },
+  { code: "TAP271005", key: "TAP271005", shape: "Tappered Bagguette", size: "2.75 x 1.00 x 0.50 mm", wt: 0.02, group: null },
+  { code: "TAP271207", key: "TAP271207", shape: "Tappered Bagguette", size: "2.75 x 1.25 x 0.75 mm", wt: 0.03, group: null },
+  { code: "TAP271210", key: "TAP271210", shape: "Tappered Bagguette", size: "2.75 x 1.25 x 1.00 mm", wt: 0.03, group: null },
+  { code: "TAP271510", key: "TAP271510", shape: "Tappered Bagguette", size: "2.75 x 1.50 x 1.00 mm", wt: 0.04, group: null },
+  { code: "TAP271512", key: "TAP271512", shape: "Tappered Bagguette", size: "2.75 x 1.50 x 1.25 mm", wt: 0.04, group: null },
+  { code: "TAP271712", key: "TAP271712", shape: "Tappered Bagguette", size: "2.75 x 1.75 x 1.25 mm", wt: 0.05, group: null },
+  { code: "TAP271715", key: "TAP271715", shape: "Tappered Bagguette", size: "2.75 x 1.75 x 1.50 mm", wt: 0.05, group: null },
+  { code: "TAP272015", key: "TAP272015", shape: "Tappered Bagguette", size: "2.75 x 2.00 x 1.50 mm", wt: 0.07, group: null },
+  { code: "TAP301207", key: "TAP301207", shape: "Tappered Bagguette", size: "3.00 x 1.25 x 0.75 mm", wt: 0.03, group: null },
+  { code: "TAP301210", key: "TAP301210", shape: "Tappered Bagguette", size: "3.00 x 1.25 x 1.00 mm", wt: 0.04, group: null },
+  { code: "TAP301510", key: "TAP301510", shape: "Tappered Bagguette", size: "3.00 x 1.50 x 1.00 mm", wt: 0.04, group: null },
+  { code: "TAP301512", key: "TAP301512", shape: "Tappered Bagguette", size: "3.00 x 1.50 x 1.25 mm", wt: 0.05, group: null },
+  { code: "TAP301710", key: "TAP301710", shape: "Tappered Bagguette", size: "3.00 x 1.75 x 1.00 mm", wt: 0.06, group: null },
+  { code: "TAP301712", key: "TAP301712", shape: "Tappered Bagguette", size: "3.00 x 1.75 x 1.25 mm", wt: 0.06, group: null },
+  { code: "TAP302010", key: "TAP302010", shape: "Tappered Bagguette", size: "3.00 x 2.00 x 1.00 mm", wt: 0.06, group: null },
+  { code: "TAP302015", key: "TAP302015", shape: "Tappered Bagguette", size: "3.00 x 2.00 x 1.50 mm", wt: 0.07, group: null },
+  { code: "TAP302017", key: "TAP302017", shape: "Tappered Bagguette", size: "3.00 x 2.00 x 1.75 mm", wt: 0.08, group: null },
+  { code: "TAP302517", key: "TAP302517", shape: "Tappered Bagguette", size: "3.00 x 2.50 x 1.75 mm", wt: 0.09, group: null },
+  { code: "TAP321005", key: "TAP321005", shape: "Tappered Bagguette", size: "3.25 x 1.00 x 0.50 mm", wt: 0.02, group: null },
+  { code: "TAP321207", key: "TAP321207", shape: "Tappered Bagguette", size: "3.25 x 1.25 x 0.75 mm", wt: 0.03, group: null },
+  { code: "TAP321210", key: "TAP321210", shape: "Tappered Bagguette", size: "3.25 x 1.25 x 1.00 mm", wt: 0.03, group: null },
+  { code: "TAP321507", key: "TAP321507", shape: "Tappered Bagguette", size: "3.25 x 1.50 x 0.75 mm", wt: 0.04, group: null },
+  { code: "TAP321510", key: "TAP321510", shape: "Tappered Bagguette", size: "3.25 x 1.50 x 1.00 mm", wt: 0.05, group: null },
+  { code: "TAP321512", key: "TAP321512", shape: "Tappered Bagguette", size: "3.25 x 1.50 x 1.25 mm", wt: 0.05, group: null },
+  { code: "TAP321710", key: "TAP321710", shape: "Tappered Bagguette", size: "3.25 x 1.75 x 1.00 mm", wt: 0.06, group: null },
+  { code: "TAP321712", key: "TAP321712", shape: "Tappered Bagguette", size: "3.25 x 1.75 x 1.25 mm", wt: 0.06, group: null },
+  { code: "TAP321715", key: "TAP321715", shape: "Tappered Bagguette", size: "3.25 x 1.75 x 1.50 mm", wt: 0.06, group: null },
+  { code: "TAP322010", key: "TAP322010", shape: "Tappered Bagguette", size: "3.25 x 2.00 x 1.00 mm", wt: 0.07, group: null },
+  { code: "TAP322012", key: "TAP322012", shape: "Tappered Bagguette", size: "3.25 x 2.00 x 1.25 mm", wt: 0.07, group: null },
+  { code: "TAP322015", key: "TAP322015", shape: "Tappered Bagguette", size: "3.25 x 2.00 x 1.50 mm", wt: 0.07, group: null },
+  { code: "TAP322517", key: "TAP322517", shape: "Tappered Bagguette", size: "3.25 x 2.50 x 1.75 mm", wt: 0.1, group: null },
+  { code: "TAP351210", key: "TAP351210", shape: "Tappered Bagguette", size: "3.50 x 1.25 x 1.00 mm", wt: 0.04, group: null },
+  { code: "TAP351510", key: "TAP351510", shape: "Tappered Bagguette", size: "3.50 x 1.50 x 1.00 mm", wt: 0.05, group: null },
+  { code: "TAP351512", key: "TAP351512", shape: "Tappered Bagguette", size: "3.50 x 1.50 x 1.25 mm", wt: 0.05, group: null },
+  { code: "TAP351710", key: "TAP351710", shape: "Tappered Bagguette", size: "3.50 x 1.75 x 1.00 mm", wt: 0.06, group: null },
+  { code: "TAP351712", key: "TAP351712", shape: "Tappered Bagguette", size: "3.50 x 1.75 x 1.25 mm", wt: 0.07, group: null },
+  { code: "TAP352010", key: "TAP352010", shape: "Tappered Bagguette", size: "3.50 x 2.00 x 1.00 mm", wt: 0.08, group: null },
+  { code: "TAP352012", key: "TAP352012", shape: "Tappered Bagguette", size: "3.50 x 2.00 x 1.25 mm", wt: 0.08, group: null },
+  { code: "TAP352015", key: "TAP352015", shape: "Tappered Bagguette", size: "3.50 x 2.00 x 1.50 mm", wt: 0.08, group: null },
+  { code: "TAP352515", key: "TAP352515", shape: "Tappered Bagguette", size: "3.50 x 2.50 x 1.50 mm", wt: 0.1, group: null },
+  { code: "TAP371210", key: "TAP371210", shape: "Tappered Bagguette", size: "3.75 x 1.25 x 1.00 mm", wt: 0.05, group: null },
+  { code: "TAP371510", key: "TAP371510", shape: "Tappered Bagguette", size: "3.75 x 1.50 x 1.00 mm", wt: 0.06, group: null },
+  { code: "TAP371712", key: "TAP371712", shape: "Tappered Bagguette", size: "3.75 x 1.75 x 1.25 mm", wt: 0.07, group: null },
+  { code: "TAP372012", key: "TAP372012", shape: "Tappered Bagguette", size: "3.75 x 2.00 x 1.25 mm", wt: 0.09, group: null },
+  { code: "TAP372015", key: "TAP372015", shape: "Tappered Bagguette", size: "3.75 x 2.00 x 1.50 mm", wt: 0.1, group: null },
+  { code: "TAP372217", key: "TAP372217", shape: "Tappered Bagguette", size: "3.75 x 2.25 x 1.75 mm", wt: 0.11, group: null },
+  { code: "TAP401210", key: "TAP401210", shape: "Tappered Bagguette", size: "4.00 x 1.25 x 1.00 mm", wt: 0.04, group: null },
+  { code: "TAP401510", key: "TAP401510", shape: "Tappered Bagguette", size: "4.00 x 1.50 x 1.00 mm", wt: 0.06, group: null },
+  { code: "TAP401712", key: "TAP401712", shape: "Tappered Bagguette", size: "4.00 x 1.75 x 1.25 mm", wt: 0.08, group: null },
+  { code: "TAP402010", key: "TAP402010", shape: "Tappered Bagguette", size: "4.00 x 2.00 x 1.00 mm", wt: 0.08, group: null },
+  { code: "TAP402015", key: "TAP402015", shape: "Tappered Bagguette", size: "4.00 x 2.00 x 1.50 mm", wt: 0.1, group: null },
+  { code: "TAP402515", key: "TAP402515", shape: "Tappered Bagguette", size: "4.00 x 2.50 x 1.50 mm", wt: 0.13, group: null },
+  { code: "TAP402517", key: "TAP402517", shape: "Tappered Bagguette", size: "4.00 x 2.50 x 1.75 mm", wt: 0.13, group: null },
+  { code: "TAP422015", key: "TAP422015", shape: "Tappered Bagguette", size: "4.25 x 2.00 x 1.50 mm", wt: 0.11, group: null },
+  { code: "TAP422215", key: "TAP422215", shape: "Tappered Bagguette", size: "4.25 x 2.25 x 1.50 mm", wt: 0.13, group: null },
+  { code: "TAP422515", key: "TAP422515", shape: "Tappered Bagguette", size: "4.25 x 2.50 x 1.50 mm", wt: 0.14, group: null },
+  { code: "TAP422717", key: "TAP422717", shape: "Tappered Bagguette", size: "4.25 x 2.75 x 1.75 mm", wt: 0.18, group: null },
+  { code: "TAP451512", key: "TAP451512", shape: "Tappered Bagguette", size: "4.50 x 1.50 x 1.25 mm", wt: 0.08, group: null },
+  { code: "TAP452010", key: "TAP452010", shape: "Tappered Bagguette", size: "4.50 x 2.00 x 1.00 mm", wt: 0.09, group: null },
+  { code: "TAP452015", key: "TAP452015", shape: "Tappered Bagguette", size: "4.50 x 2.00 x 1.50 mm", wt: 0.11, group: null },
+  { code: "TAP452215", key: "TAP452215", shape: "Tappered Bagguette", size: "4.50 x 2.25 x 1.50 mm", wt: 0.13, group: null },
+  { code: "TAP452515", key: "TAP452515", shape: "Tappered Bagguette", size: "4.50 x 2.50 x 1.50 mm", wt: 0.16, group: null },
+  { code: "TAP452517", key: "TAP452517", shape: "Tappered Bagguette", size: "4.50 x 2.50 x 1.75 mm", wt: 0.15, group: null },
+  { code: "TAP452717", key: "TAP452717", shape: "Tappered Bagguette", size: "4.50 x 2.75 x 1.75 mm", wt: 0.19, group: null },
+  { code: "TAP471715", key: "TAP471715", shape: "Tappered Bagguette", size: "4.75 x 1.75 x 1.50 mm", wt: 0.11, group: null },
+  { code: "TAP472015", key: "TAP472015", shape: "Tappered Bagguette", size: "4.75 x 2.00 x 1.50 mm", wt: 0.13, group: null },
+  { code: "TAP472515", key: "TAP472515", shape: "Tappered Bagguette", size: "4.75 x 2.50 x 1.50 mm", wt: 0.17, group: null },
+  { code: "TAP472520", key: "TAP472520", shape: "Tappered Bagguette", size: "4.75 x 2.50 x 2.00 mm", wt: 0.18, group: null },
+  { code: "TAP473020", key: "TAP473020", shape: "Tappered Bagguette", size: "4.75 x 3.00 x 2.00 mm", wt: 0.22, group: null },
+  { code: "TAP502212", key: "TAP502212", shape: "Tappered Bagguette", size: "5.00 x 2.25 x 1.25 mm", wt: 0.13, group: null },
+  { code: "TAP502217", key: "TAP502217", shape: "Tappered Bagguette", size: "5.00 x 2.25 x 1.75 mm", wt: 0.16, group: null },
+  { code: "TAP502720", key: "TAP502720", shape: "Tappered Bagguette", size: "5.00 x 2.75 x 2.00 mm", wt: 0.23, group: null },
+  { code: "TAP552510", key: "TAP552510", shape: "Tappered Bagguette", size: "5.50 x 2.50 x 1.00 mm", wt: 0.17, group: null },
+  { code: "TAP552522", key: "TAP552522", shape: "Tappered Bagguette", size: "5.50 x 2.50 x 2.25 mm", wt: 0.23, group: null },
+  { code: "TAP553022", key: "TAP553022", shape: "Tappered Bagguette", size: "5.50 x 3.00 x 2.25 mm", wt: 0.3, group: null },
+  { code: "TAP602015", key: "TAP602015", shape: "Tappered Bagguette", size: "6.00 x 2.00 x 1.50 mm", wt: 0.18, group: null },
+  { code: "TAP603022", key: "TAP603022", shape: "Tappered Bagguette", size: "6.00 x 3.00 x 2.25 mm", wt: 0.28, group: null },
+  { code: "TRG030W", key: "TRG030W", shape: "Triangle", size: "5.00 x 5.00 x 5.00 mm", wt: 0.3, group: null },
+  { code: "TRG040W", key: "TRG040W", shape: "Triangle", size: "5.50 x 5.50 x 5.50 mm", wt: 0.37, group: null },
+  { code: "TRG25M", key: "TRG25M", shape: "Triangle", size: "2.50 x 2.50 x 2.50 mm", wt: 0.04, group: null },
+  { code: "TRG30M", key: "TRG30M", shape: "Triangle", size: "3.00 x 3.00 x 3.00 mm", wt: 0.09, group: null },
+  { code: "TRG35M", key: "TRG35M", shape: "Triangle", size: "3.50 x 3.50 x 3.50 mm", wt: 0.12, group: null },
+  { code: "TRG40M", key: "TRG40M", shape: "Triangle", size: "4.00 x 4.00 x 4.00 mm", wt: 0.15, group: null },
+  { code: "TRG45M", key: "TRG45M", shape: "Triangle", size: "4.50 x 4.50 x 4.50 mm", wt: 0.22, group: null },
+  { code: "TRN011W", key: "TRN011W", shape: "Trilliant", size: "3.3~3.6 mm", wt: 0.1, group: null },
+  { code: "TRN014W", key: "TRN014W", shape: "Trilliant", size: "3.7~3.9 mm", wt: 0.15, group: null },
+  { code: "TRN020W", key: "TRN020W", shape: "Trilliant", size: "4.0~4.2 mm", wt: 0.2, group: null },
+  { code: "TRN025W", key: "TRN025W", shape: "Trilliant", size: "4.30~4.4 mm", wt: 0.25, group: null },
+  { code: "TRN030W", key: "TRN030W", shape: "Trilliant", size: "4.5~5.0 mm", wt: 0.33, group: null },
+  { code: "TRN040W", key: "TRN040W", shape: "Trilliant", size: "5.5~5.8 mm", wt: 0.4, group: null },
 ];
 
 // DiaSSP: $/ct grid by group code and clarity grade. INFERRED row-group
@@ -726,7 +1250,7 @@ const fmt = (n, dp = 2) =>
 const fmtCurrency = (n, dp = 2) => "$" + fmt(n, dp);
 
 function emptyRow() {
-  return { mode: "natural", sizeCode: "", quality: "TW SI1", lgdGrade: "Non-cert", lgdShape: "RND", pcs: "", customShape: "", customWt: "", customRate: "" };
+  return { mode: "natural", shapeSel: "", sizeCode: "", quality: "TW SI1", lgdGrade: "Non-cert", lgdShape: "RND", pcs: "", customShape: "", customWt: "", customRate: "", manualRate: "" };
 }
 
 // SSP price cipher (JADELIGHTX): letters encode digits so overseas offices
@@ -782,7 +1306,7 @@ export default function JwyCalculator() {
   const [rows, setRows] = useState(Array.from({ length: 12 }, emptyRow));
   const [savedQuotes, setSavedQuotes] = useState(() => {
     try {
-      return JSON.parse(__memStore.getItem("jwyQuotes") || "[]");
+      return JSON.parse(window.__jwyMemStore.getItem("jwyQuotes") || "[]");
     } catch {
       return [];
     }
@@ -876,12 +1400,14 @@ export default function JwyCalculator() {
       }
       const { jobInfo: ji, metals, metalWarnings, stones } = result.data;
 
-      // Apply job info.
+      // Apply job info. There's no true customer-name field on the card,
+      // so we leave Customer untouched rather than stuffing Style code
+      // into a field labeled "Customer name" -- job identifiers are
+      // shown correctly labeled in the import review panel instead.
       setJobInfo((prev) => ({
         ...prev,
         designer: ji.designer || prev.designer,
         jobNo: ji.jobNo || prev.jobNo,
-        customer: ji.styleCode || prev.customer, // style code is the closest stable id
       }));
 
       // Apply metals (already weight-sorted: primary = heavier).
@@ -904,6 +1430,7 @@ export default function JwyCalculator() {
       stones.slice(0, 12).forEach((s, i) => {
         newRows[i] = {
           mode: s.diamondMode || "natural",
+          shapeSel: s.isCustom ? CUSTOM_CODE : s.matchedShape || "",
           sizeCode: s.isCustom ? CUSTOM_CODE : s.sizeCode || "",
           quality: "TW SI1",
           lgdGrade: "Non-cert",
@@ -912,12 +1439,14 @@ export default function JwyCalculator() {
           customShape: s.customShape || "",
           customWt: s.customWt ? String(s.customWt) : "",
           customRate: "",
+          manualRate: "",
         };
       });
       setRows(newRows);
 
       setPdfImport({
         fileName: file.name,
+        jobInfo: ji,
         metalWarnings,
         metals,
         stones,
@@ -942,7 +1471,7 @@ export default function JwyCalculator() {
   const persistQuotes = (list) => {
     setSavedQuotes(list);
     try {
-      __memStore.setItem("jwyQuotes", JSON.stringify(list));
+      window.__jwyMemStore.setItem("jwyQuotes", JSON.stringify(list));
     } catch {}
   };
 
@@ -977,7 +1506,26 @@ export default function JwyCalculator() {
     persistQuotes(savedQuotes.filter((s) => s.id !== id));
   };
 
-  const metalRates = liveData.metalRates;
+  // Manual metal-rate override: if the live sheet ever drops (network
+  // issue, sheet unpublished, anything), the person quoting should never
+  // be stuck silently working off stale bundled sample numbers without
+  // knowing it. Turning this on lets them type in today's actual rates
+  // directly, which take priority over both live and sample data for as
+  // long as it's on -- so the calculator keeps producing real quotes
+  // regardless of what the sheet is doing.
+  const [manualRatesOn, setManualRatesOn] = useState(false);
+  const [manualRates, setManualRates] = useState(SAMPLE_METAL_RATES);
+
+  const metalRates = manualRatesOn ? manualRates : liveData.metalRates;
+  const toggleManualRates = () => {
+    if (!manualRatesOn) {
+      // Starting manual mode: pre-fill with whatever's currently showing
+      // (live if connected, sample otherwise) so the person edits from a
+      // sensible baseline instead of a blank form.
+      setManualRates(liveData.metalRates);
+    }
+    setManualRatesOn(!manualRatesOn);
+  };
   const alloyList = liveData.alloys;
   const currencyRates = liveData.currencyRates;
   const locationList = liveData.locations;
@@ -1009,19 +1557,34 @@ export default function JwyCalculator() {
           total: totalWt * perCt,
           settingTotal,
           settingType: tier.type,
+          priceEditable: true,
         };
       }
-      const sizeEntry = DIA_SIZE.find((d) => d.code === row.sizeCode);
+      const sizeEntry = DIA_SIZE.find((d) => d.key === row.sizeCode);
       if (!sizeEntry || pcs <= 0) {
-        return { shape: "", size: "", wtPerPc: 0, totalWt: 0, perCt: 0, total: 0, settingTotal: 0, settingType: "PER PC" };
+        return { shape: "", size: "", wtPerPc: 0, totalWt: 0, perCt: 0, total: 0, settingTotal: 0, settingType: "PER PC", priceEditable: false };
       }
       const totalWt = sizeEntry.wt * pcs;
+      const isNatural = (row.mode || "natural") === "natural";
 
       let perCt = 0;
-      if ((row.mode || "natural") === "natural") {
-        const grid = DIA_SSP[sizeEntry.group];
-        perCt = grid?.[row.quality] || 0;
+      let priceEditable = false;
+      if (isNatural) {
+        if (sizeEntry.group) {
+          // Round natural: priced from the DiaSSP grid.
+          const grid = DIA_SSP[sizeEntry.group];
+          perCt = grid?.[row.quality] || 0;
+        } else {
+          // Fancy natural: no DiaSSP price for this shape yet. The rate
+          // is a manually-entered value on this row, same mechanism as
+          // a custom row, but the shape/size stay catalog-matched.
+          perCt = parseFloat(row.manualRate) || 0;
+          priceEditable = true;
+        }
       } else {
+        // LGD prices from the FANCY/ODD/cert bands regardless of
+        // whether the matched size entry has a DiaSSP group -- LGD
+        // pricing never depends on that grid.
         const wtPerPc = sizeEntry.wt;
         if (wtPerPc < 0.01 || row.lgdGrade === "Non-cert") {
           const band = LGD_NONCERT.find((b) => wtPerPc >= b.minCt && wtPerPc <= b.maxCt);
@@ -1051,6 +1614,7 @@ export default function JwyCalculator() {
         total,
         settingTotal,
         settingType: tier.type,
+        priceEditable,
       };
     });
   }, [rows, settingTiersLive]);
@@ -1147,6 +1711,10 @@ export default function JwyCalculator() {
           metalRates={metalRates}
           totalGramWt={totalGramWt}
           lastSync={lastSync}
+          manualRatesOn={manualRatesOn}
+          onToggleManual={toggleManualRates}
+          manualRates={manualRates}
+          setManualRates={setManualRates}
         />
 
         <div style={styles.grid2}>
@@ -1168,6 +1736,8 @@ export default function JwyCalculator() {
           />
         </div>
 
+        <StoneGrid rows={rows} updateRow={updateRow} rowCalcs={rowCalcs} totals={totals} />
+
         <QuotesToolbar
           savedQuotes={savedQuotes}
           onSave={saveQuote}
@@ -1175,8 +1745,6 @@ export default function JwyCalculator() {
           onDelete={deleteQuote}
           onPrint={doPrint}
         />
-
-        <StoneGrid rows={rows} updateRow={updateRow} rowCalcs={rowCalcs} totals={totals} />
 
         <BreakupSummary
           casting={casting}
@@ -1354,12 +1922,15 @@ function PdfImportReview({ pdfImport }) {
       </div>
     );
   }
-  const { metals, metalWarnings, stones } = pdfImport;
+  const { jobInfo: ji, metals, metalWarnings, stones } = pdfImport;
   const flagged = stones.filter((s) => s.flag);
   return (
     <div style={{ ...styles.card, borderColor: "#C9A35C", borderWidth: 1 }}>
       <SectionLabel eyebrow="↓" title="Imported from CAD card — review" />
       <div style={styles.importMetaRow}>
+        {ji && ji.jobNo && <span style={styles.importChip}>Job {ji.jobNo}</span>}
+        {ji && ji.styleCode && <span style={styles.importChip}>Style/SKU {ji.styleCode}</span>}
+        {ji && ji.itemNo && <span style={styles.importChip}>Item {ji.itemNo}</span>}
         {metals.primary && (
           <span style={styles.importChip}>
             Primary: {metals.primary.short} · {fmt(metals.primary.wt, 2)}g
@@ -1484,17 +2055,44 @@ function JobInfoCard({ jobInfo, setJobInfo, location, setLocation, locationList,
   );
 }
 
-function RatesStatusCard({ tableSources, rateLoading, rateErrors, refreshRates, metalRates, totalGramWt, lastSync }) {
+function RatesStatusCard({
+  tableSources,
+  rateLoading,
+  rateErrors,
+  refreshRates,
+  metalRates,
+  totalGramWt,
+  lastSync,
+  manualRatesOn,
+  onToggleManual,
+  manualRates,
+  setManualRates,
+}) {
   const allLive = Object.values(tableSources).every((s) => s === "live");
   const anyLive = Object.values(tableSources).some((s) => s === "live");
   const errorList = Object.entries(rateErrors || {}).filter(([, v]) => v);
+
+  const updateManualMetal = (code, field, value) => {
+    setManualRates((prev) => ({
+      ...prev,
+      [code]: { ...prev[code], [field]: field === "label" || field === "asOf" ? value : parseFloat(value) || 0 },
+    }));
+  };
+
   return (
     <div style={styles.card}>
       <div style={styles.rowBetween}>
         <SectionLabel eyebrow="02" title="Live data sync" />
         <div style={styles.rateStatus}>
-          <span style={{ ...styles.dot, background: allLive ? "#3F8F5F" : anyLive ? "#B5651D" : "#9B8088" }} />
-          {rateLoading
+          <span
+            style={{
+              ...styles.dot,
+              background: manualRatesOn ? "#3B6EA8" : allLive ? "#3F8F5F" : anyLive ? "#B5651D" : "#9B8088",
+            }}
+          />
+          {manualRatesOn
+            ? "Metal rates entered manually"
+            : rateLoading
             ? "Syncing…"
             : allLive
             ? "All sheets connected"
@@ -1514,15 +2112,33 @@ function RatesStatusCard({ tableSources, rateLoading, rateErrors, refreshRates, 
         ))}
       </div>
       {lastSync && <div style={styles.syncNote}>Last synced {lastSync.toLocaleTimeString()}</div>}
-      {errorList.length > 0 && (
+      {errorList.length > 0 && !manualRatesOn && (
         <div style={styles.warnBanner}>
           {errorList.map(([k, v]) => (
             <div key={k}>
               {k}: {v === "not configured" ? "no sheet URL set in config.js, using bundled sample data" : v}
             </div>
           ))}
+          {tableSources.metalRates !== "live" && (
+            <div style={{ marginTop: 6 }}>
+              Metal rates aren't live right now — use "Enter rates manually" below so quotes keep using real
+              numbers instead of the bundled sample data.
+            </div>
+          )}
         </div>
       )}
+
+      <div style={styles.rowBetween}>
+        <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 600 }}>Precious metal rates</span>
+        <button
+          style={{ ...styles.smallBtn, ...(manualRatesOn ? styles.toggleBtnActive : {}) }}
+          onClick={onToggleManual}
+          type="button"
+        >
+          {manualRatesOn ? "Back to live/sample" : "Enter rates manually"}
+        </button>
+      </div>
+
       <table style={styles.table}>
         <thead>
           <tr style={styles.theadRow}>
@@ -1530,19 +2146,67 @@ function RatesStatusCard({ tableSources, rateLoading, rateErrors, refreshRates, 
             <th style={styles.th}>As on</th>
             <th style={styles.thRight}>PM rate/oz</th>
             <th style={styles.thRight}>Spot rate/oz</th>
+            {manualRatesOn && <th style={styles.thRight}>Wastage</th>}
           </tr>
         </thead>
         <tbody>
-          {Object.entries(metalRates).map(([code, r]) => (
-            <tr key={code} style={styles.tr}>
-              <td style={styles.td}>{r.label || code}</td>
-              <td style={{ ...styles.td, color: "var(--muted)" }}>{r.asOf}</td>
-              <td style={styles.tdRight}>{fmtCurrency(r.pmRateOz)}</td>
-              <td style={styles.tdRight}>{fmtCurrency(r.spotOz)}</td>
-            </tr>
-          ))}
+          {manualRatesOn
+            ? Object.entries(manualRates).map(([code, r]) => (
+                <tr key={code} style={styles.tr}>
+                  <td style={styles.td}>{r.label || code}</td>
+                  <td style={styles.td}>
+                    <input
+                      style={{ ...styles.inputSm, width: 110 }}
+                      value={r.asOf || ""}
+                      placeholder="e.g. today's date"
+                      onChange={(e) => updateManualMetal(code, "asOf", e.target.value)}
+                    />
+                  </td>
+                  <td style={styles.tdRight}>
+                    <input
+                      style={{ ...styles.inputSm, width: 80, textAlign: "right" }}
+                      type="number"
+                      step="0.01"
+                      value={r.pmRateOz}
+                      onChange={(e) => updateManualMetal(code, "pmRateOz", e.target.value)}
+                    />
+                  </td>
+                  <td style={styles.tdRight}>
+                    <input
+                      style={{ ...styles.inputSm, width: 80, textAlign: "right" }}
+                      type="number"
+                      step="0.01"
+                      value={r.spotOz}
+                      onChange={(e) => updateManualMetal(code, "spotOz", e.target.value)}
+                    />
+                  </td>
+                  <td style={styles.tdRight}>
+                    <input
+                      style={{ ...styles.inputSm, width: 60, textAlign: "right" }}
+                      type="number"
+                      step="0.001"
+                      value={r.wastage}
+                      onChange={(e) => updateManualMetal(code, "wastage", e.target.value)}
+                    />
+                  </td>
+                </tr>
+              ))
+            : Object.entries(metalRates).map(([code, r]) => (
+                <tr key={code} style={styles.tr}>
+                  <td style={styles.td}>{r.label || code}</td>
+                  <td style={{ ...styles.td, color: "var(--muted)" }}>{r.asOf}</td>
+                  <td style={styles.tdRight}>{fmtCurrency(r.pmRateOz)}</td>
+                  <td style={styles.tdRight}>{fmtCurrency(r.spotOz)}</td>
+                </tr>
+              ))}
         </tbody>
       </table>
+      {manualRatesOn && (
+        <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 6 }}>
+          These values are used for every casting calculation while manual mode is on. Switching back to
+          "live/sample" discards them — re-enter if you turn manual mode on again later.
+        </div>
+      )}
       <div style={styles.totalGramNote}>Total gram weight: {fmt(totalGramWt, 3)} g</div>
     </div>
   );
@@ -1580,7 +2244,7 @@ function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint }) {
   const [selected, setSelected] = useState("");
   return (
     <div style={{ ...styles.card, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-      <SectionLabel eyebrow="03" title="Quotes" noMargin />
+      <SectionLabel eyebrow="04" title="Quotes" noMargin />
       <button style={styles.toggleBtn} onClick={onSave} type="button">
         Save current quote
       </button>
@@ -1633,15 +2297,15 @@ function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint }) {
 function StoneGrid({ rows, updateRow, rowCalcs, totals }) {
   return (
     <div style={styles.card}>
-      <SectionLabel eyebrow="04" title="Stone schedule" />
+      <SectionLabel eyebrow="03" title="Stone schedule" />
       <div style={{ overflowX: "auto" }}>
         <table style={styles.table}>
           <thead>
             <tr style={styles.theadRow}>
               <th style={styles.th}>Pos</th>
               <th style={styles.th}>Type</th>
-              <th style={styles.th}>Size</th>
               <th style={styles.th}>Shape</th>
+              <th style={styles.th}>Size</th>
               <th style={styles.th}>Spec</th>
               <th style={styles.th}>Quality</th>
               <th style={styles.thRight}>Wt/pc</th>
@@ -1675,28 +2339,54 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals }) {
                   <td style={styles.td}>
                     <select
                       style={styles.inputSm}
-                      value={row.sizeCode}
-                      onChange={(e) => updateRow(i, { sizeCode: e.target.value })}
+                      value={row.shapeSel || ""}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === CUSTOM_CODE) {
+                          updateRow(i, { shapeSel: CUSTOM_CODE, sizeCode: CUSTOM_CODE });
+                        } else {
+                          updateRow(i, { shapeSel: val, sizeCode: "", customShape: "", customWt: "", customRate: "" });
+                        }
+                      }}
                     >
-                      <option value="">Select size</option>
+                      <option value="">Select shape</option>
+                      {SHAPE_ORDER.map((shapeName) => {
+                        const hasEntries = DIA_SIZE.some((d) => d.shape === shapeName);
+                        if (!hasEntries) return null;
+                        return (
+                          <option key={shapeName} value={shapeName}>
+                            {shapeName}
+                          </option>
+                        );
+                      })}
                       <option value={CUSTOM_CODE}>Custom entry…</option>
-                      {DIA_SIZE.map((d) => (
-                        <option key={d.code} value={d.code}>
-                          {d.code}
-                        </option>
-                      ))}
                     </select>
                   </td>
                   <td style={styles.td}>
-                    {row.sizeCode === CUSTOM_CODE ? (
+                    {!row.shapeSel ? (
+                      <select style={styles.inputSm} disabled>
+                        <option>Select shape first</option>
+                      </select>
+                    ) : row.shapeSel === CUSTOM_CODE ? (
                       <input
-                        style={{ ...styles.inputSm, width: 80 }}
-                        placeholder="Shape"
+                        style={{ ...styles.inputSm, width: 90 }}
+                        placeholder="Describe shape/size"
                         value={row.customShape}
                         onChange={(e) => updateRow(i, { customShape: e.target.value })}
                       />
                     ) : (
-                      calc.shape
+                      <select
+                        style={styles.inputSm}
+                        value={row.sizeCode}
+                        onChange={(e) => updateRow(i, { sizeCode: e.target.value })}
+                      >
+                        <option value="">Select size</option>
+                        {DIA_SIZE.filter((d) => d.shape === row.shapeSel).map((d) => (
+                          <option key={d.key} value={d.key}>
+                            {d.code} · {d.size} ({d.wt}ct)
+                          </option>
+                        ))}
+                      </select>
                     )}
                   </td>
                   <td style={{ ...styles.td, fontSize: 12, color: "var(--muted)" }}>{calc.size}</td>
@@ -1773,6 +2463,15 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals }) {
                         placeholder="$/ct"
                         value={row.customRate}
                         onChange={(e) => updateRow(i, { customRate: e.target.value })}
+                      />
+                    ) : calc.priceEditable ? (
+                      <input
+                        style={{ ...styles.inputSm, width: 66, textAlign: "right", background: "#FDF6E8", borderColor: "#EAD9A8" }}
+                        type="number"
+                        step="1"
+                        placeholder="enter $/ct"
+                        value={row.manualRate}
+                        onChange={(e) => updateRow(i, { manualRate: e.target.value })}
                       />
                     ) : (
                       fmtCurrency(calc.perCt)
