@@ -58,6 +58,29 @@ const num = (v, fallback = 0) => {
   return isFinite(n) ? n : fallback;
 };
 
+// Normalizes a header for comparison: lowercase, strip everything that
+// isn't a letter or digit. This makes "PM Rate/Oz", "pm_rate_oz", and
+// "pmRateOz" all match the same alias -- people naturally paste in
+// whatever headers their existing sheet already uses.
+function normHeader(h) {
+  return String(h).toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+// Finds the first column in a row whose header matches any of the given
+// aliases (order = priority). Both the app's own short names (metal,
+// pmRateOz...) and real-world sheet headers (Metal Type, PM Rate/Oz...)
+// are listed as aliases so either naming style works without the user
+// renaming their columns.
+function pick(row, aliases) {
+  const keys = Object.keys(row);
+  const normKeys = keys.map(normHeader);
+  for (const alias of aliases) {
+    const idx = normKeys.indexOf(normHeader(alias));
+    if (idx !== -1) return row[keys[idx]];
+  }
+  return undefined;
+}
+
 async function fetchCsvObjects(url) {
   if (!url) return null;
   const res = await fetch(url, { cache: "no-store" });
@@ -68,20 +91,22 @@ async function fetchCsvObjects(url) {
 
 /* ============================================================
    Per-tab transformers: raw CSV rows -> the shape the calculator
-   engine expects.
+   engine expects. Each field lists both the plain template header
+   and the real MetalMaster/Master-sheet header it may appear as.
    ============================================================ */
 
 function transformMetalRates(rawRows) {
   const out = {};
   for (const r of rawRows) {
-    if (!r.metal) continue;
-    out[r.metal.trim().toUpperCase()] = {
-      label: r.label || r.metal,
-      pmRateOz: num(r.pmRateOz),
-      spotOz: num(r.spotOz),
-      spotSurcharge: num(r.spotSurcharge, 1.05),
-      wastage: num(r.wastage, 1),
-      asOf: r.asOf || "",
+    const metal = pick(r, ["metal", "Metal Type"]);
+    if (!metal) continue;
+    out[metal.trim().toUpperCase()] = {
+      label: pick(r, ["label", "Rate Type"]) || metal,
+      pmRateOz: num(pick(r, ["pmRateOz", "PM Rate/Oz", "PM Rate Oz"])),
+      spotOz: num(pick(r, ["spotOz", "SpotRate", "Spot Rate"])),
+      spotSurcharge: num(pick(r, ["spotSurcharge", "SpotSurcharge", "Spot Surcharge"]), 1.05),
+      wastage: num(pick(r, ["wastage", "Wastage"]), 1),
+      asOf: pick(r, ["asOf", "PM Rate As On", "Rate As On"]) || "",
     };
   }
   return out;
@@ -89,44 +114,91 @@ function transformMetalRates(rawRows) {
 
 function transformAlloys(rawRows) {
   return rawRows
-    .filter((r) => r.short)
-    .map((r) => ({
-      name: r.name || r.short,
-      short: r.short.trim(),
-      sg: num(r.sg),
-      purity: num(r.purity),
-      metal: (r.metal || "").trim().toUpperCase(),
-      castingGm: num(r.castingGm),
-      surchargeGm: num(r.surchargeGm),
-    }));
+    .map((r) => {
+      const short = pick(r, ["short", "Alloy Short Name"]);
+      if (!short) return null;
+      return {
+        name: pick(r, ["name", "Alloy Name"]) || short,
+        short: short.trim(),
+        sg: num(pick(r, ["sg", "Specific Gravity"])),
+        purity: num(pick(r, ["purity", "Purity"])),
+        metal: (pick(r, ["metal", "Metal Type"]) || "").trim().toUpperCase(),
+        castingGm: num(pick(r, ["castingGm", "Casting/Gm", "Casting Gm"])),
+        surchargeGm: num(pick(r, ["surchargeGm", "Surcharge/Gm", "Surcharge Gm"])),
+      };
+    })
+    .filter(Boolean);
 }
 
 function transformCurrencyRates(rawRows) {
   const out = {};
   let markup = 1.05;
   for (const r of rawRows) {
-    if (!r.currency) continue;
-    out[r.currency.trim().toUpperCase()] = num(r.rateToUSD, 1);
-    if (r.markup) markup = num(r.markup, markup);
+    // Template layout: currency, rateToUSD, markup
+    // Original "Other Master" layout: USD | to | <currency> | <rate> | <rate*markup>
+    let currency = pick(r, ["currency"]);
+    let rate = pick(r, ["rateToUSD"]);
+    let mk = pick(r, ["markup"]);
+    if (!currency) {
+      // Fall back to positional original layout (3rd column = currency
+      // code, 4th = raw rate, 5th = rate with markup already applied).
+      const vals = Object.values(r);
+      if (vals.length >= 4) {
+        currency = vals[2];
+        rate = vals[3];
+        if (vals.length >= 5 && num(vals[3]) > 0) {
+          mk = num(vals[4]) / num(vals[3]);
+        }
+      }
+    }
+    if (!currency) continue;
+    out[String(currency).trim().toUpperCase()] = num(rate, 1);
+    if (mk) markup = num(mk, markup);
   }
   return { rates: out, markup };
 }
 
 function transformLocations(rawRows) {
   return rawRows
-    .filter((r) => r.code)
-    .map((r) => ({
-      code: r.code.trim(),
-      currency: (r.currency || "USD").trim().toUpperCase(),
-      duty: num(r.duty),
-    }));
+    .map((r) => {
+      const code = pick(r, ["code", "Loc"]);
+      if (!code) return null;
+      const dutyRaw = pick(r, ["duty", "Duty%", "Duty"]);
+      let duty = num(dutyRaw);
+      // "5.00%" style values: if it parses >1 assume it was a percent.
+      if (duty > 1) duty = duty / 100;
+      return {
+        code: code.trim(),
+        currency: (pick(r, ["currency", "Currency"]) || "USD").trim().toUpperCase(),
+        duty,
+      };
+    })
+    .filter(Boolean);
 }
 
 function transformCadFeesAndLabor(rawRows) {
   const map = {};
   for (const r of rawRows) {
-    if (!r.key) continue;
-    map[r.key.trim()] = num(r.value);
+    const key = pick(r, ["key"]);
+    const value = pick(r, ["value"]);
+    if (key) {
+      map[key.trim()] = num(value);
+      continue;
+    }
+    // Original layout has no "key" column -- it's a label + blanks +
+    // value row, e.g. "Labor charges per gm | | | $22.00 /gm". Match by
+    // the label text in the first non-empty cell instead.
+    const cells = Object.values(r).map((v) => (v || "").trim());
+    const labelCell = cells.find((c) => c) || "";
+    const valueCell = [...cells].reverse().find((c) => c) || "";
+    const l = labelCell.toLowerCase();
+    if (l.includes("labor") && l.includes("per gm")) map.laborPerGm = num(valueCell);
+    else if (l.includes("minimum labor")) map.laborMinFlat = num(valueCell);
+    else if (l === "none") map.cadNone = num(valueCell);
+    else if (l === "simple") map.cadSimple = num(valueCell);
+    else if (l === "medium") map.cadMedium = num(valueCell);
+    else if (l === "complex") map.cadComplex = num(valueCell);
+    else if (l === "advanced") map.cadAdvanced = num(valueCell);
   }
   return {
     laborPerGm: map.laborPerGm ?? 22.0,
@@ -143,12 +215,16 @@ function transformCadFeesAndLabor(rawRows) {
 
 function transformSettingTiers(rawRows) {
   return rawRows
-    .filter((r) => r.uptoCt)
-    .map((r) => ({
-      uptoCt: num(r.uptoCt),
-      rate: num(r.rate),
-      type: (r.type || "PER PC").trim(),
-    }))
+    .map((r) => {
+      const uptoRaw = pick(r, ["uptoCt", "Upto Ct Wt/Pc", "Upto Ct"]);
+      if (!uptoRaw) return null;
+      return {
+        uptoCt: num(uptoRaw),
+        rate: num(pick(r, ["rate", "Rate"])),
+        type: (pick(r, ["type", "Rate Type"]) || "PER PC").trim(),
+      };
+    })
+    .filter(Boolean)
     .sort((a, b) => a.uptoCt - b.uptoCt);
 }
 
