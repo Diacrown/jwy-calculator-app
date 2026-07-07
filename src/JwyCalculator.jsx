@@ -1,7 +1,529 @@
 import { useState, useMemo, useCallback, useEffect } from "react";
-import { fetchLiveSheetData } from "./sheetData.js";
-import { POLL_INTERVAL_MS } from "./config.js";
-import { parseOrderFormPdf } from "./pdfParser.js";
+
+const __memStore = { _d: {}, getItem(k){ return k in this._d ? this._d[k] : null; }, setItem(k,v){ this._d[k]=String(v); } };
+
+/* config */
+// Paste your six published-CSV URLs here after building the sheet per
+// SHEET_SPEC.md. Each is File > Share > Publish to web > select tab >
+// CSV > Publish > copy URL. Leave any blank to fall back to the bundled
+// sample data for that table (useful for local dev before the sheet
+// exists, or if you intentionally want a table to stay code-managed).
+//
+// Once all six are filled in, the app needs zero human interaction to
+// stay current -- it polls these URLs on an interval and recalculates.
+
+const SHEET_URLS = {
+  metalRates: "", // Tab 1: MetalRates
+  alloys: "", // Tab 2: Alloys
+  currencyRates: "", // Tab 3: CurrencyRates
+  locations: "", // Tab 4: Locations
+  cadFeesAndLabor: "", // Tab 5: CadFeesAndLabor
+  settingTiers: "", // Tab 6: SettingTiers
+};
+
+// How often (ms) the app re-fetches all six sheets while open.
+const POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+
+/* sheetData */
+
+
+/* ============================================================
+   Minimal CSV parser. Handles quoted fields with embedded commas,
+   which Google's published-CSV export can produce for labels/names.
+   ============================================================ */
+function parseCsv(text) {
+  const rows = [];
+  let row = [];
+  let field = "";
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    const next = text[i + 1];
+    if (inQuotes) {
+      if (c === '"' && next === '"') {
+        field += '"';
+        i++;
+      } else if (c === '"') {
+        inQuotes = false;
+      } else {
+        field += c;
+      }
+    } else if (c === '"') {
+      inQuotes = true;
+    } else if (c === ",") {
+      row.push(field);
+      field = "";
+    } else if (c === "\n" || c === "\r") {
+      if (c === "\r" && next === "\n") i++;
+      row.push(field);
+      rows.push(row);
+      row = [];
+      field = "";
+    } else {
+      field += c;
+    }
+  }
+  if (field.length || row.length) {
+    row.push(field);
+    rows.push(row);
+  }
+  return rows.filter((r) => r.some((cell) => cell.trim() !== ""));
+}
+
+function rowsToObjects(rows) {
+  if (rows.length < 2) return [];
+  const headers = rows[0].map((h) => h.trim());
+  return rows.slice(1).map((r) => {
+    const obj = {};
+    headers.forEach((h, i) => (obj[h] = (r[i] ?? "").trim()));
+    return obj;
+  });
+}
+
+const num = (v, fallback = 0) => {
+  const n = parseFloat(v);
+  return isFinite(n) ? n : fallback;
+};
+
+async function fetchCsvObjects(url) {
+  if (!url) return null;
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) throw new Error("Sheet fetch failed: " + res.status + " (" + url + ")");
+  const text = await res.text();
+  return rowsToObjects(parseCsv(text));
+}
+
+/* ============================================================
+   Per-tab transformers: raw CSV rows -> the shape the calculator
+   engine expects.
+   ============================================================ */
+
+function transformMetalRates(rawRows) {
+  const out = {};
+  for (const r of rawRows) {
+    if (!r.metal) continue;
+    out[r.metal.trim().toUpperCase()] = {
+      label: r.label || r.metal,
+      pmRateOz: num(r.pmRateOz),
+      spotOz: num(r.spotOz),
+      spotSurcharge: num(r.spotSurcharge, 1.05),
+      wastage: num(r.wastage, 1),
+      asOf: r.asOf || "",
+    };
+  }
+  return out;
+}
+
+function transformAlloys(rawRows) {
+  return rawRows
+    .filter((r) => r.short)
+    .map((r) => ({
+      name: r.name || r.short,
+      short: r.short.trim(),
+      sg: num(r.sg),
+      purity: num(r.purity),
+      metal: (r.metal || "").trim().toUpperCase(),
+      castingGm: num(r.castingGm),
+      surchargeGm: num(r.surchargeGm),
+    }));
+}
+
+function transformCurrencyRates(rawRows) {
+  const out = {};
+  let markup = 1.05;
+  for (const r of rawRows) {
+    if (!r.currency) continue;
+    out[r.currency.trim().toUpperCase()] = num(r.rateToUSD, 1);
+    if (r.markup) markup = num(r.markup, markup);
+  }
+  return { rates: out, markup };
+}
+
+function transformLocations(rawRows) {
+  return rawRows
+    .filter((r) => r.code)
+    .map((r) => ({
+      code: r.code.trim(),
+      currency: (r.currency || "USD").trim().toUpperCase(),
+      duty: num(r.duty),
+    }));
+}
+
+function transformCadFeesAndLabor(rawRows) {
+  const map = {};
+  for (const r of rawRows) {
+    if (!r.key) continue;
+    map[r.key.trim()] = num(r.value);
+  }
+  return {
+    laborPerGm: map.laborPerGm ?? 22.0,
+    laborMinFlat: map.laborMinFlat ?? 55.0,
+    cadFees: {
+      None: map.cadNone ?? 0,
+      Simple: map.cadSimple ?? 50,
+      Medium: map.cadMedium ?? 75,
+      Complex: map.cadComplex ?? 100,
+      Advanced: map.cadAdvanced ?? 200,
+    },
+  };
+}
+
+function transformSettingTiers(rawRows) {
+  return rawRows
+    .filter((r) => r.uptoCt)
+    .map((r) => ({
+      uptoCt: num(r.uptoCt),
+      rate: num(r.rate),
+      type: (r.type || "PER PC").trim(),
+    }))
+    .sort((a, b) => a.uptoCt - b.uptoCt);
+}
+
+/* ============================================================
+   Public entry point: fetch all six tabs in parallel. Any tab
+   whose URL is blank, or whose fetch fails, is reported but does
+   not block the others -- the caller decides how to fall back.
+   ============================================================ */
+
+async function fetchLiveSheetData() {
+  const specs = [
+    { key: "metalRates", url: SHEET_URLS.metalRates, transform: transformMetalRates },
+    { key: "alloys", url: SHEET_URLS.alloys, transform: transformAlloys },
+    { key: "currencyRates", url: SHEET_URLS.currencyRates, transform: transformCurrencyRates },
+    { key: "locations", url: SHEET_URLS.locations, transform: transformLocations },
+    { key: "cadFeesAndLabor", url: SHEET_URLS.cadFeesAndLabor, transform: transformCadFeesAndLabor },
+    { key: "settingTiers", url: SHEET_URLS.settingTiers, transform: transformSettingTiers },
+  ];
+
+  const results = {};
+  const errors = {};
+
+  await Promise.all(
+    specs.map(async ({ key, url, transform }) => {
+      if (!url) {
+        errors[key] = "not configured";
+        return;
+      }
+      try {
+        const raw = await fetchCsvObjects(url);
+        results[key] = transform(raw);
+      } catch (e) {
+        errors[key] = e.message || String(e);
+      }
+    })
+  );
+
+  return { data: results, errors };
+}
+
+/* pdfParser */
+// CAD Order Form PDF parser.
+//
+// Your CAD system embeds a clean JSON payload in the PDF's text layer,
+// delimited by %%CAD_FORM_DATA_START%% ... %%CAD_FORM_DATA_END%%. We read
+// that directly -- no OCR, no fragile visual parsing. This was validated
+// against a real production card (job 1234 / S-18934-WER).
+//
+// Uses pdf.js, loaded from CDN at runtime so there's no build dependency.
+
+const PDFJS_SRC = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+const PDFJS_WORKER = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+const START_MARK = "%%CAD_FORM_DATA_START%%";
+// LGD "Odd" band per your price sheet: fancy colors + these step/mixed
+// cuts route to the ODD row ($250/ct flat). User can override via the
+// shape selector on the row if auto-classification is wrong.
+const LGD_ODD_SHAPES = [
+  "trillion", "trilliant", "triangle", "halfmoon", "half moon", "trapezoid",
+  "old cut", "old european", "old miner", "kite", "lozenge", "hexagon",
+  "shield", "bullet", "step",
+];
+function isOddShape(shape) {
+  const s = (shape || "").toLowerCase().trim();
+  if (!s) return false;
+  return LGD_ODD_SHAPES.some((k) => s.includes(k));
+}
+
+const END_MARK = "%%CAD_FORM_DATA_END%%";
+
+let pdfjsLoading = null;
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const el = document.createElement("script");
+    el.src = src;
+    el.onload = resolve;
+    el.onerror = () => reject(new Error("Could not load " + src));
+    document.head.appendChild(el);
+  });
+}
+function loadPdfJs() {
+  // Load BOTH the main library and the worker module as plain script
+  // tags. When the worker module is present as a global (pdfjsWorker),
+  // pdf.js runs entirely on the main thread -- no Worker creation, no
+  // workerSrc fetch. This sidesteps cross-origin and sandboxed-blob
+  // restrictions entirely (workers cannot load in some environments).
+  if (window.pdfjsLib && window.pdfjsWorker) return Promise.resolve(window.pdfjsLib);
+  if (pdfjsLoading) return pdfjsLoading;
+  pdfjsLoading = (async () => {
+    if (!window.pdfjsLib) await loadScript(PDFJS_SRC);
+    if (!window.pdfjsWorker) await loadScript(PDFJS_WORKER);
+    if (!window.pdfjsLib) throw new Error("pdf.js failed to initialize");
+    return window.pdfjsLib;
+  })();
+  return pdfjsLoading;
+}
+
+async function extractPdfText(file) {
+  const pdfjsLib = await loadPdfJs();
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+  let text = "";
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page = await pdf.getPage(p);
+    const content = await page.getTextContent();
+    // Join fragments with NOTHING. Injecting newlines here breaks the
+    // embedded JSON block (raw control chars inside JSON string values
+    // are invalid and make JSON.parse fail).
+    text += content.items.map((it) => it.str).join("");
+  }
+  return text;
+}
+
+function escRe(c) {
+  return c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Find a marker even if the extractor injected whitespace between its
+// characters (different PDF text extractors fragment text differently).
+function findFlexible(text, marker) {
+  const pattern = marker.split("").map(escRe).join("[\\s]*");
+  const m = new RegExp(pattern).exec(text);
+  return m ? { start: m.index, end: m.index + m[0].length } : null;
+}
+
+// Complete a truncated JSON object: walk it tracking string/escape state
+// and brace depth; if it never closes, cut at the last complete top-level
+// field and close the root object. Needed because pdf.js stops extracting
+// partway through the huge base64 render image that follows the data
+// fields, so the end marker (and tail of the JSON) may be missing.
+function salvageJson(raw) {
+  let depth = 0;
+  let inStr = false;
+  let lastComma = -1;
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (inStr) {
+      if (c === "\\") i++;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') inStr = true;
+    else if (c === "{" || c === "[") depth++;
+    else if (c === "}" || c === "]") {
+      depth--;
+      if (depth === 0) return raw.slice(0, i + 1);
+    } else if (c === "," && depth === 1) lastComma = i;
+  }
+  if (lastComma !== -1) return raw.slice(0, lastComma) + "}";
+  return null;
+}
+
+function extractEmbeddedJson(text) {
+  const s = findFlexible(text, START_MARK);
+  if (!s) return { data: null, diag: "start marker not found" };
+  const e = findFlexible(text, END_MARK);
+  let raw = (e && e.start > s.end ? text.slice(s.end, e.start) : text.slice(s.end)).replace(
+    /[\u0000-\u001F]/g,
+    ""
+  );
+  const attempts = [];
+  attempts.push(raw);
+  const salvaged = salvageJson(raw);
+  if (salvaged) attempts.push(salvaged);
+  for (const a of attempts) {
+    try {
+      return { data: JSON.parse(a), diag: "" };
+    } catch (err) {}
+    // whitespace-repair variant: drop spaces outside quoted strings
+    let out = "";
+    let inStr = false;
+    for (let i = 0; i < a.length; i++) {
+      const c = a[i];
+      if (c === '"' && a[i - 1] !== "\\") inStr = !inStr;
+      if (!inStr && (c === " " || c === "\t")) continue;
+      out += c;
+    }
+    try {
+      return { data: JSON.parse(out), diag: "" };
+    } catch (err) {}
+  }
+  return { data: null, diag: "block found but could not be parsed" };
+}
+
+/* ============================================================
+   Field mapping: embedded JSON -> calculator state.
+
+   Metals: card has Metal 1, Metal 2, and Stamping. Per your rule,
+   the two heavier of the actual construction metals map to Primary
+   (heavier) and Secondary (lighter). Stamping is captured but not
+   treated as a construction weight unless it carries a gram weight.
+
+   Stones: rounds match to nearest RND DiaSize code by carat weight
+   and price normally. Fancy naturals populate specs but are flagged
+   (no fancy pricing in DiaSSP). Fancy LGD price from LGD FANCY/ODD
+   bands when the weight lands in a band, else flagged.
+   ============================================================ */
+
+// Map card metal (type + color) to a calculator alloy short code.
+function cardMetalToAlloyShort(type, color) {
+  const t = (type || "").toUpperCase().replace("KT", "").trim(); // "09" -> "9"
+  const kt = String(parseInt(t, 10)); // normalizes 09 -> 9
+  const c = (color || "").toUpperCase().trim();
+  const colorMap = { WG: "WG", YG: "YG", RG: "RG", "WG-PD": "WG-PD", "WG-NF": "WG-NF" };
+  const suffix = colorMap[c] || c;
+  // e.g. "9" + "KT " + "WG" => "9KT WG"; "14" + "RG" => "14KT RG"
+  return `${kt}KT ${suffix}`;
+}
+
+function pnum(v, d = 0) {
+  const n = parseFloat(v);
+  return isFinite(n) ? n : d;
+}
+
+// Given the card's stone record, decide how the calculator should treat it.
+// Returns { diamondMode, sizeCode|null, quality|lgdGrade, priced, flag }.
+function bridgeStone(stone, diaSize) {
+  const shapeRaw = (stone.Shape || "").toLowerCase();
+  const isRound = shapeRaw.includes("round") || shapeRaw === "rnd";
+  const isLGD = (stone.Stone || "").toUpperCase().includes("LGD");
+  const avgWt = pnum(stone.AvgWt);
+
+  if (isRound) {
+    const rounds = diaSize.filter((d) => d.code.startsWith("RND"));
+    let best = null, bestDiff = Infinity;
+    for (const d of rounds) {
+      const diff = Math.abs(d.wt - avgWt);
+      if (diff < bestDiff) { bestDiff = diff; best = d; }
+    }
+    return {
+      diamondMode: isLGD ? "lgd" : "natural",
+      sizeCode: best ? best.code : "",
+      priced: true,
+      flag: best ? "" : "no round size match",
+    };
+  }
+
+  // Fancy LGD: auto-classify ODD shapes (trillion, kite, hexagon,
+  // step cuts, etc.) to the ODD band, everything else to FANCY. User
+  // can override via the LGD shape selector on the schedule row.
+  if (isLGD) {
+    const isOdd = isOddShape(stone.Shape);
+    const lgdShape = isOdd ? "ODD" : "FANCY";
+    const inBand = avgWt >= 0.01 && avgWt <= 3.99;
+    return {
+      diamondMode: "lgd",
+      sizeCode: "",
+      lgdShape,
+      priced: inBand,
+      flag: inBand ? (isOdd ? "auto-classified as ODD — verify" : "") : "LGD below priced bands",
+    };
+  }
+
+  // Fancy natural: no DiaSSP price. Populate as a custom row so it
+  // lands in the schedule with shape / ct / qty; quoter enters $/ct
+  // manually until a fancy natural price table is provided.
+  const oddNat = isOddShape(stone.Shape);
+  return {
+    diamondMode: "natural",
+    isCustom: true,
+    customShape: stone.Shape || "",
+    customWt: avgWt,
+    priced: false,
+    flag: oddNat ? "odd shape — enter $/ct manually" : "fancy natural — enter $/ct manually",
+  };
+}
+
+async function parseOrderFormPdf(file, { alloys = [], diaSize = [] } = {}) {
+  const text = await extractPdfText(file);
+  const { data, diag } = extractEmbeddedJson(text);
+  if (!data) {
+    const snippet = text ? text.slice(0, 160).replace(/\s+/g, " ") : "(no text extracted)";
+    return {
+      ok: false,
+      reason: "no-embedded-data",
+      data: null,
+      diag: `${diag}; extracted ${text.length} chars; starts: "${snippet}"`,
+    };
+  }
+
+  // --- Job info ---
+  const jobInfo = {
+    designer: data["CAD Designer"] || "",
+    jobNo: data["JobNo"] || "",
+    customer: data["VendorItemNo"] || "", // no explicit customer field; closest proxy
+    styleCode: data["Style code"] || "",
+    itemNo: data["ItemNo"] || "",
+    refNo: data["Ref no"] || "",
+    itemType: data["ItemType"] || "",
+    subCategory: data["Sub Category"] || "",
+    itemSize: data["Item Size"] || "",
+    twoTone: data["Two Tone"] || "",
+    stamping: data["Stamping"] || "",
+    rhodium: data["Rhodium"] || "",
+    alloyType: data["Alloy Type"] || "",
+    clientNotes: data["Client Notes"] || "",
+  };
+
+  // --- Metals (assign by weight, heavier = primary) ---
+  const metalCandidates = [
+    {
+      short: cardMetalToAlloyShort(data["Metal Type 1"], data["Metal Col 1"]),
+      wt: pnum(data["Metal 1 Weight"]),
+    },
+    {
+      short: cardMetalToAlloyShort(data["Metal Type 2"], data["Metal Col 2"]),
+      wt: pnum(data["Metal 2 Weight"]),
+    },
+  ].filter((m) => m.wt > 0);
+  metalCandidates.sort((a, b) => b.wt - a.wt); // heavier first
+
+  const validShort = (s) => alloys.some((a) => a.short === s);
+  const metals = {
+    primary: metalCandidates[0] || null,
+    secondary: metalCandidates[1] || null,
+  };
+  const metalWarnings = [];
+  if (metals.primary && !validShort(metals.primary.short))
+    metalWarnings.push(`Primary metal "${metals.primary.short}" not found in alloy list — check mapping`);
+  if (metals.secondary && !validShort(metals.secondary.short))
+    metalWarnings.push(`Secondary metal "${metals.secondary.short}" not found in alloy list — check mapping`);
+
+  // --- Stones ---
+  const rawStones = Array.isArray(data["_RAW_STONES"]) ? data["_RAW_STONES"] : [];
+  const stones = rawStones
+    .filter((s) => s.Shape && pnum(s.Qty) > 0)
+    .map((s) => {
+      const bridge = bridgeStone(s, diaSize);
+      return {
+        pos: s.Pos || "",
+        stoneType: s.Stone || "",
+        shape: s.Shape || "",
+        dims: [s.L, s.W, s.H].filter(Boolean).join(" x "),
+        avgWt: pnum(s.AvgWt),
+        qty: pnum(s.Qty),
+        totalWt: pnum(s.Tot),
+        setting: s.Set || "",
+        source: s.Source || "",
+        ...bridge,
+      };
+    });
+
+  return {
+    ok: true,
+    data: { jobInfo, metals, metalWarnings, stones, rawJson: data },
+  };
+}
+
+/* main */
 
 /* ============================================================
    REFERENCE DATA
@@ -204,8 +726,20 @@ const fmt = (n, dp = 2) =>
 const fmtCurrency = (n, dp = 2) => "$" + fmt(n, dp);
 
 function emptyRow() {
-  return { mode: "natural", sizeCode: "", quality: "TW SI1", lgdGrade: "Non-cert", lgdShape: "RND", pcs: "" };
+  return { mode: "natural", sizeCode: "", quality: "TW SI1", lgdGrade: "Non-cert", lgdShape: "RND", pcs: "", customShape: "", customWt: "", customRate: "" };
 }
+
+// SSP price cipher (JADELIGHTX): letters encode digits so overseas offices
+// can read the price on a customer-facing quote. E.g. 4625 -> "EIAL".
+const SSP_MAP = { 1: "J", 2: "A", 3: "D", 4: "E", 5: "L", 6: "I", 7: "G", 8: "H", 9: "T", 0: "X" };
+function sspEncode(n) {
+  if (!isFinite(n)) return "";
+  return String(Math.round(Math.abs(n)))
+    .split("")
+    .map((d) => SSP_MAP[Number(d)] || "?")
+    .join("");
+}
+const CUSTOM_CODE = "__CUSTOM__";
 
 function netRatePerGm(alloy, metalRates) {
   const rates = metalRates[alloy.metal];
@@ -248,7 +782,7 @@ export default function JwyCalculator() {
   const [rows, setRows] = useState(Array.from({ length: 12 }, emptyRow));
   const [savedQuotes, setSavedQuotes] = useState(() => {
     try {
-      return JSON.parse(localStorage.getItem("jwyQuotes") || "[]");
+      return JSON.parse(__memStore.getItem("jwyQuotes") || "[]");
     } catch {
       return [];
     }
@@ -337,6 +871,7 @@ export default function JwyCalculator() {
       });
       if (!result.ok) {
         setPdfStatus(result.reason === "no-embedded-data" ? "unmapped" : "error");
+        setPdfImport(result.diag ? { error: result.diag } : null);
         return;
       }
       const { jobInfo: ji, metals, metalWarnings, stones } = result.data;
@@ -369,11 +904,14 @@ export default function JwyCalculator() {
       stones.slice(0, 12).forEach((s, i) => {
         newRows[i] = {
           mode: s.diamondMode || "natural",
-          sizeCode: s.sizeCode || "",
+          sizeCode: s.isCustom ? CUSTOM_CODE : s.sizeCode || "",
           quality: "TW SI1",
           lgdGrade: "Non-cert",
           lgdShape: s.lgdShape || "RND",
-          pcs: s.priced ? String(s.qty) : "",
+          pcs: s.qty ? String(s.qty) : "",
+          customShape: s.customShape || "",
+          customWt: s.customWt ? String(s.customWt) : "",
+          customRate: "",
         };
       });
       setRows(newRows);
@@ -404,7 +942,7 @@ export default function JwyCalculator() {
   const persistQuotes = (list) => {
     setSavedQuotes(list);
     try {
-      localStorage.setItem("jwyQuotes", JSON.stringify(list));
+      __memStore.setItem("jwyQuotes", JSON.stringify(list));
     } catch {}
   };
 
@@ -455,8 +993,25 @@ export default function JwyCalculator() {
 
   const rowCalcs = useMemo(() => {
     return rows.map((row) => {
-      const sizeEntry = DIA_SIZE.find((d) => d.code === row.sizeCode);
       const pcs = parseFloat(row.pcs) || 0;
+      if (row.sizeCode === CUSTOM_CODE) {
+        const wtPerPc = parseFloat(row.customWt) || 0;
+        const perCt = parseFloat(row.customRate) || 0;
+        const totalWt = wtPerPc * pcs;
+        const tier = settingRateFor(wtPerPc, settingTiersLive);
+        const settingTotal = pcs > 0 ? (tier.type === "PER CT" ? tier.rate * totalWt : tier.rate * pcs) : 0;
+        return {
+          shape: row.customShape || "Custom",
+          size: "manual entry",
+          wtPerPc,
+          totalWt,
+          perCt,
+          total: totalWt * perCt,
+          settingTotal,
+          settingType: tier.type,
+        };
+      }
+      const sizeEntry = DIA_SIZE.find((d) => d.code === row.sizeCode);
       if (!sizeEntry || pcs <= 0) {
         return { shape: "", size: "", wtPerPc: 0, totalWt: 0, perCt: 0, total: 0, settingTotal: 0, settingType: "PER PC" };
       }
@@ -525,11 +1080,44 @@ export default function JwyCalculator() {
   const fxRate = (currencyRates[locInfo.currency] || 1) * liveData.currencyMarkup;
   const totalWithDutyUSD = grossTotalUSD * (1 + locInfo.duty);
   const totalWithDutyLocal = totalWithDutyUSD * fxRate;
+  const sspCode = sspEncode(totalWithDutyUSD);
   const breakupPct = (val) => (grossTotalUSD > 0 ? (val / grossTotalUSD) * 100 : 0);
+
+  const [printVariant, setPrintVariant] = useState(null);
+  const doPrint = (variant) => {
+    setPrintVariant(variant);
+    setTimeout(() => {
+      window.print();
+      setTimeout(() => setPrintVariant(null), 400);
+    }, 80);
+  };
 
   return (
     <div style={styles.app}>
       <GlobalStyles />
+      <div className="print-only">
+        <PrintQuote
+          variant={printVariant || "full"}
+          jobInfo={jobInfo}
+          locInfo={locInfo}
+          primaryAlloy={primaryAlloy}
+          primaryGramWt={primaryGramWt}
+          secondaryAlloy={secondaryAlloy}
+          secondaryGramWt={secondaryGramWt}
+          rows={rows}
+          rowCalcs={rowCalcs}
+          totals={totals}
+          casting={casting}
+          labor={labor}
+          cadFee={cadFee}
+          grossTotalUSD={grossTotalUSD}
+          totalWithDutyUSD={totalWithDutyUSD}
+          totalWithDutyLocal={totalWithDutyLocal}
+          fxRate={fxRate}
+          sspCode={sspCode}
+        />
+      </div>
+      <div className="screen-only">
       <TopBar
         jobInfo={jobInfo}
         pdfFileName={pdfFileName}
@@ -585,7 +1173,7 @@ export default function JwyCalculator() {
           onSave={saveQuote}
           onLoad={loadQuote}
           onDelete={deleteQuote}
-          onPrint={() => window.print()}
+          onPrint={doPrint}
         />
 
         <StoneGrid rows={rows} updateRow={updateRow} rowCalcs={rowCalcs} totals={totals} />
@@ -603,7 +1191,9 @@ export default function JwyCalculator() {
           totalWithDutyUSD={totalWithDutyUSD}
           totalWithDutyLocal={totalWithDutyLocal}
           breakupPct={breakupPct}
+          sspCode={sspCode}
         />
+      </div>
       </div>
     </div>
   );
@@ -612,6 +1202,88 @@ export default function JwyCalculator() {
 /* ============================================================
    SUB-COMPONENTS
    ============================================================ */
+
+
+function PrintQuote({
+  variant, jobInfo, locInfo, primaryAlloy, primaryGramWt, secondaryAlloy, secondaryGramWt,
+  rows, rowCalcs, totals, casting, labor, cadFee, grossTotalUSD, totalWithDutyUSD,
+  totalWithDutyLocal, fxRate, sspCode,
+}) {
+  const showPrices = variant === "full";
+  const activeRows = rows
+    .map((r, i) => ({ r, c: rowCalcs[i], i }))
+    .filter(({ r, c }) => (r.sizeCode || r.customShape) && c.totalWt > 0);
+  const cell = { padding: "5px 8px", borderBottom: "1px solid #ddd", fontSize: 12 };
+  const cellR = { ...cell, textAlign: "right" };
+  const hd = { ...cell, fontWeight: 700, borderBottom: "2px solid #333", fontSize: 11, textTransform: "uppercase" };
+  return (
+    <div style={{ fontFamily: "Georgia, serif", color: "#111", padding: 24, maxWidth: 760, margin: "0 auto" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", borderBottom: "3px solid #9C4A63", paddingBottom: 10, marginBottom: 14 }}>
+        <div>
+          <div style={{ fontSize: 20, fontWeight: 700 }}>JWY Quotation</div>
+          <div style={{ fontSize: 12, color: "#555" }}>Job {jobInfo.jobNo || "—"} · Designer {jobInfo.designer || "—"} · {new Date().toLocaleDateString()}</div>
+        </div>
+        <div style={{ textAlign: "right", fontSize: 12, color: "#555" }}>
+          <div>{jobInfo.customer || ""}</div>
+          <div>Location: {locInfo.code} ({locInfo.currency})</div>
+        </div>
+      </div>
+
+      <div style={{ fontSize: 12.5, marginBottom: 10 }}>
+        <b>Metals:</b> {primaryAlloy ? `${primaryAlloy.short} ${fmt(parseFloat(primaryGramWt) || 0, 2)}g` : "—"}
+        {secondaryAlloy && (parseFloat(secondaryGramWt) || 0) > 0 ? ` + ${secondaryAlloy.short} ${fmt(parseFloat(secondaryGramWt) || 0, 2)}g` : ""}
+        {" · "}CAD: {jobInfo.cadType}
+      </div>
+
+      <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 14 }}>
+        <thead>
+          <tr>
+            <th style={hd}>Pos</th><th style={hd}>Type</th><th style={hd}>Shape / size</th>
+            <th style={{ ...hd, textAlign: "right" }}>Qty</th><th style={{ ...hd, textAlign: "right" }}>Total ct</th>
+            {showPrices && <th style={{ ...hd, textAlign: "right" }}>$/ct</th>}
+            {showPrices && <th style={{ ...hd, textAlign: "right" }}>$ total</th>}
+          </tr>
+        </thead>
+        <tbody>
+          {activeRows.map(({ r, c, i }) => (
+            <tr key={i}>
+              <td style={cell}>{i + 1}</td>
+              <td style={cell}>{(r.mode || "natural") === "lgd" ? "Lab grown" : "Mined"}</td>
+              <td style={cell}>{c.shape} · {c.size}</td>
+              <td style={cellR}>{r.pcs}</td>
+              <td style={cellR}>{fmt(c.totalWt, 3)}</td>
+              {showPrices && <td style={cellR}>{fmtCurrency(c.perCt)}</td>}
+              {showPrices && <td style={cellR}>{fmtCurrency(c.total)}</td>}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {showPrices ? (
+        <div style={{ fontSize: 13 }}>
+          <table style={{ marginLeft: "auto", borderCollapse: "collapse" }}>
+            <tbody>
+              <tr><td style={cell}>Casting</td><td style={cellR}>{fmtCurrency(casting)}</td></tr>
+              <tr><td style={cell}>Labor</td><td style={cellR}>{fmtCurrency(labor)}</td></tr>
+              <tr><td style={cell}>CAD ({jobInfo.cadType})</td><td style={cellR}>{fmtCurrency(cadFee)}</td></tr>
+              <tr><td style={cell}>Diamonds</td><td style={cellR}>{fmtCurrency(totals.diamondTotal)}</td></tr>
+              <tr><td style={cell}>Setting</td><td style={cellR}>{fmtCurrency(totals.settingTotal)}</td></tr>
+              <tr><td style={{ ...cell, fontWeight: 700 }}>Gross total (USD)</td><td style={{ ...cellR, fontWeight: 700 }}>{fmtCurrency(grossTotalUSD)}</td></tr>
+              <tr><td style={cell}>With {(locInfo.duty * 100).toFixed(0)}% duty (USD)</td><td style={cellR}>{fmtCurrency(totalWithDutyUSD)}</td></tr>
+              <tr><td style={{ ...cell, fontWeight: 700 }}>{locInfo.code} total ({locInfo.currency}, fx {fmt(fxRate, 3)})</td><td style={{ ...cellR, fontWeight: 700 }}>{fmtCurrency(totalWithDutyLocal)}</td></tr>
+              <tr><td style={cell}>SSP</td><td style={{ ...cellR, letterSpacing: 2 }}>{sspCode}</td></tr>
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div style={{ textAlign: "right", marginTop: 8 }}>
+          <div style={{ fontSize: 11, textTransform: "uppercase", color: "#555" }}>Reference code</div>
+          <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: 4 }}>{sspCode}</div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function GlobalStyles() {
   return (
@@ -623,9 +1295,10 @@ function GlobalStyles() {
       th, td { text-align: left; }
       ::-webkit-scrollbar { height: 8px; width: 8px; }
       ::-webkit-scrollbar-thumb { background: #E3C3CD; border-radius: 4px; }
+      .print-only { display: none; }
       @media print {
-        button, label, select, input[type="file"] { display: none !important; }
-        input { border: none !important; }
+        .screen-only { display: none !important; }
+        .print-only { display: block !important; }
       }
     `}</style>
   );
@@ -659,8 +1332,8 @@ function TopBar({ jobInfo, pdfFileName, pdfStatus, pdfImport, onPdfUpload, onCle
           {pdfStatus === "done" && <>Imported {pdfFileName} — job, metals, and stones populated below. Review flagged rows.</>}
           {pdfStatus === "unmapped" && (
             <>
-              Loaded {pdfFileName}, but no embedded CAD data block was found in it. This importer reads the
-              structured data your CAD system embeds; a scanned or hand-made PDF won't carry it.
+              Loaded {pdfFileName}, but couldn't use its embedded CAD data.
+              {pdfImport && pdfImport.error ? ` Detail: ${pdfImport.error}` : ""}
             </>
           )}
           {pdfStatus === "error" && (
@@ -720,6 +1393,8 @@ function PdfImportReview({ pdfImport }) {
             <th style={styles.th}>Stone</th>
             <th style={styles.th}>Shape</th>
             <th style={styles.th}>Dims</th>
+            <th style={styles.th}>Col</th>
+            <th style={styles.th}>Clar</th>
             <th style={styles.thRight}>Avg ct</th>
             <th style={styles.thRight}>Qty</th>
             <th style={styles.thRight}>Total ct</th>
@@ -734,6 +1409,8 @@ function PdfImportReview({ pdfImport }) {
               <td style={styles.td}>{s.stoneType}</td>
               <td style={styles.td}>{s.shape}</td>
               <td style={{ ...styles.td, color: "var(--muted)", fontSize: 12 }}>{s.dims}</td>
+              <td style={styles.td}>{s.col || "—"}</td>
+              <td style={styles.td}>{s.clar || "—"}</td>
               <td style={styles.tdRight}>{fmt(s.avgWt, 4)}</td>
               <td style={styles.tdRight}>{s.qty}</td>
               <td style={styles.tdRight}>{fmt(s.totalWt, 3)}</td>
@@ -940,8 +1617,11 @@ function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint }) {
       >
         Delete
       </button>
-      <button style={{ ...styles.toggleBtn, ...styles.toggleBtnActive }} onClick={onPrint} type="button">
-        Print / PDF
+      <button style={{ ...styles.toggleBtn, ...styles.toggleBtnActive }} onClick={() => onPrint("full")} type="button">
+        Print (full prices)
+      </button>
+      <button style={{ ...styles.toggleBtn, ...styles.toggleBtnActive }} onClick={() => onPrint("ssp")} type="button">
+        Print with SSP only
       </button>
       <span style={{ fontSize: 11, color: "var(--muted)" }}>
         Saved on this device (browser storage) — clearing browser data removes them.
@@ -999,6 +1679,7 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals }) {
                       onChange={(e) => updateRow(i, { sizeCode: e.target.value })}
                     >
                       <option value="">Select size</option>
+                      <option value={CUSTOM_CODE}>Custom entry…</option>
                       {DIA_SIZE.map((d) => (
                         <option key={d.code} value={d.code}>
                           {d.code}
@@ -1006,7 +1687,18 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals }) {
                       ))}
                     </select>
                   </td>
-                  <td style={styles.td}>{calc.shape}</td>
+                  <td style={styles.td}>
+                    {row.sizeCode === CUSTOM_CODE ? (
+                      <input
+                        style={{ ...styles.inputSm, width: 80 }}
+                        placeholder="Shape"
+                        value={row.customShape}
+                        onChange={(e) => updateRow(i, { customShape: e.target.value })}
+                      />
+                    ) : (
+                      calc.shape
+                    )}
+                  </td>
                   <td style={{ ...styles.td, fontSize: 12, color: "var(--muted)" }}>{calc.size}</td>
                   <td style={styles.td}>
                     {(row.mode || "natural") === "natural" ? (
@@ -1046,7 +1738,22 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals }) {
                       </div>
                     )}
                   </td>
-                  <td style={styles.tdRight}>{calc.wtPerPc ? fmt(calc.wtPerPc, 3) : ""}</td>
+                  <td style={styles.tdRight}>
+                    {row.sizeCode === CUSTOM_CODE ? (
+                      <input
+                        style={{ ...styles.inputSm, width: 62, textAlign: "right" }}
+                        type="number"
+                        step="0.001"
+                        placeholder="ct/pc"
+                        value={row.customWt}
+                        onChange={(e) => updateRow(i, { customWt: e.target.value })}
+                      />
+                    ) : calc.wtPerPc ? (
+                      fmt(calc.wtPerPc, 3)
+                    ) : (
+                      ""
+                    )}
+                  </td>
                   <td style={styles.td}>
                     <input
                       style={{ ...styles.inputSm, width: 48, textAlign: "right" }}
@@ -1057,7 +1764,20 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals }) {
                     />
                   </td>
                   <td style={styles.tdRight}>{fmt(calc.totalWt, 3)}</td>
-                  <td style={styles.tdRight}>{fmtCurrency(calc.perCt)}</td>
+                  <td style={styles.tdRight}>
+                    {row.sizeCode === CUSTOM_CODE ? (
+                      <input
+                        style={{ ...styles.inputSm, width: 66, textAlign: "right" }}
+                        type="number"
+                        step="1"
+                        placeholder="$/ct"
+                        value={row.customRate}
+                        onChange={(e) => updateRow(i, { customRate: e.target.value })}
+                      />
+                    ) : (
+                      fmtCurrency(calc.perCt)
+                    )}
+                  </td>
                   <td style={styles.tdRight}>{fmtCurrency(calc.total)}</td>
                   <td style={styles.tdRight}>{fmtCurrency(calc.settingTotal)}</td>
                   <td style={{ ...styles.td, fontSize: 11, color: "var(--muted)" }}>{calc.settingType}</td>
@@ -1097,6 +1817,7 @@ function BreakupSummary({
   totalWithDutyUSD,
   totalWithDutyLocal,
   breakupPct,
+  sspCode,
 }) {
   const items = [
     { label: "Casting", value: casting },
@@ -1133,7 +1854,7 @@ function BreakupSummary({
             {locInfo.code} total · {locInfo.currency}
           </div>
           <div style={styles.bigValue}>{fmtCurrency(totalWithDutyLocal)}</div>
-          <div style={styles.fxNote}>fx rate {fmt(fxRate, 3)}</div>
+          <div style={styles.fxNote}>fx rate {fmt(fxRate, 3)} · SSP: {sspCode}</div>
         </div>
       </div>
     </div>
