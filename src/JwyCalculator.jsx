@@ -13,12 +13,12 @@ const __memStore = { _d: {}, getItem(k){ return k in this._d ? this._d[k] : null
 // stay current -- it polls these URLs on an interval and recalculates.
 
 const SHEET_URLS = {
-  metalRates: "", // Tab 1: MetalRates
-  alloys: "", // Tab 2: Alloys
-  currencyRates: "", // Tab 3: CurrencyRates
-  locations: "", // Tab 4: Locations
-  cadFeesAndLabor: "", // Tab 5: CadFeesAndLabor
-  settingTiers: "", // Tab 6: SettingTiers
+  metalRates: "https://docs.google.com/spreadsheets/d/e/2PACX-1vRXfsmDWYS82tPGIWDsVB3BAKSmnKhhLgXWaiRRvlqKLJ45d0vTs1yXOb4Vb9u1no7JmtoBJbMTEprH/pub?gid=0&single=true&output=csv", // Tab 1: MetalRates
+  alloys: "https://docs.google.com/spreadsheets/d/e/2PACX-1vRXfsmDWYS82tPGIWDsVB3BAKSmnKhhLgXWaiRRvlqKLJ45d0vTs1yXOb4Vb9u1no7JmtoBJbMTEprH/pub?gid=1405483371&single=true&output=csv", // Tab 2: Alloys
+  currencyRates: "https://docs.google.com/spreadsheets/d/e/2PACX-1vRXfsmDWYS82tPGIWDsVB3BAKSmnKhhLgXWaiRRvlqKLJ45d0vTs1yXOb4Vb9u1no7JmtoBJbMTEprH/pub?gid=1536480790&single=true&output=csv", // Tab 3: CurrencyRates
+  locations: "https://docs.google.com/spreadsheets/d/e/2PACX-1vRXfsmDWYS82tPGIWDsVB3BAKSmnKhhLgXWaiRRvlqKLJ45d0vTs1yXOb4Vb9u1no7JmtoBJbMTEprH/pub?gid=1786149102&single=true&output=csv", // Tab 4: Locations
+  cadFeesAndLabor: "https://docs.google.com/spreadsheets/d/e/2PACX-1vRXfsmDWYS82tPGIWDsVB3BAKSmnKhhLgXWaiRRvlqKLJ45d0vTs1yXOb4Vb9u1no7JmtoBJbMTEprH/pub?gid=386901877&single=true&output=csv", // Tab 5: CadFeesAndLabor
+  settingTiers: "https://docs.google.com/spreadsheets/d/e/2PACX-1vRXfsmDWYS82tPGIWDsVB3BAKSmnKhhLgXWaiRRvlqKLJ45d0vTs1yXOb4Vb9u1no7JmtoBJbMTEprH/pub?gid=1907251116&single=true&output=csv", // Tab 6: SettingTiers
 };
 
 // How often (ms) the app re-fetches all six sheets while open.
