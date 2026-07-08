@@ -177,9 +177,20 @@ function cardMetalToAlloyShort(type, color, extra) {
   if (kt === "22" || kt === "24") return `${kt}KT`; // no color variants for these
   if (!c) return `${kt}KT`;
 
+  // Which WG suffix is even valid depends on BOTH color and karat, not
+  // just color -- confirmed against the real Alloys table: 9KT/10KT only
+  // have a Nickel-Free variant (WG-NF), 14KT/18KT only have a Palladium
+  // variant (WG-PD). There's no "14KT WG-NF" or "9KT WG-PD" at all. A
+  // mismatched Extra value (e.g. the form recording "NF" for a 14KT
+  // metal) is ignored rather than producing a name that doesn't exist,
+  // which would otherwise fail the lookup silently.
+  const nfKarats = ["9", "10"];
+  const pdKarats = ["14", "18"];
   let suffix = c;
-  if (ex === "PD") suffix = `${c}-PD`;
-  else if (ex === "NF") suffix = `${c}-NF`;
+  if (c === "WG") {
+    if (ex === "NF" && nfKarats.includes(kt)) suffix = "WG-NF";
+    else if (ex === "PD" && pdKarats.includes(kt)) suffix = "WG-PD";
+  }
   return `${kt}KT ${suffix}`;
 }
 
