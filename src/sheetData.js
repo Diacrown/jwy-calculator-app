@@ -117,6 +117,7 @@ function transformAlloys(rawRows) {
     .map((r) => {
       const short = pick(r, ["short", "Alloy Short Name"]);
       if (!short) return null;
+      const minGmsRaw = pick(r, ["minGms", "Min Gms", "Min Gm"]);
       return {
         name: pick(r, ["name", "Alloy Name"]) || short,
         short: short.trim(),
@@ -125,6 +126,7 @@ function transformAlloys(rawRows) {
         metal: (pick(r, ["metal", "Metal Type"]) || "").trim().toUpperCase(),
         castingGm: num(pick(r, ["castingGm", "Casting/Gm", "Casting Gm"])),
         surchargeGm: num(pick(r, ["surchargeGm", "Surcharge/Gm", "Surcharge Gm"])),
+        minGms: minGmsRaw !== undefined && minGmsRaw !== "" ? num(minGmsRaw, 7.0) : 7.0,
       };
     })
     .filter(Boolean);
