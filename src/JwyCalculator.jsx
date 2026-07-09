@@ -11,10 +11,10 @@ import { parseOrderFormPdf } from "./pdfParser.js";
    ============================================================ */
 
 const SAMPLE_METAL_RATES = {
-  AU: { label: "Gold", pmRateOz: 4026.45, spotOz: 3984.96, asOf: "Mon 29 Jun 2026 PM" },
-  PT: { label: "Platinum", pmRateOz: 1588.0, spotOz: 1566.5, asOf: "Mon 29 Jun 2026" },
-  PD: { label: "Palladium", pmRateOz: 1212.0, spotOz: 1223.0, asOf: "Mon 29 Jun 2026" },
-  AG: { label: "Silver", pmRateOz: 57.71, spotOz: 57.52, asOf: "Mon 29 Jun 2026" },
+  AU: { label: "Gold", pmRateOz: 4026.45, spotOz: 3984.96, spotSurcharge: 1.05, wastage: 1.1, asOf: "Mon 29 Jun 2026 PM" },
+  PT: { label: "Platinum", pmRateOz: 1588.0, spotOz: 1566.5, spotSurcharge: 1.05, wastage: 1.22, asOf: "Mon 29 Jun 2026" },
+  PD: { label: "Palladium", pmRateOz: 1212.0, spotOz: 1223.0, spotSurcharge: 1.05, wastage: 0.215, asOf: "Mon 29 Jun 2026" },
+  AG: { label: "Silver", pmRateOz: 57.71, spotOz: 57.52, spotSurcharge: 1.05, wastage: 1.25, asOf: "Mon 29 Jun 2026" },
 };
 
 const SAMPLE_CURRENCY_RATES = {
@@ -50,36 +50,36 @@ const SHAPE_ORDER = [
 ];
 
 const ALLOYS = [
-  { name: "Standard Injection Wax", short: "Wax", sg: 0.96, purity: 1.0, metal: "WX", castingGm: 1.0, surchargeGm: 1.0 },
-  { name: "United Casting Bronze #342", short: "Brass", sg: 8.5, purity: 1.0, metal: "AY", castingGm: 10.0, surchargeGm: 5.0 },
-  { name: "9KT White (Nickel Safe - USA)", short: "9KT WG", sg: 11.0, purity: 0.375, metal: "AU" },
-  { name: "9KT White (Nickel Free - EU)", short: "9KT WG-NF", sg: 11.75, purity: 0.375, metal: "AU" },
-  { name: "9KT Yellow Gold", short: "9KT YG", sg: 11.3, purity: 0.375, metal: "AU" },
-  { name: "9KT Rose Gold", short: "9KT RG", sg: 11.3, purity: 0.375, metal: "AU" },
-  { name: "10KT White (Nickel Safe - USA)", short: "10KT WG", sg: 11.07, purity: 0.417, metal: "AU" },
-  { name: "10KT White (Nickel Free - EU)", short: "10KT WG-NF", sg: 12.38, purity: 0.417, metal: "AU" },
-  { name: "10KT Yellow Gold", short: "10KT YG", sg: 11.55, purity: 0.417, metal: "AU" },
-  { name: "10KT Rose Gold", short: "10KT RG", sg: 11.55, purity: 0.417, metal: "AU" },
-  { name: "14KT White (Nickel Safe - USA)", short: "14KT WG", sg: 13.05, purity: 0.583, metal: "AU" },
-  { name: "14KT White (Palladium - EU)", short: "14KT WG-PD", sg: 14.25, purity: 0.583, metal: "AU" },
-  { name: "14KT Yellow Gold", short: "14KT YG", sg: 13.05, purity: 0.583, metal: "AU" },
-  { name: "14KT Rose Gold", short: "14KT RG", sg: 13.05, purity: 0.583, metal: "AU" },
-  { name: "18KT White (Nickel Safe - USA)", short: "18KT WG", sg: 14.75, purity: 0.75, metal: "AU" },
-  { name: "18KT White (Palladium - EU)", short: "18KT WG-PD", sg: 15.82, purity: 0.75, metal: "AU" },
-  { name: "18KT Yellow Gold", short: "18KT YG", sg: 14.75, purity: 0.75, metal: "AU" },
-  { name: "18KT Rose Gold", short: "18KT RG", sg: 14.75, purity: 0.75, metal: "AU" },
-  { name: "22KT Gold", short: "22KT", sg: 17.8, purity: 0.917, metal: "AU" },
-  { name: "24KT Gold (Fine)", short: "24KT", sg: 19.36, purity: 1.0, metal: "AU" },
-  { name: "Platinum 600", short: "PT600", sg: 13.05, purity: 0.6, metal: "PT" },
-  { name: "Platinum 900", short: "PT900", sg: 20.0, purity: 0.9, metal: "PT" },
-  { name: "Platinum 950", short: "PT950", sg: 21.5, purity: 0.952, metal: "PT" },
-  { name: "Standard 925 Silver", short: "AG925", sg: 10.3, purity: 0.925, metal: "AG" },
-  { name: "Argentium Silver (935)", short: "AG935", sg: 10.4, purity: 0.935, metal: "AG" },
+  { name: "Standard Injection Wax", short: "Wax", sg: 0.96, purity: 1.0, metal: "WX", castingGm: 1.0, surchargeGm: 1.0, minGms: 7.0 },
+  { name: "United Casting Bronze #342", short: "Brass", sg: 8.5, purity: 1.0, metal: "AY", castingGm: 10.0, surchargeGm: 5.0, minGms: 7.0 },
+  { name: "9KT White (Nickel Safe - USA)", short: "9KT WG", sg: 11.0, purity: 0.375, metal: "AU", castingGm: 10.0, surchargeGm: 5.0, minGms: 7.0 },
+  { name: "9KT White (Nickel Free - EU)", short: "9KT WG-NF", sg: 11.75, purity: 0.375, metal: "AU", castingGm: 10.0, surchargeGm: 5.0, minGms: 7.0 },
+  { name: "9KT Yellow Gold", short: "9KT YG", sg: 11.3, purity: 0.375, metal: "AU", castingGm: 10.0, surchargeGm: 5.0, minGms: 7.0 },
+  { name: "9KT Rose Gold", short: "9KT RG", sg: 11.3, purity: 0.375, metal: "AU", castingGm: 10.0, surchargeGm: 5.0, minGms: 7.0 },
+  { name: "10KT White (Nickel Safe - USA)", short: "10KT WG", sg: 11.07, purity: 0.417, metal: "AU", castingGm: 10.0, surchargeGm: 5.0, minGms: 7.0 },
+  { name: "10KT White (Nickel Free - EU)", short: "10KT WG-NF", sg: 12.38, purity: 0.417, metal: "AU", castingGm: 10.0, surchargeGm: 5.0, minGms: 7.0 },
+  { name: "10KT Yellow Gold", short: "10KT YG", sg: 11.55, purity: 0.417, metal: "AU", castingGm: 10.0, surchargeGm: 5.0, minGms: 7.0 },
+  { name: "10KT Rose Gold", short: "10KT RG", sg: 11.55, purity: 0.417, metal: "AU", castingGm: 10.0, surchargeGm: 5.0, minGms: 7.0 },
+  { name: "14KT White (Nickel Safe - USA)", short: "14KT WG", sg: 13.05, purity: 0.583, metal: "AU", castingGm: 10.0, surchargeGm: 5.0, minGms: 7.0 },
+  { name: "14KT White (Palladium - EU)", short: "14KT WG-PD", sg: 14.25, purity: 0.583, metal: "AU", castingGm: 10.0, surchargeGm: 5.0, minGms: 7.0 },
+  { name: "14KT Yellow Gold", short: "14KT YG", sg: 13.05, purity: 0.583, metal: "AU", castingGm: 10.0, surchargeGm: 5.0, minGms: 7.0 },
+  { name: "14KT Rose Gold", short: "14KT RG", sg: 13.05, purity: 0.583, metal: "AU", castingGm: 10.0, surchargeGm: 5.0, minGms: 7.0 },
+  { name: "18KT White (Nickel Safe - USA)", short: "18KT WG", sg: 14.75, purity: 0.75, metal: "AU", castingGm: 10.0, surchargeGm: 5.0, minGms: 7.0 },
+  { name: "18KT White (Palladium - EU)", short: "18KT WG-PD", sg: 15.82, purity: 0.75, metal: "AU", castingGm: 10.0, surchargeGm: 5.0, minGms: 7.0 },
+  { name: "18KT Yellow Gold", short: "18KT YG", sg: 14.75, purity: 0.75, metal: "AU", castingGm: 10.0, surchargeGm: 5.0, minGms: 7.0 },
+  { name: "18KT Rose Gold", short: "18KT RG", sg: 14.75, purity: 0.75, metal: "AU", castingGm: 10.0, surchargeGm: 5.0, minGms: 7.0 },
+  { name: "22KT Gold", short: "22KT", sg: 17.8, purity: 0.917, metal: "AU", castingGm: 10.0, surchargeGm: 5.0, minGms: 7.0 },
+  { name: "24KT Gold (Fine)", short: "24KT", sg: 19.36, purity: 1.0, metal: "AU", castingGm: 10.0, surchargeGm: 5.0, minGms: 7.0 },
+  { name: "Platinum 600", short: "PT600", sg: 13.05, purity: 0.6, metal: "PT", castingGm: 10.0, surchargeGm: 5.0, minGms: 7.0 },
+  { name: "Platinum 900", short: "PT900", sg: 20.0, purity: 0.9, metal: "PT", castingGm: 10.0, surchargeGm: 5.0, minGms: 7.0 },
+  { name: "Platinum 950", short: "PT950", sg: 21.5, purity: 0.952, metal: "PT", castingGm: 10.0, surchargeGm: 5.0, minGms: 7.0 },
+  { name: "Standard 925 Silver", short: "AG925", sg: 10.3, purity: 0.925, metal: "AG", castingGm: 15.0, surchargeGm: 5.0, minGms: 7.0 },
+  { name: "Argentium Silver (935)", short: "AG935", sg: 10.4, purity: 0.935, metal: "AG", castingGm: 15.0, surchargeGm: 5.0, minGms: 7.0 },
 ];
 
-const CASTING_PER_GM = 10.0;
-const SURCHARGE_PER_GM = 7.0;
-const PD_SURCHARGE_PER_GM = 8.38; // illustrative WG-PD kicker, sample value
+// Casting cost fields now live per-alloy (castingGm, surchargeGm, minGms
+// in the ALLOYS table above), and the WG-PD kicker is derived dynamically
+// from Palladium's own live rate -- see alloyRatePerGm() below.
 
 const LABOR_PER_GM = 22.0;
 const LABOR_MIN_FLAT = 55.0;
@@ -566,20 +566,45 @@ function sspEncode(n) {
 }
 const CUSTOM_CODE = "__CUSTOM__";
 
-function netRatePerGm(alloy, metalRates) {
-  const rates = metalRates[alloy.metal];
-  if (!rates) return 0;
-  // PM rate path: convert oz->gm, apply purity, then add casting+surcharge per gm
-  const ozRate = rates.pmRateOz;
-  const baseRate = (ozRate / 31.1035) * alloy.purity;
-  const pdKicker = alloy.short.includes("WG-PD") ? PD_SURCHARGE_PER_GM : 0;
-  return baseRate + pdKicker;
+// Step 1 (MetalMaster "NetRate/Gm" for the base metal): wastage-adjusted
+// base rate, $/gm of PURE metal -- mirrors
+// =Round(IF(rateType="Spot", spot*surcharge, pmOz) / 31.1035 * wastage, 2)
+function baseNetRatePerGm(metalCode, metalRates) {
+  const r = metalRates[metalCode];
+  if (!r) return 0;
+  const ozRate = r.pmRateOz;
+  const wastage = r.wastage ?? 1;
+  return Math.round(((ozRate / 31.1035) * wastage) * 100) / 100;
 }
 
+// Step 2 (alloy table "Rate/Gm"): base rate x purity, plus the palladium
+// kicker when the alloy is a WG-PD variant. Confirmed earlier against
+// real sheet data: the kicker is exactly Palladium's own base NetRate/Gm,
+// not a fixed constant.
+function alloyRatePerGm(alloy, metalRates) {
+  const base = baseNetRatePerGm(alloy.metal, metalRates);
+  const pdKicker = alloy.short.includes("WG-PD") ? baseNetRatePerGm("PD", metalRates) : 0;
+  return base * alloy.purity + pdKicker;
+}
+
+// Step 3: casting cost with the confirmed Min-Gms-aware formula --
+// =IF(gramWt < MinGms,
+//     MIN(gramWt * NetSurchargeRate/Gm, MinGms * NetRate/Gm),
+//     gramWt * NetRate/Gm)
+// The surcharge only applies as a small-job penalty below the alloy's
+// minimum billable weight, and even then never charges more than the
+// minimum-weight-at-plain-rate floor. Above the minimum, surcharge drops
+// off entirely -- this replaces an earlier version that always added
+// the surcharge regardless of weight, which overcharged heavier pieces.
 function castingCost(gramWt, alloy, metalRates) {
-  if (!alloy) return 0;
-  const base = netRatePerGm(alloy, metalRates);
-  return gramWt * (base + CASTING_PER_GM + SURCHARGE_PER_GM);
+  if (!alloy || gramWt <= 0) return 0;
+  const rateNet = alloyRatePerGm(alloy, metalRates) + alloy.castingGm; // NetRate/Gm
+  const rateNetSurcharge = rateNet + alloy.surchargeGm; // NetSurchargeRate/Gm
+  const minGms = alloy.minGms ?? 0;
+  if (gramWt < minGms) {
+    return Math.min(gramWt * rateNetSurcharge, minGms * rateNet);
+  }
+  return gramWt * rateNet;
 }
 
 /* ============================================================
@@ -615,6 +640,9 @@ export default function JwyCalculator() {
   const [pdfStatus, setPdfStatus] = useState(""); // "", "loading", "unmapped", "error", "done"
   const [pdfFileName, setPdfFileName] = useState("");
   const [pdfImport, setPdfImport] = useState(null);
+  const [cadImage, setCadImage] = useState("");
+  const [clientRefImage, setClientRefImage] = useState("");
+  const [turntableLink, setTurntableLink] = useState("");
 
   // Live data: each table falls back independently to its bundled sample
   // if its sheet URL isn't configured or its fetch fails, so a typo in
@@ -699,7 +727,9 @@ export default function JwyCalculator() {
         setPdfImport(result.diag ? { error: result.diag } : null);
         return;
       }
-      const { jobInfo: ji, metals, metalWarnings, stones } = result.data;
+      const { jobInfo: ji, metals, metalWarnings, stones, cadImageDataUrl, clientRefImageDataUrl } = result.data;
+      if (cadImageDataUrl) setCadImage(cadImageDataUrl);
+      if (clientRefImageDataUrl) setClientRefImage(clientRefImageDataUrl);
 
       // Apply job info. There's no true customer-name field on the card,
       // so we leave Customer untouched rather than stuffing Style code
@@ -767,6 +797,9 @@ export default function JwyCalculator() {
     setPdfImport(null);
     setPdfStatus("");
     setPdfFileName("");
+    setCadImage("");
+    setClientRefImage("");
+    setTurntableLink("");
   };
 
   const persistQuotes = (list) => {
@@ -980,6 +1013,9 @@ export default function JwyCalculator() {
           totalWithDutyLocal={totalWithDutyLocal}
           fxRate={fxRate}
           sspCode={sspCode}
+          cadImage={cadImage}
+          clientRefImage={clientRefImage}
+          turntableLink={turntableLink}
         />
       </div>
       <div className="screen-only">
@@ -1000,6 +1036,8 @@ export default function JwyCalculator() {
           setLocation={setLocation}
           locationList={locationList}
           cadFees={liveData.cadFees}
+          turntableLink={turntableLink}
+          setTurntableLink={setTurntableLink}
         />
 
         {pdfImport && <PdfImportReview pdfImport={pdfImport} />}
@@ -1076,7 +1114,7 @@ export default function JwyCalculator() {
 function PrintQuote({
   variant, jobInfo, locInfo, primaryAlloy, primaryGramWt, secondaryAlloy, secondaryGramWt,
   rows, rowCalcs, totals, casting, labor, cadFee, grossTotalUSD, totalWithDutyUSD,
-  totalWithDutyLocal, fxRate, sspCode,
+  totalWithDutyLocal, fxRate, sspCode, cadImage, clientRefImage, turntableLink,
 }) {
   const showPrices = variant === "full";
   const activeRows = rows
@@ -1127,6 +1165,41 @@ function PrintQuote({
           ))}
         </tbody>
       </table>
+
+      {(cadImage || clientRefImage || turntableLink) && (
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+            {cadImage && (
+              <div style={{ flex: "1 1 260px", maxWidth: 320 }}>
+                <div style={{ fontSize: 10, textTransform: "uppercase", color: "#888", marginBottom: 4 }}>
+                  CAD render
+                </div>
+                <img src={cadImage} alt="CAD render" style={{ width: "100%", border: "1px solid #ddd", borderRadius: 4 }} />
+              </div>
+            )}
+            {clientRefImage && (
+              <div style={{ flex: "1 1 260px", maxWidth: 320 }}>
+                <div style={{ fontSize: 10, textTransform: "uppercase", color: "#888", marginBottom: 4 }}>
+                  Client reference
+                </div>
+                <img
+                  src={clientRefImage}
+                  alt="Client reference"
+                  style={{ width: "100%", border: "1px solid #ddd", borderRadius: 4 }}
+                />
+              </div>
+            )}
+          </div>
+          {turntableLink && (
+            <div style={{ marginTop: 10, fontSize: 12 }}>
+              <b>3D render / turntable video: </b>
+              <a href={turntableLink} style={{ color: "#9C4A63" }}>
+                {turntableLink}
+              </a>
+            </div>
+          )}
+        </div>
+      )}
 
       {showPrices ? (
         <div style={{ fontSize: 13 }}>
@@ -1302,7 +1375,7 @@ function PdfImportReview({ pdfImport }) {
   );
 }
 
-function JobInfoCard({ jobInfo, setJobInfo, location, setLocation, locationList, cadFees }) {
+function JobInfoCard({ jobInfo, setJobInfo, location, setLocation, locationList, cadFees, turntableLink, setTurntableLink }) {
   return (
     <div style={styles.card}>
       <SectionLabel eyebrow="01" title="Job details" />
@@ -1350,6 +1423,14 @@ function JobInfoCard({ jobInfo, setJobInfo, location, setLocation, locationList,
               </option>
             ))}
           </select>
+        </Field>
+        <Field label="3D render link (optional)" grow>
+          <input
+            style={styles.input}
+            placeholder="https://sketchfab.com/... or turntable video URL"
+            value={turntableLink}
+            onChange={(e) => setTurntableLink(e.target.value)}
+          />
         </Field>
       </div>
     </div>
