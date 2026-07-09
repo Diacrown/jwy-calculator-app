@@ -212,7 +212,15 @@ function bridgeStone(stone, diaSize) {
   const stoneTypeRaw = (stone.Stone || "").trim();
   const stoneTypeUpper = stoneTypeRaw.toUpperCase();
   const avgWt = num(stone.AvgWt);
-  const isExplicitCustom = (stone.Mode || "").toLowerCase() === "custom";
+  // The form signals "this row was manually entered, not picked from the
+  // size dropdown" two different ways depending on context: Mode="custom"
+  // at the row level, or SizeIdx="custom" specifically on the size field
+  // (seen on center stones the designer types a carat weight for directly,
+  // e.g. a 1ct+ center stone that's nowhere near melee/catalog range).
+  // Either one means: don't try to catalog-match this row.
+  const isExplicitCustom =
+    (stone.Mode || "").toLowerCase() === "custom" ||
+    (stone.SizeIdx || "").toLowerCase() === "custom";
   const isPureMined = stoneTypeUpper === "MINED";
   const isPureLGD = stoneTypeUpper === "LGD";
 
@@ -222,6 +230,13 @@ function bridgeStone(stone, diaSize) {
   // Select Size dropdown a manual user would pick from, rather than a
   // disconnected free-text row, even though pricing for fancy naturals
   // still has to be entered manually (no DiaSSP data for those yet).
+  //
+  // Includes a tolerance check: a "nearest" match is only accepted if
+  // it's reasonably close to the actual weight. Without this, a 1ct+
+  // center stone (well outside melee/catalog range, which tops out
+  // around 0.2-0.3ct for most fancy shapes) would silently snap to the
+  // largest available catalog entry -- technically "the closest one"
+  // but a materially wrong match, not a real substitute.
   const nearestByShape = (shapeName) => {
     const norm = (shapeName || "").toLowerCase().trim();
     const candidates = diaSize.filter((d) => d.shape.toLowerCase() === norm);
@@ -230,6 +245,9 @@ function bridgeStone(stone, diaSize) {
       const diff = Math.abs(d.wt - avgWt);
       if (diff < bestDiff) { bestDiff = diff; best = d; }
     }
+    if (!best) return null;
+    const relDiff = bestDiff / Math.max(avgWt, best.wt, 0.001);
+    if (relDiff > 0.35) return null; // too far off to call it a match
     return best;
   };
 
@@ -239,20 +257,35 @@ function bridgeStone(stone, diaSize) {
       diamondMode: "natural",
       sizeCode: best ? best.key : "",
       matchedShape: best ? best.shape : "",
-      priced: true,
-      flag: best ? "" : "no round size match",
+      priced: !!best,
+      isCustom: !best,
+      customShape: best ? undefined : stone.Shape || "",
+      customWt: best ? undefined : avgWt,
+      flag: best ? "" : "no catalog size close enough — enter details manually",
     };
   }
 
   if (!isExplicitCustom && isPureLGD) {
     if (isRound) {
       const best = nearestByShape("Round");
+      if (best) {
+        return {
+          diamondMode: "lgd",
+          sizeCode: best.key,
+          matchedShape: best.shape,
+          priced: true,
+          flag: "",
+        };
+      }
+      // No close round match (e.g. a large round center stone) -- land
+      // as a custom LGD row rather than snapping to the nearest melee size.
       return {
         diamondMode: "lgd",
-        sizeCode: best ? best.key : "",
-        matchedShape: best ? best.shape : "",
-        priced: true,
-        flag: best ? "" : "no round size match",
+        isCustom: true,
+        customShape: stone.Shape || "",
+        customWt: avgWt,
+        priced: false,
+        flag: "no catalog size close enough — enter $/ct manually",
       };
     }
     const isOdd = isOddShape(stone.Shape);
@@ -262,10 +295,28 @@ function bridgeStone(stone, diaSize) {
     // but matching still gives the row a proper shape/size selection
     // instead of leaving it blank.
     const best = nearestByShape(stone.Shape);
+    if (!best) {
+      // Shape+weight doesn't correspond to anything in our size catalog
+      // (typical for a large center stone) -- still price from the LGD
+      // band if the weight qualifies, but as a custom row so the shape
+      // and weight shown are exactly what the card says, not a
+      // mismatched catalog entry.
+      return {
+        diamondMode: "lgd",
+        isCustom: true,
+        customShape: stone.Shape || "",
+        customWt: avgWt,
+        lgdShape,
+        priced: inBand,
+        flag: inBand
+          ? "large/custom stone — priced via LGD band, verify"
+          : "LGD below priced bands — enter $/ct manually",
+      };
+    }
     return {
       diamondMode: "lgd",
-      sizeCode: best ? best.key : "",
-      matchedShape: best ? best.shape : "",
+      sizeCode: best.key,
+      matchedShape: best.shape,
       lgdShape,
       priced: inBand,
       flag: inBand ? (isOdd ? "auto-classified as ODD — verify" : "") : "LGD below priced bands",
@@ -277,7 +328,8 @@ function bridgeStone(stone, diaSize) {
     // match the shape+weight against the full catalog anyway, so the row
     // gets a real Select Size entry (dims, canonical weight) with an
     // editable $/ct rather than free text. Only fall back to a true
-    // custom row if the shape genuinely isn't in the catalog at all.
+    // custom row if the shape genuinely isn't in the catalog at all, or
+    // no close-enough match exists (e.g. a large center stone).
     const best = nearestByShape(stone.Shape);
     const oddNat = isOddShape(stone.Shape);
     if (best) {
@@ -295,13 +347,15 @@ function bridgeStone(stone, diaSize) {
       customShape: stone.Shape || "",
       customWt: avgWt,
       priced: false,
-      flag: "shape not in catalog — enter details manually",
+      flag: "shape/size not in catalog — enter details manually",
     };
   }
 
   // Explicit custom-mode rows, and any stone type without pricing data
   // (CZ, Zircon, Color, Mount, Plain, Semi variants, "Mined+LGD" and
-  // other combos). Always lands as an editable custom row.
+  // other combos). Always lands as an editable custom row. Mode is
+  // preserved as natural vs lgd based on the card's own Stone field, so
+  // an imported custom LGD stone doesn't default to the wrong toggle.
   let flag;
   if (isExplicitCustom) {
     flag = "custom row from form — enter $/ct manually";
@@ -311,7 +365,7 @@ function bridgeStone(stone, diaSize) {
     flag = `"${stoneTypeRaw}" has no pricing data yet — enter $/ct manually`;
   }
   return {
-    diamondMode: "natural",
+    diamondMode: isPureLGD ? "lgd" : "natural",
     isCustom: true,
     customShape: stone.Shape || "",
     customWt: avgWt,
@@ -395,8 +449,19 @@ export async function parseOrderFormPdf(file, { alloys = [], diaSize = [] } = {}
       };
     });
 
+  // --- Images (best-effort) ---
+  // _VERSIONS and _CLIENT_REF_IMAGES are the largest fields in the JSON
+  // (full base64 image data) and sit near the end of the key order, so
+  // they're the most likely to be missing if pdf.js's extraction got
+  // truncated before reaching them. Absence here just means the quote
+  // prints without images -- it's not an error.
+  const versions = Array.isArray(data["_VERSIONS"]) ? data["_VERSIONS"] : [];
+  const clientRefImages = Array.isArray(data["_CLIENT_REF_IMAGES"]) ? data["_CLIENT_REF_IMAGES"] : [];
+  const cadImageDataUrl = versions.find((v) => v && v.dataUrl)?.dataUrl || "";
+  const clientRefImageDataUrl = clientRefImages.find((v) => v && v.dataUrl)?.dataUrl || "";
+
   return {
     ok: true,
-    data: { jobInfo, metals, metalWarnings, stones, rawJson: data },
+    data: { jobInfo, metals, metalWarnings, stones, cadImageDataUrl, clientRefImageDataUrl, rawJson: data },
   };
 }
