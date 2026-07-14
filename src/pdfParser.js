@@ -1,15 +1,14 @@
-// CAD Order Form PDF parser.
+// CAD Order Form data parser.
 //
-// Your CAD system embeds a clean JSON payload in the PDF's text layer,
-// delimited by %%CAD_FORM_DATA_START%% ... %%CAD_FORM_DATA_END%%. We read
-// that directly -- no OCR, no fragile visual parsing. This was validated
-// against a real production card (job 1234 / S-18934-WER).
-//
-// Uses pdf.js, loaded from CDN at runtime so there's no build dependency.
+// Reads the order-data JSON exported directly by the CAD Order Form's
+// "Export Order Data" button -- the same schema the form used to embed
+// in PDFs, but without any of the PDF/text-extraction fragility (no
+// pdf.js, no truncation risk, images come through reliably every time).
+// PDF import was removed: it depended on scraping a hidden marker back
+// out of a rendered PDF via pdf.js, which was fragile in practice
+// (truncation on image-heavy cards, inconsistent extraction across
+// browsers). JSON export from the form is the reliable path.
 
-const PDFJS_SRC = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
-const PDFJS_WORKER = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
-const START_MARK = "%%CAD_FORM_DATA_START%%";
 // LGD "Odd" band per your price sheet: fancy colors + these step/mixed
 // cuts route to the ODD row ($250/ct flat). User can override via the
 // shape selector on the row if auto-classification is wrong.
@@ -24,143 +23,6 @@ function isOddShape(shape) {
   return LGD_ODD_SHAPES.some((k) => s.includes(k));
 }
 
-const END_MARK = "%%CAD_FORM_DATA_END%%";
-
-let pdfjsLoading = null;
-function loadScript(src) {
-  return new Promise((resolve, reject) => {
-    const el = document.createElement("script");
-    el.src = src;
-    el.onload = resolve;
-    el.onerror = () => reject(new Error("Could not load " + src));
-    document.head.appendChild(el);
-  });
-}
-function loadPdfJs() {
-  // Load BOTH the main library and the worker module as plain script
-  // tags. When the worker module is present as a global (pdfjsWorker),
-  // pdf.js runs entirely on the main thread -- no Worker creation, no
-  // workerSrc fetch. This sidesteps cross-origin and sandboxed-blob
-  // restrictions entirely (workers cannot load in some environments).
-  if (window.pdfjsLib && window.pdfjsWorker) return Promise.resolve(window.pdfjsLib);
-  if (pdfjsLoading) return pdfjsLoading;
-  pdfjsLoading = (async () => {
-    if (!window.pdfjsLib) await loadScript(PDFJS_SRC);
-    if (!window.pdfjsWorker) await loadScript(PDFJS_WORKER);
-    if (!window.pdfjsLib) throw new Error("pdf.js failed to initialize");
-    return window.pdfjsLib;
-  })();
-  return pdfjsLoading;
-}
-
-async function extractPdfText(file) {
-  const pdfjsLib = await loadPdfJs();
-  const buf = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
-  let text = "";
-  for (let p = 1; p <= pdf.numPages; p++) {
-    const page = await pdf.getPage(p);
-    const content = await page.getTextContent();
-    // Join fragments with NOTHING. Injecting newlines here breaks the
-    // embedded JSON block (raw control chars inside JSON string values
-    // are invalid and make JSON.parse fail).
-    text += content.items.map((it) => it.str).join("");
-  }
-  return text;
-}
-
-function escRe(c) {
-  return c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-// Find a marker even if the extractor injected whitespace between its
-// characters (different PDF text extractors fragment text differently).
-function findFlexible(text, marker) {
-  const pattern = marker.split("").map(escRe).join("[\\s]*");
-  const m = new RegExp(pattern).exec(text);
-  return m ? { start: m.index, end: m.index + m[0].length } : null;
-}
-
-// Complete a truncated JSON object: walk it tracking string/escape state
-// and brace depth; if it never closes, cut at the last complete top-level
-// field and close the root object. Needed because pdf.js stops extracting
-// partway through the huge base64 render image that follows the data
-// fields, so the end marker (and tail of the JSON) may be missing.
-function salvageJson(raw) {
-  let depth = 0;
-  let inStr = false;
-  let lastComma = -1;
-  for (let i = 0; i < raw.length; i++) {
-    const c = raw[i];
-    if (inStr) {
-      if (c === "\\") i++;
-      else if (c === '"') inStr = false;
-      continue;
-    }
-    if (c === '"') inStr = true;
-    else if (c === "{" || c === "[") depth++;
-    else if (c === "}" || c === "]") {
-      depth--;
-      if (depth === 0) return raw.slice(0, i + 1);
-    } else if (c === "," && depth === 1) lastComma = i;
-  }
-  if (lastComma !== -1) return raw.slice(0, lastComma) + "}";
-  return null;
-}
-
-function extractEmbeddedJson(text) {
-  const s = findFlexible(text, START_MARK);
-  if (!s) return { data: null, diag: "start marker not found" };
-  const e = findFlexible(text, END_MARK);
-  let raw = (e && e.start > s.end ? text.slice(s.end, e.start) : text.slice(s.end)).replace(
-    /[\u0000-\u001F]/g,
-    ""
-  );
-  const attempts = [];
-  attempts.push(raw);
-  const salvaged = salvageJson(raw);
-  if (salvaged) attempts.push(salvaged);
-  for (const a of attempts) {
-    try {
-      return { data: JSON.parse(a), diag: "" };
-    } catch (err) {}
-    // whitespace-repair variant: drop spaces outside quoted strings
-    let out = "";
-    let inStr = false;
-    for (let i = 0; i < a.length; i++) {
-      const c = a[i];
-      if (c === '"' && a[i - 1] !== "\\") inStr = !inStr;
-      if (!inStr && (c === " " || c === "\t")) continue;
-      out += c;
-    }
-    try {
-      return { data: JSON.parse(out), diag: "" };
-    } catch (err) {}
-  }
-  return { data: null, diag: "block found but could not be parsed" };
-}
-
-/* ============================================================
-   Field mapping: embedded JSON -> calculator state.
-
-   Metals: card has Metal 1, Metal 2, and Stamping. Per your rule,
-   the two heavier of the actual construction metals map to Primary
-   (heavier) and Secondary (lighter). Stamping is captured but not
-   treated as a construction weight unless it carries a gram weight.
-
-   Stones: rounds match to nearest RND DiaSize code by carat weight
-   and price normally. Fancy naturals populate specs but are flagged
-   (no fancy pricing in DiaSSP). Fancy LGD price from LGD FANCY/ODD
-   bands when the weight lands in a band, else flagged.
-   ============================================================ */
-
-// Map card metal (Type + Color + Extra) to a calculator alloy short code.
-// Type covers two different families: direct-match metals (Wax, Brass,
-// AG925/935, PT600/900/950) that need no color combination, and karat
-// golds (9KT-24KT) that combine with Color (WG/YG/RG) and Extra (NF/PD)
-// to form names like "14KT WG-PD". Unmatched combinations are returned
-// as-is so the caller's alloy-list check can flag them rather than
-// silently guessing.
 function cardMetalToAlloyShort(type, color, extra) {
   const t = (type || "").toUpperCase().trim();
   const c = (color || "").toUpperCase().trim();
@@ -222,7 +84,10 @@ function bridgeStone(stone, diaSize) {
     (stone.Mode || "").toLowerCase() === "custom" ||
     (stone.SizeIdx || "").toLowerCase() === "custom";
   const isPureMined = stoneTypeUpper === "MINED";
-  const isPureLGD = stoneTypeUpper === "LGD";
+  // The CAD form's Stone dropdown wording has changed over time -- older
+  // exports use the abbreviation "LGD", newer ones spell out "Lab grown".
+  // Both mean the same thing for pricing purposes.
+  const isPureLGD = stoneTypeUpper === "LGD" || stoneTypeUpper === "LAB GROWN";
 
   // Matches by shape name (case-insensitive) against the full catalog,
   // then nearest carat weight within that shape. Used for every shape,
@@ -374,19 +239,11 @@ function bridgeStone(stone, diaSize) {
   };
 }
 
-export async function parseOrderFormPdf(file, { alloys = [], diaSize = [] } = {}) {
-  const text = await extractPdfText(file);
-  const { data, diag } = extractEmbeddedJson(text);
-  if (!data) {
-    const snippet = text ? text.slice(0, 160).replace(/\s+/g, " ") : "(no text extracted)";
-    return {
-      ok: false,
-      reason: "no-embedded-data",
-      data: null,
-      diag: `${diag}; extracted ${text.length} chars; starts: "${snippet}"`,
-    };
-  }
-
+// The actual field-mapping logic, shared by both import paths (PDF
+// extraction and direct JSON import) so there's exactly one place that
+// defines how card data becomes calculator state -- no drift between
+// the two entry points.
+function mapFormDataToCalculator(data, { alloys = [], diaSize = [] } = {}) {
   // --- Job info ---
   const jobInfo = {
     designer: data["CAD Designer"] || "",
@@ -454,14 +311,48 @@ export async function parseOrderFormPdf(file, { alloys = [], diaSize = [] } = {}
   // (full base64 image data) and sit near the end of the key order, so
   // they're the most likely to be missing if pdf.js's extraction got
   // truncated before reaching them. Absence here just means the quote
-  // prints without images -- it's not an error.
+  // prints without images -- it's not an error. When importing directly
+  // from JSON (no PDF involved) these are far more likely to be present,
+  // since there's no text-extraction truncation risk at all.
   const versions = Array.isArray(data["_VERSIONS"]) ? data["_VERSIONS"] : [];
   const clientRefImages = Array.isArray(data["_CLIENT_REF_IMAGES"]) ? data["_CLIENT_REF_IMAGES"] : [];
   const cadImageDataUrl = versions.find((v) => v && v.dataUrl)?.dataUrl || "";
   const clientRefImageDataUrl = clientRefImages.find((v) => v && v.dataUrl)?.dataUrl || "";
 
-  return {
-    ok: true,
-    data: { jobInfo, metals, metalWarnings, stones, cadImageDataUrl, clientRefImageDataUrl, rawJson: data },
+  // Derived summary fields the form itself computes (informational only
+  // -- metals and stones for actual pricing still come from the raw
+  // fields/_RAW_STONES above, which are more granular; these are just
+  // useful for the reviewer to cross-check at a glance).
+  const derivedSummary = {
+    metalTypeCombined: data["_METAL_TYPE_COMBINED"] || "",
+    metalColorCombined: data["_METAL_COLOR_COMBINED"] || "",
+    stoneQty: data["_STONE_QTY"] || "",
+    stoneTypes: data["_STONE_TYPES"] || "",
+    stoneSources: data["_STONE_SOURCES"] || "",
+    stoneSettings: data["_STONE_SETTINGS"] || "",
   };
+
+  return { jobInfo, metals, metalWarnings, stones, cadImageDataUrl, clientRefImageDataUrl, derivedSummary, rawJson: data };
 }
+
+export function parseOrderFormJson(input, { alloys = [], diaSize = [] } = {}) {
+  let data;
+  try {
+    data = typeof input === "string" ? JSON.parse(input) : input;
+  } catch (e) {
+    return { ok: false, reason: "invalid-json", data: null, diag: "Could not parse as JSON: " + e.message };
+  }
+  if (!data || typeof data !== "object") {
+    return { ok: false, reason: "invalid-json", data: null, diag: "Parsed value is not an object" };
+  }
+  if (!("JobNo" in data) && !("_RAW_STONES" in data)) {
+    return {
+      ok: false,
+      reason: "unrecognized-schema",
+      data: null,
+      diag: "This doesn't look like CAD order form data (no JobNo or _RAW_STONES field)",
+    };
+  }
+  return { ok: true, data: mapFormDataToCalculator(data, { alloys, diaSize }) };
+}
+
