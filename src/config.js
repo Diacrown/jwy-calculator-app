@@ -26,6 +26,8 @@ export const SHEET_URLS = {
   locations: gvizUrl(1786149102), // Tab 4: Locations
   cadFeesAndLabor: gvizUrl(386901877), // Tab 5: CadFeesAndLabor
   settingTiers: gvizUrl(1907251116), // Tab 6: SettingTiers
+  naturalPrices: gvizUrl(1752109100), // Tab 7 : Natural_Prices 
+  labGrownPrices:  gvizUrl(1815938036), // Tab 8 : Lab Grown_Prices
 };
 
 // How often (ms) the app re-fetches all six sheets while open.
