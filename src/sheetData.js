@@ -229,7 +229,40 @@ function transformSettingTiers(rawRows) {
     .filter(Boolean)
     .sort((a, b) => a.uptoCt - b.uptoCt);
 }
+function transformLabGrownPrices(rawRows) {
+  const out = {};
+  for (const r of rawRows) {
+    const code = pick(r, ["code", "Code"]); // Adjust header aliases if needed
+    const price = pick(r, ["price", "Price"]);
+    if (code) out[code.trim().toUpperCase()] = num(price);
+  }
+  return out;
+}
 
+function transformNaturalPrices(rawRows) {
+  const codeToGroupMap = {};
+  const groupToPriceMap = {};
+
+  for (const r of rawRows) {
+    // Dataset 1: Code -> Group
+    const c = pick(r, ["code", "Code"]);
+    const g = pick(r, ["group", "Group"]);
+    if (c && g) codeToGroupMap[c.trim().toUpperCase()] = g.trim();
+
+    // Dataset 2: Group -> Price
+    const pg = pick(r, ["priceGroup", "Group"]);
+    const pp = pick(r, ["price", "Price"]);
+    if (pg && pp) groupToPriceMap[pg.trim()] = num(pp);
+  }
+
+  // Combine into final mapping
+  const finalMap = {};
+  Object.keys(codeToGroupMap).forEach(code => {
+    const groupName = codeToGroupMap[code];
+    finalMap[code] = groupToPriceMap[groupName] || 0;
+  });
+  return finalMap;
+}
 /* ============================================================
    Public entry point: fetch all six tabs in parallel. Any tab
    whose URL is blank, or whose fetch fails, is reported but does
