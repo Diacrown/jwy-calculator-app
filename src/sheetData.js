@@ -277,6 +277,8 @@ export async function fetchLiveSheetData() {
     { key: "locations", url: SHEET_URLS.locations, transform: transformLocations },
     { key: "cadFeesAndLabor", url: SHEET_URLS.cadFeesAndLabor, transform: transformCadFeesAndLabor },
     { key: "settingTiers", url: SHEET_URLS.settingTiers, transform: transformSettingTiers },
+    { key: "naturalPrices", url: SHEET_URLS.naturalPrices, transform: transformNaturalPrices },
+    { key: "labGrownPrices", url: SHEET_URLS.labGrownPrices, transform: transformLabGrownPrices },
   ];
 
   const results = {};
