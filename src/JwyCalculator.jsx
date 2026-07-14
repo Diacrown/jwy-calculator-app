@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback, useEffect } from "react";
 import { fetchLiveSheetData } from "./sheetData.js";
 import { POLL_INTERVAL_MS } from "./config.js";
-import { parseOrderFormPdf } from "./pdfParser.js";
+import { parseOrderFormJson } from "./pdfParser.js";
 
 /* ============================================================
    REFERENCE DATA
@@ -532,7 +532,7 @@ const LGD_CERT = [
 ];
 const LGD_GRADES = ["Non-cert", "Lab VS", "D/VVS2", "D/VS1"];
 
-const QUALITY_OPTIONS = [...NATURAL_GRADES, "LGD"];
+const QUALITY_OPTIONS = [...NATURAL_GRADES, "Lab grown"];
 
 /* ============================================================
    LIVE DATA: see sheetData.js for the multi-tab fetch/parse layer
@@ -625,6 +625,10 @@ export default function JwyCalculator() {
     cadType: "Medium",
   });
   const [location, setLocation] = useState("WSSY");
+  // Which round of quoting this represents (Q1 = initial, Q2 = revised,
+  // etc.) -- saved with each quote snapshot and shown on the printout so
+  // it's clear at a glance which stage a given quote is at.
+  const [quoteStage, setQuoteStage] = useState("Q1");
   const [primaryAlloyShort, setPrimaryAlloyShort] = useState("14KT YG");
   const [primaryGramWt, setPrimaryGramWt] = useState(3.6);
   const [secondaryAlloyShort, setSecondaryAlloyShort] = useState("14KT WG-PD");
@@ -711,78 +715,90 @@ export default function JwyCalculator() {
     return () => clearInterval(id);
   }, [refreshRates]);
 
-  const handlePdfUpload = async (e) => {
+  // Shared by both import paths (PDF and direct JSON) -- applies a
+  // successful parse result to calculator state identically either way.
+  const applyImportResult = (fileName, resultData) => {
+    const { jobInfo: ji, metals, metalWarnings, stones, cadImageDataUrl, clientRefImageDataUrl, derivedSummary } = resultData;
+    if (cadImageDataUrl) setCadImage(cadImageDataUrl);
+    if (clientRefImageDataUrl) setClientRefImage(clientRefImageDataUrl);
+
+    // Apply job info. There's no true customer-name field on the card,
+    // so we leave Customer untouched rather than stuffing Style code
+    // into a field labeled "Customer name" -- job identifiers are
+    // shown correctly labeled in the import review panel instead.
+    setJobInfo((prev) => ({
+      ...prev,
+      designer: ji.designer || prev.designer,
+      jobNo: ji.jobNo || prev.jobNo,
+    }));
+
+    // Apply metals (already weight-sorted: primary = heavier).
+    if (metals.primary) {
+      if (liveData.alloys.some((a) => a.short === metals.primary.short)) {
+        setPrimaryAlloyShort(metals.primary.short);
+      }
+      setPrimaryGramWt(metals.primary.wt);
+    }
+    if (metals.secondary) {
+      if (liveData.alloys.some((a) => a.short === metals.secondary.short)) {
+        setSecondaryAlloyShort(metals.secondary.short);
+      }
+      setSecondaryGramWt(metals.secondary.wt);
+    }
+
+    // Apply stones -> calculator rows. Each row carries its own pricing
+    // mode, so cards mixing mined and lab-grown stones import fully.
+    const newRows = Array.from({ length: 12 }, emptyRow);
+    stones.slice(0, 12).forEach((s, i) => {
+      newRows[i] = {
+        mode: s.diamondMode || "natural",
+        shapeSel: s.isCustom ? CUSTOM_CODE : s.matchedShape || "",
+        sizeCode: s.isCustom ? CUSTOM_CODE : s.sizeCode || "",
+        quality: "TW SI1",
+        lgdGrade: "Non-cert",
+        lgdShape: s.lgdShape || "RND",
+        pcs: s.qty ? String(s.qty) : "",
+        customShape: s.customShape || "",
+        customWt: s.customWt ? String(s.customWt) : "",
+        customRate: "",
+        manualRate: "",
+      };
+    });
+    setRows(newRows);
+
+    setPdfImport({
+      fileName,
+      jobInfo: ji,
+      metalWarnings,
+      metals,
+      stones,
+      derivedSummary,
+    });
+    setPdfStatus("done");
+  };
+
+  // Direct JSON import: no PDF, no pdf.js, no text-extraction truncation
+  // risk. Reads the exact same JSON the CAD form embeds in its PDFs --
+  // just fed in directly via a "Copy/Export Order Data" button on the
+  // form instead of scraped back out of a rendered document.
+  const handleJsonUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setPdfFileName(file.name);
     setPdfStatus("loading");
     setPdfImport(null);
     try {
-      const result = await parseOrderFormPdf(file, {
+      const text = await file.text();
+      const result = parseOrderFormJson(text, {
         alloys: liveData.alloys,
         diaSize: DIA_SIZE,
       });
       if (!result.ok) {
-        setPdfStatus(result.reason === "no-embedded-data" ? "unmapped" : "error");
-        setPdfImport(result.diag ? { error: result.diag } : null);
+        setPdfStatus("error");
+        setPdfImport({ error: result.diag || "Could not read this file" });
         return;
       }
-      const { jobInfo: ji, metals, metalWarnings, stones, cadImageDataUrl, clientRefImageDataUrl } = result.data;
-      if (cadImageDataUrl) setCadImage(cadImageDataUrl);
-      if (clientRefImageDataUrl) setClientRefImage(clientRefImageDataUrl);
-
-      // Apply job info. There's no true customer-name field on the card,
-      // so we leave Customer untouched rather than stuffing Style code
-      // into a field labeled "Customer name" -- job identifiers are
-      // shown correctly labeled in the import review panel instead.
-      setJobInfo((prev) => ({
-        ...prev,
-        designer: ji.designer || prev.designer,
-        jobNo: ji.jobNo || prev.jobNo,
-      }));
-
-      // Apply metals (already weight-sorted: primary = heavier).
-      if (metals.primary) {
-        if (liveData.alloys.some((a) => a.short === metals.primary.short)) {
-          setPrimaryAlloyShort(metals.primary.short);
-        }
-        setPrimaryGramWt(metals.primary.wt);
-      }
-      if (metals.secondary) {
-        if (liveData.alloys.some((a) => a.short === metals.secondary.short)) {
-          setSecondaryAlloyShort(metals.secondary.short);
-        }
-        setSecondaryGramWt(metals.secondary.wt);
-      }
-
-      // Apply stones -> calculator rows. Each row carries its own pricing
-      // mode, so cards mixing mined and lab-grown stones import fully.
-      const newRows = Array.from({ length: 12 }, emptyRow);
-      stones.slice(0, 12).forEach((s, i) => {
-        newRows[i] = {
-          mode: s.diamondMode || "natural",
-          shapeSel: s.isCustom ? CUSTOM_CODE : s.matchedShape || "",
-          sizeCode: s.isCustom ? CUSTOM_CODE : s.sizeCode || "",
-          quality: "TW SI1",
-          lgdGrade: "Non-cert",
-          lgdShape: s.lgdShape || "RND",
-          pcs: s.qty ? String(s.qty) : "",
-          customShape: s.customShape || "",
-          customWt: s.customWt ? String(s.customWt) : "",
-          customRate: "",
-          manualRate: "",
-        };
-      });
-      setRows(newRows);
-
-      setPdfImport({
-        fileName: file.name,
-        jobInfo: ji,
-        metalWarnings,
-        metals,
-        stones,
-      });
-      setPdfStatus("done");
+      applyImportResult(file.name, result.data);
     } catch (err) {
       setPdfStatus("error");
       setPdfImport({ error: (err && err.message) || String(err) });
@@ -812,9 +828,10 @@ export default function JwyCalculator() {
   const saveQuote = () => {
     const snapshot = {
       id: Date.now(),
-      label: `${jobInfo.jobNo || "no-job"} · ${new Date().toLocaleString()}`,
+      label: `${jobInfo.jobNo || "no-job"} · ${quoteStage} · ${new Date().toLocaleString()}`,
       jobInfo,
       location,
+      quoteStage,
       primaryAlloyShort,
       primaryGramWt,
       secondaryAlloyShort,
@@ -829,6 +846,7 @@ export default function JwyCalculator() {
     if (!q) return;
     setJobInfo(q.jobInfo);
     setLocation(q.location);
+    setQuoteStage(q.quoteStage || "Q1");
     setPrimaryAlloyShort(q.primaryAlloyShort);
     setPrimaryGramWt(q.primaryGramWt);
     setSecondaryAlloyShort(q.secondaryAlloyShort);
@@ -871,6 +889,19 @@ export default function JwyCalculator() {
 
   const updateRow = (idx, patch) => {
     setRows((prev) => prev.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
+  };
+
+  // Adds a new row pre-set to Custom entry mode -- lands with free-text
+  // shape/weight/rate inputs ready to fill in immediately, for stones
+  // that don't match anything in the catalog (colored gems, one-offs,
+  // anything the "Add row" button is meant for) rather than requiring
+  // the user to also manually switch the Shape dropdown to "Custom".
+  const addCustomRow = () => {
+    setRows((prev) => [...prev, { ...emptyRow(), shapeSel: CUSTOM_CODE, sizeCode: CUSTOM_CODE }]);
+  };
+
+  const removeRow = (idx) => {
+    setRows((prev) => prev.filter((_, i) => i !== idx));
   };
 
   const rowCalcs = useMemo(() => {
@@ -1016,6 +1047,7 @@ export default function JwyCalculator() {
           cadImage={cadImage}
           clientRefImage={clientRefImage}
           turntableLink={turntableLink}
+          quoteStage={quoteStage}
         />
       </div>
       <div className="screen-only">
@@ -1024,7 +1056,7 @@ export default function JwyCalculator() {
         pdfFileName={pdfFileName}
         pdfStatus={pdfStatus}
         pdfImport={pdfImport}
-        onPdfUpload={handlePdfUpload}
+        onJsonUpload={handleJsonUpload}
         onClear={clearAll}
       />
 
@@ -1075,7 +1107,7 @@ export default function JwyCalculator() {
           />
         </div>
 
-        <StoneGrid rows={rows} updateRow={updateRow} rowCalcs={rowCalcs} totals={totals} />
+        <StoneGrid rows={rows} updateRow={updateRow} rowCalcs={rowCalcs} totals={totals} onAddRow={addCustomRow} onRemoveRow={removeRow} />
 
         <QuotesToolbar
           savedQuotes={savedQuotes}
@@ -1083,6 +1115,8 @@ export default function JwyCalculator() {
           onLoad={loadQuote}
           onDelete={deleteQuote}
           onPrint={doPrint}
+          quoteStage={quoteStage}
+          setQuoteStage={setQuoteStage}
         />
 
         <BreakupSummary
@@ -1114,49 +1148,188 @@ export default function JwyCalculator() {
 function PrintQuote({
   variant, jobInfo, locInfo, primaryAlloy, primaryGramWt, secondaryAlloy, secondaryGramWt,
   rows, rowCalcs, totals, casting, labor, cadFee, grossTotalUSD, totalWithDutyUSD,
-  totalWithDutyLocal, fxRate, sspCode, cadImage, clientRefImage, turntableLink,
+  totalWithDutyLocal, fxRate, sspCode, cadImage, clientRefImage, turntableLink, quoteStage,
 }) {
   const showPrices = variant === "full";
   const activeRows = rows
     .map((r, i) => ({ r, c: rowCalcs[i], i }))
     .filter(({ r, c }) => (r.sizeCode || r.customShape) && c.totalWt > 0);
-  const cell = { padding: "5px 8px", borderBottom: "1px solid #ddd", fontSize: 12 };
-  const cellR = { ...cell, textAlign: "right" };
-  const hd = { ...cell, fontWeight: 700, borderBottom: "2px solid #333", fontSize: 11, textTransform: "uppercase" };
+
+  const ROSE = "#9C4A63";
+  const INK = "#241B1E";
+  const MUTED = "#7A6870";
+  const HAIRLINE = "#E8D9DE";
+
+  const cell = { padding: "8px 10px", fontSize: 12, color: INK, borderBottom: `1px solid ${HAIRLINE}` };
+  const cellR = { ...cell, textAlign: "right", fontVariantNumeric: "tabular-nums" };
+  const hd = {
+    padding: "8px 10px",
+    fontWeight: 700,
+    fontSize: 10,
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+    color: "#fff",
+    background: ROSE,
+  };
+  const hdR = { ...hd, textAlign: "right" };
+
   return (
-    <div style={{ fontFamily: "Georgia, serif", color: "#111", padding: 24, maxWidth: 760, margin: "0 auto" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", borderBottom: "3px solid #9C4A63", paddingBottom: 10, marginBottom: 14 }}>
-        <div>
-          <div style={{ fontSize: 20, fontWeight: 700 }}>JWY Quotation</div>
-          <div style={{ fontSize: 12, color: "#555" }}>Job {jobInfo.jobNo || "—"} · Designer {jobInfo.designer || "—"} · {new Date().toLocaleDateString()}</div>
+    <div style={{ fontFamily: '"Inter", Arial, sans-serif', color: INK, padding: "30px 34px", maxWidth: 780, margin: "0 auto" }}>
+      {/* ---- Letterhead ---- */}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "flex-start",
+          borderBottom: `3px solid ${ROSE}`,
+          paddingBottom: 14,
+          marginBottom: 20,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div
+            style={{
+              width: 42,
+              height: 42,
+              borderRadius: 8,
+              background: ROSE,
+              color: "#fff",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontWeight: 700,
+              fontSize: 14,
+              fontFamily: '"Playfair Display", Georgia, serif',
+            }}
+          >
+            JWY
+          </div>
+          <div>
+            <div style={{ fontSize: 20, fontWeight: 700, fontFamily: '"Playfair Display", Georgia, serif' }}>
+              {showPrices ? "Quotation" : "Design Reference"}
+            </div>
+            <div style={{ fontSize: 11, color: MUTED, marginTop: 1 }}>
+              {showPrices ? "Prepared for internal / trade use" : "Customer-facing — pricing withheld"}
+            </div>
+          </div>
         </div>
-        <div style={{ textAlign: "right", fontSize: 12, color: "#555" }}>
-          <div>{jobInfo.customer || ""}</div>
-          <div>Location: {locInfo.code} ({locInfo.currency})</div>
+        <div style={{ textAlign: "right", fontSize: 11.5, color: MUTED, lineHeight: 1.6 }}>
+          <div>
+            <b style={{ color: INK }}>Job:</b> {jobInfo.jobNo || "—"}
+            {quoteStage && (
+              <span style={{ marginLeft: 8, background: ROSE, color: "#fff", fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: 10 }}>
+                {quoteStage}
+              </span>
+            )}
+          </div>
+          <div>
+            <b style={{ color: INK }}>Designer:</b> {jobInfo.designer || "—"}
+          </div>
+          <div>
+            <b style={{ color: INK }}>Date:</b> {new Date().toLocaleDateString()}
+          </div>
+          {jobInfo.customer && (
+            <div>
+              <b style={{ color: INK }}>Customer:</b> {jobInfo.customer}
+            </div>
+          )}
         </div>
       </div>
 
-      <div style={{ fontSize: 12.5, marginBottom: 10 }}>
-        <b>Metals:</b> {primaryAlloy ? `${primaryAlloy.short} ${fmt(parseFloat(primaryGramWt) || 0, 2)}g` : "—"}
-        {secondaryAlloy && (parseFloat(secondaryGramWt) || 0) > 0 ? ` + ${secondaryAlloy.short} ${fmt(parseFloat(secondaryGramWt) || 0, 2)}g` : ""}
-        {" · "}CAD: {jobInfo.cadType}
+      {/* ---- Design presentation: images up front, as a manufacturer would lead with the render ---- */}
+      {(cadImage || clientRefImage) && (
+        <div style={{ display: "flex", gap: 16, marginBottom: 20, breakInside: "avoid" }}>
+          {cadImage && (
+            <div style={{ flex: "1 1 50%" }}>
+              <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: 0.5, color: MUTED, marginBottom: 5 }}>
+                CAD Render
+              </div>
+              <img
+                src={cadImage}
+                alt="CAD render"
+                style={{ width: "100%", maxHeight: 260, objectFit: "contain", border: `1px solid ${HAIRLINE}`, borderRadius: 6, background: "#fff" }}
+              />
+            </div>
+          )}
+          {clientRefImage && (
+            <div style={{ flex: "1 1 50%" }}>
+              <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: 0.5, color: MUTED, marginBottom: 5 }}>
+                Client Reference
+              </div>
+              <img
+                src={clientRefImage}
+                alt="Client reference"
+                style={{ width: "100%", maxHeight: 260, objectFit: "contain", border: `1px solid ${HAIRLINE}`, borderRadius: 6, background: "#fff" }}
+              />
+            </div>
+          )}
+        </div>
+      )}
+
+      {turntableLink && (
+        <div style={{ fontSize: 12, marginBottom: 18 }}>
+          <b>3D render / turntable: </b>
+          <a href={turntableLink} style={{ color: ROSE }}>
+            {turntableLink}
+          </a>
+        </div>
+      )}
+
+      {/* ---- Job specification ---- */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(4, 1fr)",
+          gap: 0,
+          border: `1px solid ${HAIRLINE}`,
+          borderRadius: 6,
+          overflow: "hidden",
+          marginBottom: 20,
+          breakInside: "avoid",
+        }}
+      >
+        {[
+          ["Primary metal", primaryAlloy ? `${primaryAlloy.short} · ${fmt(parseFloat(primaryGramWt) || 0, 2)}g` : "—"],
+          [
+            "Secondary metal",
+            secondaryAlloy && (parseFloat(secondaryGramWt) || 0) > 0
+              ? `${secondaryAlloy.short} · ${fmt(parseFloat(secondaryGramWt) || 0, 2)}g`
+              : "—",
+          ],
+          ["CAD complexity", jobInfo.cadType || "—"],
+          ["Ship-to location", `${locInfo.code} (${locInfo.currency})`],
+        ].map(([label, val], i) => (
+          <div key={label} style={{ padding: "10px 12px", borderLeft: i === 0 ? "none" : `1px solid ${HAIRLINE}`, background: i % 2 ? "#FBF5F7" : "#fff" }}>
+            <div style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: 0.5, color: MUTED, marginBottom: 3 }}>{label}</div>
+            <div style={{ fontSize: 12.5, fontWeight: 600 }}>{val}</div>
+          </div>
+        ))}
       </div>
 
-      <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 14 }}>
+      {/* ---- Stone schedule ---- */}
+      <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, color: ROSE, marginBottom: 6 }}>
+        Stone Schedule
+      </div>
+      <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 20, breakInside: "avoid" }}>
         <thead>
           <tr>
-            <th style={hd}>Pos</th><th style={hd}>Type</th><th style={hd}>Shape / size</th>
-            <th style={{ ...hd, textAlign: "right" }}>Qty</th><th style={{ ...hd, textAlign: "right" }}>Total ct</th>
-            {showPrices && <th style={{ ...hd, textAlign: "right" }}>$/ct</th>}
-            {showPrices && <th style={{ ...hd, textAlign: "right" }}>$ total</th>}
+            <th style={hd}>Pos</th>
+            <th style={hd}>Type</th>
+            <th style={hd}>Shape / Size</th>
+            <th style={hdR}>Qty</th>
+            <th style={hdR}>Total Ct</th>
+            {showPrices && <th style={hdR}>$/Ct</th>}
+            {showPrices && <th style={hdR}>$ Total</th>}
           </tr>
         </thead>
         <tbody>
-          {activeRows.map(({ r, c, i }) => (
-            <tr key={i}>
+          {activeRows.map(({ r, c, i }, idx) => (
+            <tr key={i} style={{ background: idx % 2 ? "#FBF5F7" : "#fff" }}>
               <td style={cell}>{i + 1}</td>
               <td style={cell}>{(r.mode || "natural") === "lgd" ? "Lab grown" : "Mined"}</td>
-              <td style={cell}>{c.shape} · {c.size}</td>
+              <td style={cell}>
+                {c.shape} · {c.size}
+              </td>
               <td style={cellR}>{r.pcs}</td>
               <td style={cellR}>{fmt(c.totalWt, 3)}</td>
               {showPrices && <td style={cellR}>{fmtCurrency(c.perCt)}</td>}
@@ -1166,63 +1339,66 @@ function PrintQuote({
         </tbody>
       </table>
 
-      {(cadImage || clientRefImage || turntableLink) && (
-        <div style={{ marginBottom: 16 }}>
-          <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
-            {cadImage && (
-              <div style={{ flex: "1 1 260px", maxWidth: 320 }}>
-                <div style={{ fontSize: 10, textTransform: "uppercase", color: "#888", marginBottom: 4 }}>
-                  CAD render
-                </div>
-                <img src={cadImage} alt="CAD render" style={{ width: "100%", border: "1px solid #ddd", borderRadius: 4 }} />
-              </div>
-            )}
-            {clientRefImage && (
-              <div style={{ flex: "1 1 260px", maxWidth: 320 }}>
-                <div style={{ fontSize: 10, textTransform: "uppercase", color: "#888", marginBottom: 4 }}>
-                  Client reference
-                </div>
-                <img
-                  src={clientRefImage}
-                  alt="Client reference"
-                  style={{ width: "100%", border: "1px solid #ddd", borderRadius: 4 }}
-                />
-              </div>
-            )}
-          </div>
-          {turntableLink && (
-            <div style={{ marginTop: 10, fontSize: 12 }}>
-              <b>3D render / turntable video: </b>
-              <a href={turntableLink} style={{ color: "#9C4A63" }}>
-                {turntableLink}
-              </a>
-            </div>
-          )}
-        </div>
-      )}
-
+      {/* ---- Totals ---- */}
       {showPrices ? (
-        <div style={{ fontSize: 13 }}>
-          <table style={{ marginLeft: "auto", borderCollapse: "collapse" }}>
+        <div style={{ display: "flex", justifyContent: "flex-end", breakInside: "avoid" }}>
+          <table style={{ borderCollapse: "collapse", minWidth: 320 }}>
             <tbody>
-              <tr><td style={cell}>Casting</td><td style={cellR}>{fmtCurrency(casting)}</td></tr>
-              <tr><td style={cell}>Labor</td><td style={cellR}>{fmtCurrency(labor)}</td></tr>
-              <tr><td style={cell}>CAD ({jobInfo.cadType})</td><td style={cellR}>{fmtCurrency(cadFee)}</td></tr>
-              <tr><td style={cell}>Diamonds</td><td style={cellR}>{fmtCurrency(totals.diamondTotal)}</td></tr>
-              <tr><td style={cell}>Setting</td><td style={cellR}>{fmtCurrency(totals.settingTotal)}</td></tr>
-              <tr><td style={{ ...cell, fontWeight: 700 }}>Gross total (USD)</td><td style={{ ...cellR, fontWeight: 700 }}>{fmtCurrency(grossTotalUSD)}</td></tr>
-              <tr><td style={cell}>With {(locInfo.duty * 100).toFixed(0)}% duty (USD)</td><td style={cellR}>{fmtCurrency(totalWithDutyUSD)}</td></tr>
-              <tr><td style={{ ...cell, fontWeight: 700 }}>{locInfo.code} total ({locInfo.currency}, fx {fmt(fxRate, 3)})</td><td style={{ ...cellR, fontWeight: 700 }}>{fmtCurrency(totalWithDutyLocal)}</td></tr>
-              <tr><td style={cell}>SSP</td><td style={{ ...cellR, letterSpacing: 2 }}>{sspCode}</td></tr>
+              {[
+                ["Casting", casting],
+                ["Labor", labor],
+                [`CAD (${jobInfo.cadType})`, cadFee],
+                ["Diamonds", totals.diamondTotal],
+                ["Setting", totals.settingTotal],
+              ].map(([label, val]) => (
+                <tr key={label}>
+                  <td style={{ ...cell, border: "none" }}>{label}</td>
+                  <td style={{ ...cellR, border: "none" }}>{fmtCurrency(val)}</td>
+                </tr>
+              ))}
+              <tr>
+                <td style={{ ...cell, border: "none", borderTop: `1px solid ${HAIRLINE}`, fontWeight: 700 }}>
+                  Gross total (USD)
+                </td>
+                <td style={{ ...cellR, border: "none", borderTop: `1px solid ${HAIRLINE}`, fontWeight: 700 }}>
+                  {fmtCurrency(grossTotalUSD)}
+                </td>
+              </tr>
+              <tr>
+                <td style={{ ...cell, border: "none" }}>With {(locInfo.duty * 100).toFixed(0)}% duty (USD)</td>
+                <td style={{ ...cellR, border: "none" }}>{fmtCurrency(totalWithDutyUSD)}</td>
+              </tr>
+              <tr>
+                <td style={{ padding: "10px", background: ROSE, color: "#fff", fontWeight: 700, borderRadius: "6px 0 0 6px" }}>
+                  {locInfo.code} total ({locInfo.currency}, fx {fmt(fxRate, 3)})
+                </td>
+                <td
+                  style={{
+                    padding: "10px",
+                    background: ROSE,
+                    color: "#fff",
+                    fontWeight: 700,
+                    textAlign: "right",
+                    fontVariantNumeric: "tabular-nums",
+                    borderRadius: "0 6px 6px 0",
+                  }}
+                >
+                  {fmtCurrency(totalWithDutyLocal)}
+                </td>
+              </tr>
             </tbody>
           </table>
         </div>
       ) : (
-        <div style={{ textAlign: "right", marginTop: 8 }}>
-          <div style={{ fontSize: 11, textTransform: "uppercase", color: "#555" }}>Reference code</div>
-          <div style={{ fontSize: 26, fontWeight: 700, letterSpacing: 4 }}>{sspCode}</div>
+        <div style={{ textAlign: "right", marginTop: 10, breakInside: "avoid" }}>
+          <div style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: 0.8, color: MUTED }}>Reference Code</div>
+          <div style={{ fontSize: 30, fontWeight: 700, letterSpacing: 5, color: ROSE }}>{sspCode}</div>
         </div>
       )}
+
+      <div style={{ marginTop: 26, paddingTop: 12, borderTop: `1px solid ${HAIRLINE}`, fontSize: 9.5, color: MUTED, textAlign: "center" }}>
+        {showPrices ? `SSP ${sspCode} · ` : ""}Generated {new Date().toLocaleString()}
+      </div>
     </div>
   );
 }
@@ -1241,12 +1417,15 @@ function GlobalStyles() {
       @media print {
         .screen-only { display: none !important; }
         .print-only { display: block !important; }
+        @page { margin: 12mm; }
+        img { max-width: 100%; }
+        tr { break-inside: avoid; }
       }
     `}</style>
   );
 }
 
-function TopBar({ jobInfo, pdfFileName, pdfStatus, pdfImport, onPdfUpload, onClear }) {
+function TopBar({ jobInfo, pdfFileName, pdfStatus, pdfImport, onJsonUpload, onClear }) {
   return (
     <div style={styles.topBar}>
       <div style={styles.topBarInner}>
@@ -1261,10 +1440,10 @@ function TopBar({ jobInfo, pdfFileName, pdfStatus, pdfImport, onPdfUpload, onCle
           <button style={styles.uploadBtn} onClick={onClear} type="button">
             Clear form
           </button>
-          <label style={styles.uploadBtn}>
+          <label style={styles.uploadBtn} title="Import the .json exported by the CAD Order Form's Export Order Data button">
             <i className="ti ti-file-upload" aria-hidden="true" style={{ fontSize: 15, marginRight: 6 }} />
-            Load CAD order form
-            <input type="file" accept="application/pdf" style={{ display: "none" }} onChange={onPdfUpload} />
+            Load order data
+            <input type="file" accept="application/json,.json" style={{ display: "none" }} onChange={onJsonUpload} />
           </label>
         </div>
       </div>
@@ -1272,14 +1451,8 @@ function TopBar({ jobInfo, pdfFileName, pdfStatus, pdfImport, onPdfUpload, onCle
         <div style={styles.pdfStatusBar}>
           {pdfStatus === "loading" && <>Reading {pdfFileName}…</>}
           {pdfStatus === "done" && <>Imported {pdfFileName} — job, metals, and stones populated below. Review flagged rows.</>}
-          {pdfStatus === "unmapped" && (
-            <>
-              Loaded {pdfFileName}, but couldn't use its embedded CAD data.
-              {pdfImport && pdfImport.error ? ` Detail: ${pdfImport.error}` : ""}
-            </>
-          )}
           {pdfStatus === "error" && (
-            <>Couldn't read {pdfFileName}. {pdfImport && pdfImport.error ? `Error: ${pdfImport.error}` : "Try re-exporting the card from your CAD system."}</>
+            <>Couldn't read {pdfFileName}. {pdfImport && pdfImport.error ? `Error: ${pdfImport.error}` : "Make sure it's a .json file exported from the CAD Order Form."}</>
           )}
         </div>
       )}
@@ -1296,8 +1469,10 @@ function PdfImportReview({ pdfImport }) {
       </div>
     );
   }
-  const { jobInfo: ji, metals, metalWarnings, stones } = pdfImport;
+  const { jobInfo: ji, metals, metalWarnings, stones, derivedSummary } = pdfImport;
   const flagged = stones.filter((s) => s.flag);
+  const ds = derivedSummary || {};
+  const hasDerivedSummary = ds.metalTypeCombined || ds.metalColorCombined || ds.stoneTypes || ds.stoneSources || ds.stoneSettings;
   return (
     <div style={{ ...styles.card, borderColor: "#C9A35C", borderWidth: 1 }}>
       <SectionLabel eyebrow="↓" title="Imported from CAD card — review" />
@@ -1317,6 +1492,22 @@ function PdfImportReview({ pdfImport }) {
         )}
         <span style={styles.importChip}>{stones.length} stone row(s)</span>
       </div>
+
+      {hasDerivedSummary && (
+        <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 8 }}>
+          Form's own summary — cross-check only, not used for pricing:{" "}
+          {[
+            ds.metalTypeCombined && `metal ${ds.metalTypeCombined}`,
+            ds.metalColorCombined && `color ${ds.metalColorCombined}`,
+            ds.stoneQty && `${ds.stoneQty} pcs`,
+            ds.stoneTypes && `types: ${ds.stoneTypes}`,
+            ds.stoneSources && `sources: ${ds.stoneSources}`,
+            ds.stoneSettings && `settings: ${ds.stoneSettings}`,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        </div>
+      )}
 
       {(metalWarnings.length > 0 || flagged.length > 0) && (
         <div style={styles.warnBanner}>
@@ -1622,11 +1813,17 @@ function MetalPanel({ title, alloyShort, setAlloyShort, alloyList, gramWt, setGr
   );
 }
 
-function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint }) {
+function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, quoteStage, setQuoteStage }) {
   const [selected, setSelected] = useState("");
   return (
     <div style={{ ...styles.card, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
       <SectionLabel eyebrow="04" title="Quotes" noMargin />
+      <select style={{ ...styles.input, width: 90 }} value={quoteStage} onChange={(e) => setQuoteStage(e.target.value)} title="Which round of quoting this is">
+        <option value="Q1">Q1</option>
+        <option value="Q2">Q2</option>
+        <option value="Q3">Q3</option>
+        <option value="Q4">Q4</option>
+      </select>
       <button style={styles.toggleBtn} onClick={onSave} type="button">
         Save current quote
       </button>
@@ -1676,7 +1873,7 @@ function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint }) {
   );
 }
 
-function StoneGrid({ rows, updateRow, rowCalcs, totals }) {
+function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow }) {
   return (
     <div style={styles.card}>
       <SectionLabel eyebrow="03" title="Stone schedule" />
@@ -1697,6 +1894,7 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals }) {
               <th style={styles.thRight}>$ total</th>
               <th style={styles.thRight}>$ setting</th>
               <th style={styles.th}>Rate</th>
+              <th style={styles.th}></th>
             </tr>
           </thead>
           <tbody>
@@ -1715,7 +1913,7 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals }) {
                       onChange={(e) => updateRow(i, { mode: e.target.value })}
                     >
                       <option value="natural">Mined</option>
-                      <option value="lgd">LGD</option>
+                      <option value="lgd">Lab grown</option>
                     </select>
                   </td>
                   <td style={styles.td}>
@@ -1862,6 +2060,16 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals }) {
                   <td style={styles.tdRight}>{fmtCurrency(calc.total)}</td>
                   <td style={styles.tdRight}>{fmtCurrency(calc.settingTotal)}</td>
                   <td style={{ ...styles.td, fontSize: 11, color: "var(--muted)" }}>{calc.settingType}</td>
+                  <td style={styles.td}>
+                    <button
+                      type="button"
+                      onClick={() => onRemoveRow(i)}
+                      title="Remove this row"
+                      style={{ background: "none", border: "none", color: "#B5651D", cursor: "pointer", fontSize: 14, padding: "0 4px" }}
+                    >
+                      ×
+                    </button>
+                  </td>
                 </tr>
               );
             })}
@@ -1877,10 +2085,14 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals }) {
               <td style={styles.tdRight}>{fmtCurrency(totals.diamondTotal)}</td>
               <td style={styles.tdRight}>{fmtCurrency(totals.settingTotal)}</td>
               <td></td>
+              <td></td>
             </tr>
           </tfoot>
         </table>
       </div>
+      <button style={{ ...styles.smallBtn, marginTop: 10 }} onClick={onAddRow} type="button">
+        + Add custom stone row
+      </button>
     </div>
   );
 }
