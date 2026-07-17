@@ -315,9 +315,9 @@ function mapFormDataToCalculator(data, { alloys = [], diaSize = [] } = {}) {
   // from JSON (no PDF involved) these are far more likely to be present,
   // since there's no text-extraction truncation risk at all.
   const versions = Array.isArray(data["_VERSIONS"]) ? data["_VERSIONS"] : [];
-  const clientRefImages = Array.isArray(data["_CLIENT_REF_IMAGES"]) ? data["_CLIENT_REF_IMAGES"] : [];
-  const cadImageDataUrl = versions.find((v) => v && v.dataUrl)?.dataUrl || "";
-  const clientRefImageDataUrl = clientRefImages.find((v) => v && v.dataUrl)?.dataUrl || "";
+  const clientRefImagesRaw = Array.isArray(data["_CLIENT_REF_IMAGES"]) ? data["_CLIENT_REF_IMAGES"] : [];
+  const cadImageDataUrls = versions.filter((v) => v && v.dataUrl).map((v) => v.dataUrl);
+  const clientRefImageDataUrls = clientRefImagesRaw.filter((v) => v && v.dataUrl).map((v) => v.dataUrl);
 
   // Derived summary fields the form itself computes (informational only
   // -- metals and stones for actual pricing still come from the raw
@@ -332,7 +332,7 @@ function mapFormDataToCalculator(data, { alloys = [], diaSize = [] } = {}) {
     stoneSettings: data["_STONE_SETTINGS"] || "",
   };
 
-  return { jobInfo, metals, metalWarnings, stones, cadImageDataUrl, clientRefImageDataUrl, derivedSummary, rawJson: data };
+  return { jobInfo, metals, metalWarnings, stones, cadImageDataUrls, clientRefImageDataUrls, derivedSummary, rawJson: data };
 }
 
 export function parseOrderFormJson(input, { alloys = [], diaSize = [] } = {}) {

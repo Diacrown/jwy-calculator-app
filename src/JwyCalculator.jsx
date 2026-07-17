@@ -2,6 +2,9 @@ import { useState, useMemo, useCallback, useEffect } from "react";
 import { fetchLiveSheetData } from "./sheetData.js";
 import { POLL_INTERVAL_MS } from "./config.js";
 import { parseOrderFormJson } from "./pdfParser.js";
+import { pdf } from "@react-pdf/renderer";
+import JSZip from "jszip";
+import { QuotePdfDocument } from "./pdfDocument.jsx";
 
 /* ============================================================
    REFERENCE DATA
@@ -41,12 +44,40 @@ const LOCATIONS = [
   { code: "DMR", currency: "INR", duty: 0.0 },
 ];
 
+// Item# first-letter -> location, for auto-selecting Location when an
+// Item# is entered/imported. Only the 8 confirmed mappings -- DMG and
+// DMR intentionally have no letter and are never auto-selected. This is
+// only a convenience default for initial loading; the user can freely
+// change Location afterward regardless of what the Item# implies.
+const ITEM_LETTER_TO_LOCATION = {
+  T: "DMT",
+  M: "WSME",
+  S: "WSSY",
+  B: "WSBN",
+  N: "WSNZ",
+  K: "WSUK",
+  I: "WSIT",
+  P: "WSPL",
+};
+
 // Shape display order for the Select Size dropdown, matching the CAD
 // Order Form's own shape dropdown sequence.
 const SHAPE_ORDER = [
   "Round", "Baguette", "Carre", "Emerald", "Heart", "Marquise", "Oval",
   "Princess", "Pear", "Radiant", "Single Cut", "Sq. Cushion", "Sq. Emerald",
   "Tappered Bagguette", "Triangle", "Trilliant",
+];
+
+// Matches the CAD Order Form's own Stone Type dropdown exactly. Only
+// "Mined" and "Lab grown" have real pricing data (DiaSSP grid / LGD
+// bands) -- every other value here always prices manually (see
+// rowCalcs), and "Mount" additionally never gets a setting charge.
+const STONE_TYPE_OPTIONS = [
+  "Mined", "Lab grown", "CZ", "Mount", "Semi-Mount", "Cabochon", "Color",
+  "Opal", "Alexandrite", "Ametrine", "Amethyst", "Aquamarine", "Citrine",
+  "Emerald", "Garnet", "Hessonite Garnet", "Iolite", "Morganite", "Pearl",
+  "Peridot", "Ruby", "Sapphire", "Spinel", "Tanzanite", "Topaz",
+  "Tourmaline", "Zircon",
 ];
 
 const ALLOYS = [
@@ -491,7 +522,10 @@ const DIA_SIZE = [
 // DiaSSP: $/ct grid by group code and clarity grade. INFERRED row-group
 // mapping for the small M-suffix sizes (R00-R25) -- confirm against real
 // DiaSize column E and correct if needed.
-const DIA_SSP = {
+// Sample/fallback data -- used only if the live Natural Prices sheet
+// isn't reachable. Real structure confirmed: SizeGroup column maps to
+// SSP pricing, same group-code keying as this table already uses.
+const SAMPLE_NATURAL_PRICES = {
   R00: { "TW VS": 470, "TW SI1": 450, "TW SI2": 410, "TW SI3": 390, "TW I1": 350, "WH SI": 370, "IJ SI2-I1": 340 },
   R02: { "TW VS": 420, "TW SI1": 400, "TW SI2": 370, "TW SI3": 350, "TW I1": 320, "WH SI": 330, "IJ SI2-I1": 300 },
   R09: { "TW VS": 540, "TW SI1": 520, "TW SI2": 470, "TW SI3": 450, "TW I1": 410, "WH SI": 430, "IJ SI2-I1": 365 },
@@ -516,21 +550,25 @@ const DIA_SSP = {
 const NATURAL_GRADES = ["TW VS", "TW SI1", "TW SI2", "TW SI3", "TW I1", "WH SI", "IJ SI2-I1"];
 
 // LGD pricing: per-ct, banded by carat weight, non-cert vs cert (graded)
-const LGD_NONCERT = [
-  { shape: "RND", minCt: 0.0, maxCt: 0.0099, rate: 135 }, // ~ -2 (0.005ct)
-  { shape: "RND", minCt: 0.01, maxCt: 0.99, rate: 100 },
+// Sample/fallback LGD pricing -- used only if the live sheet isn't
+// reachable. Confirmed structure: one row per (Shape, MinCt, MaxCt),
+// three real columns (D_VVS2, D_VS1, Non_cert). Bands above 1.49ct are
+// UNVERIFIED placeholders from an earlier chat paste, pending
+// confirmation against the live sheet.
+const SAMPLE_LGD_BANDS = [
+  { shape: "RND", minCt: 0.001, maxCt: 0.009, dvvs2: null, dvs1: null, nonCert: 135 },
+  { shape: "RND", minCt: 0.01, maxCt: 0.49, dvvs2: null, dvs1: null, nonCert: 100 },
+  { shape: "RND", minCt: 0.5, maxCt: 0.89, dvvs2: 230, dvs1: 200, nonCert: 100 },
+  { shape: "FANCY", minCt: 0.5, maxCt: 0.89, dvvs2: 280, dvs1: 250, nonCert: 150 },
+  { shape: "RND", minCt: 0.9, maxCt: 1.49, dvvs2: 170, dvs1: 160, nonCert: null },
+  { shape: "FANCY", minCt: 0.9, maxCt: 1.49, dvvs2: 170, dvs1: 160, nonCert: null },
+  { shape: "ODD", minCt: 0.01, maxCt: 3.99, dvvs2: null, dvs1: null, nonCert: 250 },
+  // UNVERIFIED -- not yet confirmed against the live sheet.
+  { shape: "RND & FANCY", minCt: 1.5, maxCt: 1.99, dvvs2: 200, dvs1: 170, nonCert: null },
+  { shape: "RND & FANCY", minCt: 2.0, maxCt: 3.99, dvvs2: 220, dvs1: 180, nonCert: null },
+  { shape: "RND & FANCY", minCt: 4.0, maxCt: 4.99, dvvs2: 280, dvs1: 250, nonCert: null },
 ];
-const LGD_CERT = [
-  { shape: "RND & FANCY", minCt: 0.9, maxCt: 1.49, labVS: 170, dvvs2: 160, dvs1: null },
-  { shape: "RND & FANCY", minCt: 1.5, maxCt: 1.99, labVS: 200, dvvs2: 170, dvs1: null },
-  { shape: "RND & FANCY", minCt: 2.0, maxCt: 3.99, labVS: 220, dvvs2: 180, dvs1: null },
-  { shape: "RND & FANCY", minCt: 4.0, maxCt: 4.99, labVS: 280, dvvs2: 250, dvs1: null },
-  { shape: "FANCY", minCt: 0.01, maxCt: 0.49, labVS: 280, dvvs2: 250, dvs1: 200 },
-  { shape: "FANCY", minCt: 0.5, maxCt: 0.89, labVS: 280, dvvs2: 250, dvs1: 150 },
-  { shape: "RND", minCt: 0.5, maxCt: 0.89, labVS: 230, dvvs2: 200, dvs1: 100 },
-  { shape: "ODD", minCt: 0.01, maxCt: 3.99, labVS: 250, dvvs2: null, dvs1: null },
-];
-const LGD_GRADES = ["Non-cert", "Lab VS", "D/VVS2", "D/VS1"];
+const LGD_GRADES = ["Non-cert", "D/VVS2", "D/VS1"];
 
 const QUALITY_OPTIONS = [...NATURAL_GRADES, "Lab grown"];
 
@@ -550,6 +588,22 @@ const fmt = (n, dp = 2) =>
 
 const fmtCurrency = (n, dp = 2) => "$" + fmt(n, dp);
 
+// Real currency symbols for the final local-currency total. AUD and NZD
+// both conventionally use "$" too, but on a multi-currency international
+// quote that's ambiguous, so they're prefixed (A$/NZ$) same as common
+// real-world usage. USD stays plain "$" since that's the default/implied
+// reading in this context.
+const CURRENCY_SYMBOLS = {
+  USD: "$",
+  EUR: "€",
+  GBP: "£",
+  AUD: "A$",
+  NZD: "NZ$",
+  PLN: "zł",
+  INR: "₹",
+};
+const fmtLocal = (n, currencyCode, dp = 2) => (CURRENCY_SYMBOLS[currencyCode] || "$") + fmt(n, dp);
+
 // Rounds a final quote figure UP to the next multiple of 5 (e.g. 682.41
 // -> 685, 680.00 -> 680 unchanged since it's already a multiple of 5).
 // Applied only to the customer-facing grand totals, not to intermediate
@@ -558,7 +612,7 @@ const fmtCurrency = (n, dp = 2) => "$" + fmt(n, dp);
 const roundUp5 = (n) => (isFinite(n) ? Math.ceil(n / 5) * 5 : 0);
 
 function emptyRow() {
-  return { mode: "natural", shapeSel: "", sizeCode: "", quality: "TW SI1", lgdGrade: "Non-cert", lgdShape: "RND", pcs: "", customShape: "", customWt: "", customRate: "", manualRate: "" };
+  return { mode: "natural", stoneTypeSel: "Mined", shapeSel: "", sizeCode: "", quality: "TW SI1", lgdGrade: "Non-cert", lgdShape: "RND", pcs: "", customShape: "", customWt: "", customRate: "", manualRate: "" };
 }
 
 // "Made with Love" logo, embedded as base64 in both colorways so print
@@ -629,6 +683,7 @@ export default function JwyCalculator() {
     itemSize: "",
     customer: "",
     cadType: "Medium",
+    remarks: "",
   });
   const [location, setLocation] = useState("WSSY");
   // Which round of quoting this represents (Q1 = initial, Q2 = revised,
@@ -656,8 +711,8 @@ export default function JwyCalculator() {
   const [pdfStatus, setPdfStatus] = useState(""); // "", "loading", "unmapped", "error", "done"
   const [pdfFileName, setPdfFileName] = useState("");
   const [pdfImport, setPdfImport] = useState(null);
-  const [cadImage, setCadImage] = useState("");
-  const [clientRefImage, setClientRefImage] = useState("");
+  const [cadImages, setCadImages] = useState([]);
+  const [clientRefImages, setClientRefImages] = useState([]);
   const [turntableLink, setTurntableLink] = useState("");
 
   // Live data: each table falls back independently to its bundled sample
@@ -673,6 +728,8 @@ export default function JwyCalculator() {
     laborMinFlat: LABOR_MIN_FLAT,
     cadFees: CAD_FEES,
     settingTiers: SETTING_TIERS,
+    naturalPrices: null,
+    labGrownPrices: null,
   });
   const [tableSources, setTableSources] = useState({
     metalRates: "sample",
@@ -681,6 +738,8 @@ export default function JwyCalculator() {
     locations: "sample",
     cadFeesAndLabor: "sample",
     settingTiers: "sample",
+    naturalPrices: "sample",
+    labGrownPrices: "sample",
   });
   const [rateLoading, setRateLoading] = useState(false);
   const [rateErrors, setRateErrors] = useState({});
@@ -703,6 +762,8 @@ export default function JwyCalculator() {
         laborMinFlat: data.cadFeesAndLabor ? data.cadFeesAndLabor.laborMinFlat : prev.laborMinFlat,
         cadFees: data.cadFeesAndLabor ? data.cadFeesAndLabor.cadFees : prev.cadFees,
         settingTiers: data.settingTiers && data.settingTiers.length ? data.settingTiers : prev.settingTiers,
+        naturalPrices: data.naturalPrices && Object.keys(data.naturalPrices).length ? data.naturalPrices : prev.naturalPrices,
+        labGrownPrices: data.labGrownPrices && data.labGrownPrices.length ? data.labGrownPrices : prev.labGrownPrices,
       }));
       setTableSources({
         metalRates: data.metalRates ? "live" : "sample",
@@ -711,6 +772,8 @@ export default function JwyCalculator() {
         locations: data.locations ? "live" : "sample",
         cadFeesAndLabor: data.cadFeesAndLabor ? "live" : "sample",
         settingTiers: data.settingTiers ? "live" : "sample",
+        naturalPrices: data.naturalPrices ? "live" : "sample",
+        labGrownPrices: data.labGrownPrices ? "live" : "sample",
       });
       setRateErrors(errors);
       setLastSync(new Date());
@@ -730,9 +793,9 @@ export default function JwyCalculator() {
   // Shared by both import paths (PDF and direct JSON) -- applies a
   // successful parse result to calculator state identically either way.
   const applyImportResult = (fileName, resultData) => {
-    const { jobInfo: ji, metals, metalWarnings, stones, cadImageDataUrl, clientRefImageDataUrl, derivedSummary } = resultData;
-    if (cadImageDataUrl) setCadImage(cadImageDataUrl);
-    if (clientRefImageDataUrl) setClientRefImage(clientRefImageDataUrl);
+    const { jobInfo: ji, metals, metalWarnings, stones, cadImageDataUrls, clientRefImageDataUrls, derivedSummary } = resultData;
+    if (cadImageDataUrls?.length) setCadImages((prev) => [...cadImageDataUrls, ...prev]);
+    if (clientRefImageDataUrls?.length) setClientRefImages((prev) => [...clientRefImageDataUrls, ...prev]);
 
     // Apply job info. There's no true customer-name field on the card,
     // so we leave Customer untouched rather than stuffing Style code
@@ -744,7 +807,12 @@ export default function JwyCalculator() {
       jobNo: ji.jobNo || prev.jobNo,
       itemNo: ji.itemNo || prev.itemNo,
       itemSize: ji.itemSize || prev.itemSize,
+      remarks: ji.clientNotes || prev.remarks,
     }));
+    if (ji.itemNo) {
+      const mappedLoc = ITEM_LETTER_TO_LOCATION[ji.itemNo.trim().charAt(0).toUpperCase()];
+      if (mappedLoc) setLocation(mappedLoc);
+    }
 
     // Apply metals (already weight-sorted: primary = heavier).
     if (metals.primary) {
@@ -766,6 +834,7 @@ export default function JwyCalculator() {
     stones.slice(0, 12).forEach((s, i) => {
       newRows[i] = {
         mode: s.diamondMode || "natural",
+        stoneTypeSel: STONE_TYPE_OPTIONS.includes(s.stoneType) ? s.stoneType : s.diamondMode === "lgd" ? "Lab grown" : "Mined",
         shapeSel: s.isCustom ? CUSTOM_CODE : s.matchedShape || "",
         sizeCode: s.isCustom ? CUSTOM_CODE : s.sizeCode || "",
         quality: "TW SI1",
@@ -846,15 +915,15 @@ export default function JwyCalculator() {
   };
 
   const clearAll = () => {
-    setJobInfo({ designer: "", jobNo: "", itemNo: "", itemSize: "", customer: "", cadType: "Medium" });
+    setJobInfo({ designer: "", jobNo: "", itemNo: "", itemSize: "", customer: "", cadType: "Medium", remarks: "" });
     setPrimaryGramWt(0);
     setSecondaryGramWt(0);
     setRows(Array.from({ length: 12 }, emptyRow));
     setPdfImport(null);
     setPdfStatus("");
     setPdfFileName("");
-    setCadImage("");
-    setClientRefImage("");
+    setCadImages([]);
+    setClientRefImages([]);
     setTurntableLink("");
     setManualPriceOverride("");
   };
@@ -878,6 +947,9 @@ export default function JwyCalculator() {
     secondaryGramWt,
     rows,
     manualPriceOverride,
+    cadImages,
+    clientRefImages,
+    turntableLink,
     // Frozen audit record of what the formula actually calculated at
     // save time -- kept even if manualPriceOverride is set, so a later
     // review can always see both "what we calculated" and "what we
@@ -898,7 +970,7 @@ export default function JwyCalculator() {
   };
 
   const applySnapshot = (q) => {
-    setJobInfo({ itemNo: "", itemSize: "", ...q.jobInfo });
+    setJobInfo({ itemNo: "", itemSize: "", remarks: "", ...q.jobInfo });
     setLocation(q.location);
     setQuoteStage(q.quoteStage || "Q1");
     setPrimaryAlloyShort(q.primaryAlloyShort);
@@ -907,6 +979,9 @@ export default function JwyCalculator() {
     setSecondaryGramWt(q.secondaryGramWt);
     setRows(q.rows.map((r) => ({ ...emptyRow(), ...r })));
     setManualPriceOverride(q.manualPriceOverride || "");
+    setCadImages(q.cadImages || []);
+    setClientRefImages(q.clientRefImages || []);
+    setTurntableLink(q.turntableLink || "");
   };
 
   const deleteQuote = (id) => {
@@ -925,24 +1000,12 @@ export default function JwyCalculator() {
     return `${base}_${stamp}`;
   };
 
-  // Downloads the exact current calculator state as a .json file --
-  // this is what "Load saved quote" reads back in later. No new backend,
-  // no Drive API: this is a plain browser file download, which is about
-  // as close to "cannot fail" as a save mechanism gets. Filing it into
-  // Drive (e.g. via a locally-synced Drive folder as your default
-  // downloads location) is a one-time browser setting, not something
-  // this code needs to manage.
-  const downloadQuoteJson = (filenameBase) => {
+  // Builds the exact current calculator state as a JSON Blob, for
+  // bundling into the same zip as the PDF (see doPrint below) -- this is
+  // what "Load saved quote" reads back in later.
+  const buildSnapshotJsonBlob = () => {
     const snapshot = buildSnapshot();
-    const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${filenameBase}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    return new Blob([JSON.stringify(snapshot, null, 2)], { type: "application/json" });
   };
 
   // Manual metal-rate override: if the live sheet ever drops (network
@@ -994,12 +1057,15 @@ export default function JwyCalculator() {
   const rowCalcs = useMemo(() => {
     return rows.map((row) => {
       const pcs = parseFloat(row.pcs) || 0;
+      const isMount = row.stoneTypeSel === "Mount";
       if (row.sizeCode === CUSTOM_CODE) {
         const wtPerPc = parseFloat(row.customWt) || 0;
         const perCt = parseFloat(row.customRate) || 0;
         const totalWt = wtPerPc * pcs;
         const tier = settingRateFor(wtPerPc, settingTiersLive);
-        const settingTotal = pcs > 0 ? (tier.type === "PER CT" ? tier.rate * totalWt : tier.rate * pcs) : 0;
+        // Mount is structural, not a priced stone -- it never gets a
+        // setting charge, regardless of any weight/qty entered.
+        const settingTotal = isMount ? 0 : pcs > 0 ? (tier.type === "PER CT" ? tier.rate * totalWt : tier.rate * pcs) : 0;
         return {
           shape: row.customShape || "Custom",
           size: "manual entry",
@@ -1018,13 +1084,25 @@ export default function JwyCalculator() {
       }
       const totalWt = sizeEntry.wt * pcs;
       const isNatural = (row.mode || "natural") === "natural";
+      // Only "Mined" and "Lab grown" have real pricing data (DiaSSP grid
+      // and LGD bands respectively). Every other stone type (CZ, Mount,
+      // Semi-Mount, Cabochon, Color, or any specific colored gem) always
+      // prices manually, even if the shape/size happens to match
+      // something in the catalog -- that catalog has no price data for
+      // any of these, only dimensions.
+      const stoneType = row.stoneTypeSel || "Mined";
+      const isOtherType = stoneType !== "Mined" && stoneType !== "Lab grown";
 
       let perCt = 0;
       let priceEditable = false;
-      if (isNatural) {
+      if (isOtherType) {
+        perCt = parseFloat(row.manualRate) || 0;
+        priceEditable = true;
+      } else if (isNatural) {
         if (sizeEntry.group) {
-          // Round natural: priced from the DiaSSP grid.
-          const grid = DIA_SSP[sizeEntry.group];
+          // Round natural: priced from the Natural Prices (DiaSSP) grid,
+          // keyed by SizeGroup -- live-fetched when available.
+          const grid = (liveData.naturalPrices || SAMPLE_NATURAL_PRICES)[sizeEntry.group];
           perCt = grid?.[row.quality] || 0;
         } else {
           // Fancy natural: no DiaSSP price for this shape yet. The rate
@@ -1034,28 +1112,25 @@ export default function JwyCalculator() {
           priceEditable = true;
         }
       } else {
-        // LGD prices from the FANCY/ODD/cert bands regardless of
-        // whether the matched size entry has a DiaSSP group -- LGD
-        // pricing never depends on that grid.
+        // LGD prices from the unified band table -- one row per
+        // (shape, weight range) with three real columns (D/VVS2, D/VS1,
+        // Non-cert), matching the live sheet exactly.
         const wtPerPc = sizeEntry.wt;
-        if (wtPerPc < 0.01 || row.lgdGrade === "Non-cert") {
-          const band = LGD_NONCERT.find((b) => wtPerPc >= b.minCt && wtPerPc <= b.maxCt);
-          perCt = band?.rate || 0;
-        } else {
-          const band = LGD_CERT.find(
-            (b) => (b.shape === row.lgdShape || b.shape === "RND & FANCY") && wtPerPc >= b.minCt && wtPerPc <= b.maxCt
-          );
-          if (band) {
-            if (row.lgdGrade === "Lab VS") perCt = band.labVS || 0;
-            else if (row.lgdGrade === "D/VVS2") perCt = band.dvvs2 || 0;
-            else if (row.lgdGrade === "D/VS1") perCt = band.dvs1 || 0;
-          }
+        const lgdBands = liveData.labGrownPrices || SAMPLE_LGD_BANDS;
+        const band = lgdBands.find(
+          (b) => (b.shape === row.lgdShape || b.shape === "RND & FANCY") && wtPerPc >= b.minCt && wtPerPc <= b.maxCt
+        );
+        if (band) {
+          if (row.lgdGrade === "D/VVS2") perCt = band.dvvs2 || 0;
+          else if (row.lgdGrade === "D/VS1") perCt = band.dvs1 || 0;
+          else perCt = band.nonCert || 0; // "Non-cert", also the default
         }
       }
 
       const total = totalWt * perCt;
       const tier = settingRateFor(sizeEntry.wt, settingTiersLive);
-      const settingTotal = tier.type === "PER CT" ? tier.rate * totalWt : tier.rate * pcs;
+      // Mount is structural, not a priced stone -- never a setting charge.
+      const settingTotal = isMount ? 0 : tier.type === "PER CT" ? tier.rate * totalWt : tier.rate * pcs;
 
       return {
         shape: sizeEntry.shape,
@@ -1069,7 +1144,7 @@ export default function JwyCalculator() {
         priceEditable,
       };
     });
-  }, [rows, settingTiersLive]);
+  }, [rows, settingTiersLive, liveData.naturalPrices, liveData.labGrownPrices]);
 
   const totals = useMemo(() => {
     const totalWt = rowCalcs.reduce((s, r) => s + r.totalWt, 0);
@@ -1122,53 +1197,68 @@ export default function JwyCalculator() {
   const effectiveTotalLocal = hasOverride ? overrideNum : totalWithDutyLocal;
   const breakupPct = (val) => (grossTotalUSD > 0 ? (val / grossTotalUSD) * 100 : 0);
 
-  const [printVariant, setPrintVariant] = useState(null);
-  const doPrint = (variant) => {
-    const filenameBase = quoteFilenameBase();
-    downloadQuoteJson(filenameBase);
-    const originalTitle = document.title;
-    document.title = filenameBase;
-    setPrintVariant(variant);
-    setTimeout(() => {
-      window.print();
-      setTimeout(() => {
-        setPrintVariant(null);
-        document.title = originalTitle;
-      }, 400);
-    }, 80);
-  };
+  const [pdfGenerating, setPdfGenerating] = useState(null); // null | "full" | "priceOnly"
 
-  return (
-    <div style={styles.app}>
-      <GlobalStyles />
-      <div className="print-only">
-        <PrintQuote
-          variant={printVariant || "full"}
+  const doPrint = async (variant) => {
+    setPdfGenerating(variant);
+    try {
+      const filenameBase = quoteFilenameBase();
+      const rowsWithCalcs = rows
+        .map((r, i) => ({ r, c: rowCalcs[i] }))
+        .filter(({ r, c }) => (r.sizeCode || r.customShape) && c.totalWt > 0);
+
+      const pdfBlob = await pdf(
+        <QuotePdfDocument
+          variant={variant}
           jobInfo={jobInfo}
           locInfo={locInfo}
           primaryAlloy={primaryAlloy}
           primaryGramWt={primaryGramWt}
           secondaryAlloy={secondaryAlloy}
           secondaryGramWt={secondaryGramWt}
-          rows={rows}
-          rowCalcs={rowCalcs}
+          rowsWithCalcs={rowsWithCalcs}
           totals={totals}
           casting={casting}
           labor={labor}
           cadFee={cadFee}
-          grossTotalUSD={grossTotalUSD}
           totalWithDutyUSD={totalWithDutyUSD}
           totalWithDutyLocal={totalWithDutyLocal}
           fxRate={fxRate}
-          cadImage={cadImage}
-          clientRefImage={clientRefImage}
+          cadImages={cadImages}
+          clientRefImages={clientRefImages}
           turntableLink={turntableLink}
           quoteStage={quoteStage}
           hasOverride={hasOverride}
           effectiveTotalLocal={effectiveTotalLocal}
+          logoBlack={LOGO_BLACK}
         />
-      </div>
-      <div className="screen-only">
+      ).toBlob();
+
+      const jsonBlob = buildSnapshotJsonBlob();
+
+      const zip = new JSZip();
+      zip.file(`${filenameBase}.pdf`, pdfBlob);
+      zip.file(`${filenameBase}.json`, jsonBlob);
+      const zipBlob = await zip.generateAsync({ type: "blob" });
+
+      const url = URL.createObjectURL(zipBlob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${filenameBase}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert("Couldn't generate the PDF: " + ((err && err.message) || String(err)));
+    } finally {
+      setPdfGenerating(null);
+    }
+  };
+
+  return (
+    <div style={styles.app}>
+      <GlobalStyles />
       <TopBar
         jobInfo={jobInfo}
         pdfFileName={pdfFileName}
@@ -1189,6 +1279,13 @@ export default function JwyCalculator() {
           cadFees={liveData.cadFees}
           turntableLink={turntableLink}
           setTurntableLink={setTurntableLink}
+        />
+
+        <ImagesCard
+          cadImages={cadImages}
+          setCadImages={setCadImages}
+          clientRefImages={clientRefImages}
+          setClientRefImages={setClientRefImages}
         />
 
         {pdfImport && <PdfImportReview pdfImport={pdfImport} />}
@@ -1236,6 +1333,7 @@ export default function JwyCalculator() {
           onPrint={doPrint}
           quoteStage={quoteStage}
           setQuoteStage={setQuoteStage}
+          pdfGenerating={pdfGenerating}
         />
 
         <BreakupSummary
@@ -1256,7 +1354,8 @@ export default function JwyCalculator() {
           hasOverride={hasOverride}
           effectiveTotalLocal={effectiveTotalLocal}
         />
-      </div>
+
+        <RemarksCard jobInfo={jobInfo} setJobInfo={setJobInfo} />
       </div>
     </div>
   );
@@ -1266,272 +1365,6 @@ export default function JwyCalculator() {
    SUB-COMPONENTS
    ============================================================ */
 
-
-function PrintQuote({
-  variant, jobInfo, locInfo, primaryAlloy, primaryGramWt, secondaryAlloy, secondaryGramWt,
-  rows, rowCalcs, totals, casting, labor, cadFee, grossTotalUSD, totalWithDutyUSD,
-  totalWithDutyLocal, fxRate, cadImage, clientRefImage, turntableLink, quoteStage,
-  hasOverride, effectiveTotalLocal,
-}) {
-  const showPrices = variant === "full";
-  const activeRows = rows
-    .map((r, i) => ({ r, c: rowCalcs[i], i }))
-    .filter(({ r, c }) => (r.sizeCode || r.customShape) && c.totalWt > 0);
-
-  const ROSE = "#9C4A63";
-  const INK = "#241B1E";
-  const MUTED = "#7A6870";
-  const HAIRLINE = "#E8D9DE";
-
-  const cell = { padding: "8px 10px", fontSize: 12, color: INK, borderBottom: `1px solid ${HAIRLINE}` };
-  const cellR = { ...cell, textAlign: "right", fontVariantNumeric: "tabular-nums" };
-  const hd = {
-    padding: "8px 10px",
-    fontWeight: 700,
-    fontSize: 10,
-    letterSpacing: 0.6,
-    textTransform: "uppercase",
-    color: "#fff",
-    background: ROSE,
-  };
-  const hdR = { ...hd, textAlign: "right" };
-
-  return (
-    <div style={{ fontFamily: '"Inter", Arial, sans-serif', color: INK }}>
-      {/* Repeating header/footer -- position:fixed inside @media print
-          makes these reappear on every physical printed page (Chrome
-          and Chromium-based browsers render fixed elements per-page
-          when printing). Kept small and unobtrusive per spec. */}
-      <div className="print-fixed-header">
-        <img src={LOGO_BLACK} alt="Made with Love" style={{ height: 22 }} />
-        <span style={{ fontSize: 10, color: MUTED, letterSpacing: 0.4 }}>JWY Calculator</span>
-      </div>
-      <div className="print-fixed-footer">
-        <img src={LOGO_BLACK} alt="" style={{ height: 12, opacity: 0.7 }} />
-        <span>World Shiner · {showPrices ? "Internal Quotation" : "Price Summary"}</span>
-      </div>
-
-      <div style={{ padding: "30px 34px", maxWidth: 780, margin: "0 auto" }}>
-      {/* ---- Letterhead ---- */}
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "flex-start",
-          borderBottom: `3px solid ${ROSE}`,
-          paddingBottom: 14,
-          marginBottom: 20,
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <img src={LOGO_BLACK} alt="Made with Love" style={{ height: 40, width: "auto" }} />
-          <div>
-            <div style={{ fontSize: 9, letterSpacing: 1.2, textTransform: "uppercase", color: MUTED, marginBottom: 2 }}>
-              World Shiner — Fine Jewelry Manufacturing
-            </div>
-            <div style={{ fontSize: 20, fontWeight: 700, fontFamily: '"Playfair Display", Georgia, serif' }}>
-              {showPrices ? "Quotation" : "Price Summary"}
-            </div>
-          </div>
-        </div>
-        <div style={{ textAlign: "right", fontSize: 11.5, color: MUTED, lineHeight: 1.6 }}>
-          <div>
-            <b style={{ color: INK }}>Job:</b> {jobInfo.jobNo || "—"}
-            {quoteStage && (
-              <span style={{ marginLeft: 8, background: ROSE, color: "#fff", fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: 10 }}>
-                {quoteStage}
-              </span>
-            )}
-          </div>
-          <div>
-            <b style={{ color: INK }}>Date:</b> {new Date().toLocaleDateString()}
-          </div>
-          {jobInfo.customer && (
-            <div>
-              <b style={{ color: INK }}>Customer:</b> {jobInfo.customer}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* ---- Design presentation: images up front, as a manufacturer would lead with the render ---- */}
-      {(cadImage || clientRefImage) && (
-        <div style={{ display: "flex", gap: 16, marginBottom: 20, breakInside: "avoid" }}>
-          {cadImage && (
-            <div style={{ flex: "1 1 50%" }}>
-              <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: 0.5, color: MUTED, marginBottom: 5 }}>
-                CAD Render
-              </div>
-              <img
-                src={cadImage}
-                alt="CAD render"
-                style={{ width: "100%", maxHeight: 260, objectFit: "contain", border: `1px solid ${HAIRLINE}`, borderRadius: 6, background: "#fff" }}
-              />
-            </div>
-          )}
-          {clientRefImage && (
-            <div style={{ flex: "1 1 50%" }}>
-              <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: 0.5, color: MUTED, marginBottom: 5 }}>
-                Client Reference
-              </div>
-              <img
-                src={clientRefImage}
-                alt="Client reference"
-                style={{ width: "100%", maxHeight: 260, objectFit: "contain", border: `1px solid ${HAIRLINE}`, borderRadius: 6, background: "#fff" }}
-              />
-            </div>
-          )}
-        </div>
-      )}
-
-      {turntableLink && (
-        <div style={{ fontSize: 12, marginBottom: 18 }}>
-          <b>3D render / turntable: </b>
-          <a href={turntableLink} style={{ color: ROSE }}>
-            {turntableLink}
-          </a>
-        </div>
-      )}
-
-      {/* ---- Job specification ---- */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(3, 1fr)",
-          gap: 0,
-          border: `1px solid ${HAIRLINE}`,
-          borderRadius: 6,
-          overflow: "hidden",
-          marginBottom: 20,
-          breakInside: "avoid",
-        }}
-      >
-        {[
-          ["Primary metal", primaryAlloy ? `${primaryAlloy.short} · ${fmt(parseFloat(primaryGramWt) || 0, 2)}g` : "—"],
-          [
-            "Secondary metal",
-            secondaryAlloy && (parseFloat(secondaryGramWt) || 0) > 0
-              ? `${secondaryAlloy.short} · ${fmt(parseFloat(secondaryGramWt) || 0, 2)}g`
-              : "—",
-          ],
-          ["Item size", jobInfo.itemSize || "—"],
-        ].map(([label, val], i) => (
-          <div key={label} style={{ padding: "10px 12px", borderLeft: i === 0 ? "none" : `1px solid ${HAIRLINE}`, background: i % 2 ? "#FBF5F7" : "#fff" }}>
-            <div style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: 0.5, color: MUTED, marginBottom: 3 }}>{label}</div>
-            <div style={{ fontSize: 12.5, fontWeight: 600 }}>{val}</div>
-          </div>
-        ))}
-      </div>
-
-      {/* ---- Stone schedule ---- */}
-      <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, color: ROSE, marginBottom: 6 }}>
-        Stone Schedule
-      </div>
-      <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 20, breakInside: "avoid" }}>
-        <thead>
-          <tr>
-            <th style={hd}>Pos</th>
-            <th style={hd}>Type</th>
-            <th style={hd}>Shape / Size</th>
-            <th style={hdR}>Qty</th>
-            <th style={hdR}>Total Ct</th>
-            {showPrices && <th style={hdR}>$/Ct</th>}
-            {showPrices && <th style={hdR}>$ Total</th>}
-          </tr>
-        </thead>
-        <tbody>
-          {activeRows.map(({ r, c, i }, idx) => (
-            <tr key={i} style={{ background: idx % 2 ? "#FBF5F7" : "#fff" }}>
-              <td style={cell}>{i + 1}</td>
-              <td style={cell}>{(r.mode || "natural") === "lgd" ? "Lab grown" : "Mined"}</td>
-              <td style={cell}>
-                {c.shape} · {c.size}
-              </td>
-              <td style={cellR}>{r.pcs}</td>
-              <td style={cellR}>{fmt(c.totalWt, 3)}</td>
-              {showPrices && <td style={cellR}>{fmtCurrency(c.perCt)}</td>}
-              {showPrices && <td style={cellR}>{fmtCurrency(c.total)}</td>}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-
-      {/* ---- Totals ---- */}
-      {showPrices ? (
-        <div style={{ display: "flex", justifyContent: "flex-end", breakInside: "avoid" }}>
-          <table style={{ borderCollapse: "collapse", minWidth: 320 }}>
-            <tbody>
-              {[
-                ["Casting", casting],
-                ["Labor", labor],
-                [`CAD (${jobInfo.cadType})`, cadFee],
-                ["Diamonds", totals.diamondTotal],
-                ["Setting", totals.settingTotal],
-              ].map(([label, val]) => (
-                <tr key={label}>
-                  <td style={{ ...cell, border: "none" }}>{label}</td>
-                  <td style={{ ...cellR, border: "none" }}>{fmtCurrency(val)}</td>
-                </tr>
-              ))}
-              <tr>
-                <td style={{ ...cell, border: "none", borderTop: `1px solid ${HAIRLINE}`, fontWeight: 700 }}>
-                  Gross total (USD)
-                </td>
-                <td style={{ ...cellR, border: "none", borderTop: `1px solid ${HAIRLINE}`, fontWeight: 700 }}>
-                  {fmtCurrency(grossTotalUSD)}
-                </td>
-              </tr>
-              <tr>
-                <td style={{ ...cell, border: "none" }}>With {(locInfo.duty * 100).toFixed(0)}% duty (USD)</td>
-                <td style={{ ...cellR, border: "none" }}>{fmtCurrency(totalWithDutyUSD)}</td>
-              </tr>
-              {hasOverride && (
-                <tr>
-                  <td style={{ ...cell, border: "none", color: MUTED, fontStyle: "italic" }}>
-                    Calculated ({locInfo.currency})
-                  </td>
-                  <td style={{ ...cellR, border: "none", color: MUTED, fontStyle: "italic" }}>
-                    {fmtCurrency(totalWithDutyLocal)}
-                  </td>
-                </tr>
-              )}
-              <tr>
-                <td style={{ padding: "10px", background: ROSE, color: "#fff", fontWeight: 700, borderRadius: "6px 0 0 6px" }}>
-                  {locInfo.code} total ({locInfo.currency}, fx {fmt(fxRate, 3)})
-                </td>
-                <td
-                  style={{
-                    padding: "10px",
-                    background: ROSE,
-                    color: "#fff",
-                    fontWeight: 700,
-                    textAlign: "right",
-                    fontVariantNumeric: "tabular-nums",
-                    borderRadius: "0 6px 6px 0",
-                  }}
-                >
-                  {fmtCurrency(effectiveTotalLocal)}
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <div style={{ textAlign: "right", marginTop: 10, breakInside: "avoid" }}>
-          <div style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: 0.8, color: MUTED }}>
-            Total ({locInfo.currency})
-          </div>
-          <div style={{ fontSize: 30, fontWeight: 700, color: ROSE }}>{fmtCurrency(effectiveTotalLocal)}</div>
-        </div>
-      )}
-
-      <div style={{ marginTop: 26, paddingTop: 12, borderTop: `1px solid ${HAIRLINE}`, fontSize: 9.5, color: MUTED, textAlign: "center" }}>
-        Generated {new Date().toLocaleString()}
-      </div>
-      </div>
-    </div>
-  );
-}
 
 function GlobalStyles() {
   return (
@@ -1543,41 +1376,6 @@ function GlobalStyles() {
       th, td { text-align: left; }
       ::-webkit-scrollbar { height: 8px; width: 8px; }
       ::-webkit-scrollbar-thumb { background: #E3C3CD; border-radius: 4px; }
-      .print-only { display: none; }
-      .print-fixed-header, .print-fixed-footer { display: none; }
-      @media print {
-        .screen-only { display: none !important; }
-        .print-only { display: block !important; }
-        @page { margin: 16mm 12mm 14mm; }
-        img { max-width: 100%; }
-        tr { break-inside: avoid; }
-
-        .print-fixed-header {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          position: fixed;
-          top: -12mm;
-          left: 0;
-          right: 0;
-          padding-bottom: 4px;
-          border-bottom: 1px solid #E8D9DE;
-        }
-        .print-fixed-footer {
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          gap: 6px;
-          position: fixed;
-          bottom: -10mm;
-          left: 0;
-          right: 0;
-          font-size: 8.5px;
-          color: #9C8A92;
-          padding-top: 3px;
-          border-top: 1px solid #E8D9DE;
-        }
-      }
     `}</style>
   );
 }
@@ -1754,7 +1552,12 @@ function JobInfoCard({ jobInfo, setJobInfo, location, setLocation, locationList,
             style={styles.input}
             placeholder="e.g. B00630"
             value={jobInfo.itemNo}
-            onChange={(e) => setJobInfo({ ...jobInfo, itemNo: e.target.value })}
+            onChange={(e) => {
+              const val = e.target.value;
+              setJobInfo({ ...jobInfo, itemNo: val });
+              const mappedLoc = ITEM_LETTER_TO_LOCATION[val.trim().charAt(0).toUpperCase()];
+              if (mappedLoc) setLocation(mappedLoc);
+            }}
           />
         </Field>
         <Field label="Item size">
@@ -1803,6 +1606,139 @@ function JobInfoCard({ jobInfo, setJobInfo, location, setLocation, locationList,
             onChange={(e) => setTurntableLink(e.target.value)}
           />
         </Field>
+      </div>
+    </div>
+  );
+}
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
+}
+
+function Lightbox({ src, onClose }) {
+  if (!src) return null;
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(20,14,17,0.85)",
+        zIndex: 1000,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        cursor: "zoom-out",
+      }}
+    >
+      <img src={src} alt="Preview" style={{ maxWidth: "90vw", maxHeight: "90vh", borderRadius: 8, boxShadow: "0 8px 40px rgba(0,0,0,0.5)" }} />
+      <button
+        type="button"
+        onClick={onClose}
+        style={{
+          position: "absolute",
+          top: 20,
+          right: 24,
+          background: "rgba(255,255,255,0.15)",
+          color: "#fff",
+          border: "none",
+          borderRadius: "50%",
+          width: 34,
+          height: 34,
+          fontSize: 18,
+          cursor: "pointer",
+        }}
+      >
+        ×
+      </button>
+    </div>
+  );
+}
+
+function ImageGroup({ label, images, setImages }) {
+  const [lightboxSrc, setLightboxSrc] = useState(null);
+  const onAddFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const dataUrl = await fileToDataUrl(file);
+    setImages((prev) => [...prev, dataUrl]);
+    e.target.value = "";
+  };
+  const removeImage = (idx) => setImages((prev) => prev.filter((_, i) => i !== idx));
+
+  return (
+    <div style={{ flex: 1, minWidth: 200 }}>
+      <div style={styles.label}>
+        {label} {images.length > 0 ? `(${images.length})` : ""}
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
+        {images.map((img, i) => (
+          <div key={i} style={{ position: "relative" }}>
+            <img
+              src={img}
+              alt={`${label} ${i + 1}`}
+              onClick={() => setLightboxSrc(img)}
+              title="Click to preview"
+              style={{
+                width: 30,
+                height: 30,
+                objectFit: "cover",
+                borderRadius: 5,
+                border: `1px solid ${ROSE_TINT_STRONG}`,
+                cursor: "zoom-in",
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => removeImage(i)}
+              title="Remove"
+              style={{
+                position: "absolute",
+                top: -6,
+                right: -6,
+                background: "#B5651D",
+                color: "#fff",
+                border: "none",
+                borderRadius: "50%",
+                width: 15,
+                height: 15,
+                fontSize: 10,
+                lineHeight: "15px",
+                cursor: "pointer",
+                padding: 0,
+              }}
+            >
+              ×
+            </button>
+          </div>
+        ))}
+        <label style={{ ...styles.smallBtn, cursor: "pointer" }}>
+          + Add
+          <input type="file" accept="image/*" style={{ display: "none" }} onChange={onAddFile} />
+        </label>
+      </div>
+      <Lightbox src={lightboxSrc} onClose={() => setLightboxSrc(null)} />
+    </div>
+  );
+}
+
+function ImagesCard({ cadImages, setCadImages, clientRefImages, setClientRefImages }) {
+  return (
+    <div style={styles.card}>
+      <div style={styles.rowBetween}>
+        <span style={styles.panelTitle}>Images</span>
+        <span style={{ fontSize: 11, color: "var(--muted)" }}>
+          Auto-filled by JSON import -- click a thumbnail to preview full-size
+        </span>
+      </div>
+      <div style={{ display: "flex", gap: 20, marginTop: 12, flexWrap: "wrap" }}>
+        <ImageGroup label="CAD renders" images={cadImages} setImages={setCadImages} />
+        <ImageGroup label="Client reference" images={clientRefImages} setImages={setClientRefImages} />
       </div>
     </div>
   );
@@ -1994,7 +1930,7 @@ function MetalPanel({ title, alloyShort, setAlloyShort, alloyList, gramWt, setGr
   );
 }
 
-function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, quoteStage, setQuoteStage }) {
+function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, quoteStage, setQuoteStage, pdfGenerating }) {
   const [selected, setSelected] = useState("");
   return (
     <div style={{ ...styles.card, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
@@ -2041,14 +1977,24 @@ function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, quoteSt
       >
         Delete
       </button>
-      <button style={{ ...styles.toggleBtn, ...styles.toggleBtnActive }} onClick={() => onPrint("full")} type="button">
-        Print (full prices)
+      <button
+        style={{ ...styles.toggleBtn, ...styles.toggleBtnActive, opacity: pdfGenerating ? 0.6 : 1 }}
+        onClick={() => onPrint("full")}
+        type="button"
+        disabled={!!pdfGenerating}
+      >
+        {pdfGenerating === "full" ? "Generating…" : "Print (full prices)"}
       </button>
-      <button style={{ ...styles.toggleBtn, ...styles.toggleBtnActive }} onClick={() => onPrint("ssp")} type="button">
-        Print (price only)
+      <button
+        style={{ ...styles.toggleBtn, ...styles.toggleBtnActive, opacity: pdfGenerating ? 0.6 : 1 }}
+        onClick={() => onPrint("priceOnly")}
+        type="button"
+        disabled={!!pdfGenerating}
+      >
+        {pdfGenerating === "priceOnly" ? "Generating…" : "Print (price only)"}
       </button>
       <span style={{ fontSize: 11, color: "var(--muted)" }}>
-        Saved on this device (browser storage) — clearing browser data removes them.
+        Downloads a .zip with the PDF and a reloadable .json snapshot together.
       </span>
     </div>
   );
@@ -2089,12 +2035,19 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow })
                   </td>
                   <td style={styles.td}>
                     <select
-                      style={{ ...styles.inputSm, width: 74 }}
-                      value={row.mode || "natural"}
-                      onChange={(e) => updateRow(i, { mode: e.target.value })}
+                      style={{ ...styles.inputSm, width: 108 }}
+                      value={row.stoneTypeSel || "Mined"}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        const newMode = val === "Lab grown" ? "lgd" : "natural";
+                        updateRow(i, { stoneTypeSel: val, mode: newMode });
+                      }}
                     >
-                      <option value="natural">Mined</option>
-                      <option value="lgd">Lab grown</option>
+                      {STONE_TYPE_OPTIONS.map((t) => (
+                        <option key={t} value={t}>
+                          {t}
+                        </option>
+                      ))}
                     </select>
                   </td>
                   <td style={styles.td}>
@@ -2152,7 +2105,9 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow })
                   </td>
                   <td style={{ ...styles.td, fontSize: 12, color: "var(--muted)" }}>{calc.size}</td>
                   <td style={styles.td}>
-                    {(row.mode || "natural") === "natural" ? (
+                    {row.stoneTypeSel && row.stoneTypeSel !== "Mined" && row.stoneTypeSel !== "Lab grown" ? (
+                      <span style={{ fontSize: 11, color: "var(--muted)", fontStyle: "italic" }}>manual $/ct</span>
+                    ) : (row.mode || "natural") === "natural" ? (
                       <select
                         style={styles.inputSm}
                         value={row.quality}
@@ -2356,14 +2311,28 @@ function BreakupSummary({
             {locInfo.code} total · {locInfo.currency}
             {hasOverride && (
               <span style={{ marginLeft: 6, fontWeight: 400, opacity: 0.85 }}>
-                (calculated: {fmtCurrency(totalWithDutyLocal)})
+                (calculated: {fmtLocal(totalWithDutyLocal, locInfo.currency)})
               </span>
             )}
           </div>
-          <div style={styles.bigValue}>{fmtCurrency(effectiveTotalLocal)}</div>
+          <div style={styles.bigValue}>{fmtLocal(effectiveTotalLocal, locInfo.currency)}</div>
           <div style={styles.fxNote}>fx rate {fmt(fxRate, 3)}</div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function RemarksCard({ jobInfo, setJobInfo }) {
+  return (
+    <div style={styles.card}>
+      <SectionLabel eyebrow="06" title="Remarks" />
+      <textarea
+        style={{ ...styles.input, width: "100%", minHeight: 70, resize: "vertical", fontFamily: "inherit" }}
+        placeholder="Internal notes, client instructions, or anything worth flagging on this job..."
+        value={jobInfo.remarks}
+        onChange={(e) => setJobInfo({ ...jobInfo, remarks: e.target.value })}
+      />
     </div>
   );
 }

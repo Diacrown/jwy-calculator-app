@@ -229,40 +229,61 @@ function transformSettingTiers(rawRows) {
     .filter(Boolean)
     .sort((a, b) => a.uptoCt - b.uptoCt);
 }
-function transformLabGrownPrices(rawRows) {
+
+// Natural (mined) round diamond pricing -- confirmed real structure:
+// a SizeGroup column (matching the same R00/R02/.../R80 codes already
+// used in the app's DIA_SIZE catalog) plus one column per quality grade.
+// Output shape matches the bundled SAMPLE_NATURAL_PRICES exactly:
+// { [groupCode]: { [qualityLabel]: price, ... }, ... }
+function transformNaturalPrices(rawRows) {
   const out = {};
   for (const r of rawRows) {
-    const code = pick(r, ["code", "Code"]); // Adjust header aliases if needed
-    const price = pick(r, ["price", "Price"]);
-    if (code) out[code.trim().toUpperCase()] = num(price);
+    const group = pick(r, ["sizeGroup", "SizeGroup", "Size Group", "Group"]);
+    if (!group) continue;
+    const grid = {};
+    // Every column that isn't the group-code column is treated as a
+    // quality-grade column, keyed by its own header text (e.g. "TW VS",
+    // "TW SI1", "WH SI", "IJ SI2-I1") -- this way any quality columns
+    // actually present in the sheet are picked up automatically, rather
+    // than hardcoding an exact list that might not match.
+    for (const [header, value] of Object.entries(r)) {
+      const isGroupCol = ["sizegroup", "size group", "group"].includes(normHeader(header));
+      if (isGroupCol) continue;
+      const n = num(value, NaN);
+      if (isFinite(n) && n > 0) grid[header.trim()] = n;
+    }
+    out[group.trim()] = grid;
   }
   return out;
 }
 
-function transformNaturalPrices(rawRows) {
-  const codeToGroupMap = {};
-  const groupToPriceMap = {};
-
-  for (const r of rawRows) {
-    // Dataset 1: Code -> Group
-    const c = pick(r, ["code", "Code"]);
-    const g = pick(r, ["group", "Group"]);
-    if (c && g) codeToGroupMap[c.trim().toUpperCase()] = g.trim();
-
-    // Dataset 2: Group -> Price
-    const pg = pick(r, ["priceGroup", "Group"]);
-    const pp = pick(r, ["price", "Price"]);
-    if (pg && pp) groupToPriceMap[pg.trim()] = num(pp);
-  }
-
-  // Combine into final mapping
-  const finalMap = {};
-  Object.keys(codeToGroupMap).forEach(code => {
-    const groupName = codeToGroupMap[code];
-    finalMap[code] = groupToPriceMap[groupName] || 0;
-  });
-  return finalMap;
+// Lab Grown diamond pricing -- confirmed real structure: one row per
+// (Shape, Min_Ct, Max_Ct) band, three price columns (D_VVS2, D_VS1,
+// Non_cert). Output shape matches SAMPLE_LGD_BANDS exactly: an array of
+// { shape, minCt, maxCt, dvvs2, dvs1, nonCert } objects.
+function transformLabGrownPrices(rawRows) {
+  return rawRows
+    .map((r) => {
+      const shape = pick(r, ["shape", "Shape"]);
+      const minCt = pick(r, ["minCt", "Min_Ct", "Min Ct", "MinCt"]);
+      const maxCt = pick(r, ["maxCt", "Max_Ct", "Max Ct", "MaxCt"]);
+      if (!shape || minCt === undefined || maxCt === undefined) return null;
+      const dvvs2Raw = pick(r, ["dvvs2", "D_VVS2", "D/VVS2", "DVVS2"]);
+      const dvs1Raw = pick(r, ["dvs1", "D_VS1", "D/VS1", "DVS1"]);
+      const nonCertRaw = pick(r, ["nonCert", "Non_cert", "Non-cert", "NonCert"]);
+      return {
+        shape: shape.trim().toUpperCase(),
+        minCt: num(minCt),
+        maxCt: num(maxCt),
+        dvvs2: dvvs2Raw !== undefined && dvvs2Raw !== "" ? num(dvvs2Raw) : null,
+        dvs1: dvs1Raw !== undefined && dvs1Raw !== "" ? num(dvs1Raw) : null,
+        nonCert: nonCertRaw !== undefined && nonCertRaw !== "" ? num(nonCertRaw) : null,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.minCt - b.minCt);
 }
+
 /* ============================================================
    Public entry point: fetch all six tabs in parallel. Any tab
    whose URL is blank, or whose fetch fails, is reported but does
