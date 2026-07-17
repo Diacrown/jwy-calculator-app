@@ -13,6 +13,7 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@react-pdf/renderer": "^4.0.0",
     "@vitejs/plugin-react": "^4.3.1",
     "vite": "^5.4.0"
   }
