@@ -1,2 +1,1 @@
-/*
-  Basic-Auth: Admin:Admin
+const GATE_PASSWORD = "Admin@1234";
