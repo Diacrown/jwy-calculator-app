@@ -30,7 +30,7 @@ const s = StyleSheet.create({
     left: 34,
     right: 34,
     flexDirection: "row",
-    justifyContent: "space-between",
+    justifyContent: "flex-end",
     borderTop: `0.5pt solid ${HAIRLINE}`,
     paddingTop: 4,
     fontSize: 7,
@@ -38,25 +38,23 @@ const s = StyleSheet.create({
   },
   letterhead: {
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "flex-start",
     borderBottom: `1.5pt solid ${ROSE}`,
     paddingBottom: 10,
     marginBottom: 14,
   },
-  logoRow: { flexDirection: "row", alignItems: "center", gap: 8 },
-  tagline: { fontSize: 7, letterSpacing: 1, textTransform: "uppercase", color: MUTED, marginBottom: 2 },
-  quoteTitle: { fontSize: 16, fontWeight: 700, fontFamily: "Times-Roman" },
-  quoteSub: { fontSize: 8, color: MUTED, marginTop: 1 },
-  jobInfoBlock: { alignItems: "flex-end" },
+  letterheadLeft: { flex: 1, flexDirection: "row", alignItems: "center" },
+  letterheadCenter: { flex: 1, alignItems: "center", justifyContent: "center" },
+  letterheadRight: { flex: 1, alignItems: "flex-end" },
+  quoteTitle: { fontSize: 15, fontWeight: 700, fontFamily: "Times-Roman" },
   jobInfoLine: { fontSize: 8.5, color: MUTED, marginBottom: 2, flexDirection: "row", gap: 3 },
   jobInfoBold: { color: INK, fontWeight: 700 },
   stageBadge: { backgroundColor: ROSE, color: "#fff", fontSize: 7, fontWeight: 700, paddingHorizontal: 5, paddingVertical: 1, borderRadius: 6, marginLeft: 4 },
 
-  imagesRow: { flexDirection: "row", gap: 12, marginBottom: 14 },
+  cadSection: { marginBottom: 14 },
   imageColLabel: { fontSize: 7, letterSpacing: 0.5, textTransform: "uppercase", color: MUTED, marginBottom: 4 },
-  imageGrid: { flexDirection: "row", flexWrap: "wrap", gap: 4 },
-  imageThumb: { width: 130, height: 100, objectFit: "contain", border: `0.5pt solid ${HAIRLINE}`, borderRadius: 3 },
+  imageGridFull: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+  imageThumbFull: { width: 170, height: 130, objectFit: "contain", border: `0.5pt solid ${HAIRLINE}`, borderRadius: 3 },
 
   specStrip: { flexDirection: "row", border: `0.5pt solid ${HAIRLINE}`, borderRadius: 4, marginBottom: 14 },
   specCell: { flex: 1, padding: 8, borderLeft: `0.5pt solid ${HAIRLINE}` },
@@ -102,9 +100,19 @@ const s = StyleSheet.create({
 const fmt = (n, dp = 2) =>
   isFinite(n) ? n.toLocaleString(undefined, { minimumFractionDigits: dp, maximumFractionDigits: dp }) : "0.00";
 
-const CURRENCY_SYMBOLS = { USD: "$", EUR: "€", GBP: "£", AUD: "A$", NZD: "NZ$", PLN: "zł", INR: "₹" };
-const fmtC = (n, code = "USD", dp = 2) => "$" + fmt(n, dp);
+// AUD/NZD spelled out per request, rather than the A$/NZ$ shorthand.
+const CURRENCY_SYMBOLS = { USD: "$", EUR: "€", GBP: "£", AUD: "AUD $", NZD: "NZD $", PLN: "zł", INR: "₹" };
+const fmtC = (n, dp = 2) => "$" + fmt(n, dp);
 const fmtL = (n, code, dp = 2) => (CURRENCY_SYMBOLS[code] || "$") + fmt(n, dp);
+
+// Shape/size cell text -- suppresses the internal "manual entry"
+// placeholder that the app uses on-screen, since it reads like leftover
+// debug text on a customer-facing document. A custom row still shows its
+// actual shape/description, just without that generic suffix.
+function shapeSizeText(c) {
+  if (c.size === "manual entry") return c.shape || "—";
+  return `${c.shape} · ${c.size}`;
+}
 
 export function QuotePdfDocument({
   variant,
@@ -114,7 +122,7 @@ export function QuotePdfDocument({
   primaryGramWt,
   secondaryAlloy,
   secondaryGramWt,
-  rowsWithCalcs, // pre-filtered active rows: [{r, c}] -- no raw index leakage into Sr.No
+  rowsWithCalcs,
   totals,
   casting,
   labor,
@@ -123,14 +131,15 @@ export function QuotePdfDocument({
   totalWithDutyLocal,
   fxRate,
   cadImages,
-  clientRefImages,
   turntableLink,
   quoteStage,
   hasOverride,
   effectiveTotalLocal,
   logoBlack,
+  printDate,
 }) {
   const showPrices = variant === "full";
+  const dateText = printDate ? new Date(printDate).toLocaleDateString() : new Date().toLocaleDateString();
 
   return (
     <Document>
@@ -141,25 +150,23 @@ export function QuotePdfDocument({
         </View>
 
         <View style={s.letterhead}>
-          <View style={s.logoRow}>
-            {logoBlack && <Image src={logoBlack} style={{ width: 34, height: 27 }} />}
-            <View>
-              <Text style={s.tagline}>World Shiner — Fine Jewelry Manufacturing</Text>
-              <Text style={s.quoteTitle}>{showPrices ? "Quotation" : "Price Summary"}</Text>
-              <Text style={s.quoteSub}>
-                {showPrices ? "Prepared for internal / trade use" : "Itemized breakdown withheld"}
-              </Text>
-            </View>
+          <View style={s.letterheadLeft}>{logoBlack && <Image src={logoBlack} style={{ width: 34, height: 27 }} />}</View>
+          <View style={s.letterheadCenter}>
+            <Text style={s.quoteTitle}>Order Quotation</Text>
           </View>
-          <View style={s.jobInfoBlock}>
+          <View style={s.letterheadRight}>
             <View style={s.jobInfoLine}>
               <Text style={s.jobInfoBold}>Job:</Text>
               <Text>{jobInfo.jobNo || "—"}</Text>
               {quoteStage ? <Text style={s.stageBadge}>{quoteStage}</Text> : null}
             </View>
             <View style={s.jobInfoLine}>
+              <Text style={s.jobInfoBold}>Item:</Text>
+              <Text>{jobInfo.itemNo || "—"}</Text>
+            </View>
+            <View style={s.jobInfoLine}>
               <Text style={s.jobInfoBold}>Date:</Text>
-              <Text>{new Date().toLocaleDateString()}</Text>
+              <Text>{dateText}</Text>
             </View>
             {jobInfo.customer ? (
               <View style={s.jobInfoLine}>
@@ -170,28 +177,14 @@ export function QuotePdfDocument({
           </View>
         </View>
 
-        {(cadImages?.length > 0 || clientRefImages?.length > 0) && (
-          <View style={s.imagesRow} wrap={false}>
-            {cadImages?.length > 0 && (
-              <View style={{ flex: 1 }}>
-                <Text style={s.imageColLabel}>CAD Render{cadImages.length > 1 ? "s" : ""}</Text>
-                <View style={s.imageGrid}>
-                  {cadImages.map((img, i) => (
-                    <Image key={i} src={img} style={s.imageThumb} />
-                  ))}
-                </View>
-              </View>
-            )}
-            {clientRefImages?.length > 0 && (
-              <View style={{ flex: 1 }}>
-                <Text style={s.imageColLabel}>Client Reference{clientRefImages.length > 1 ? "s" : ""}</Text>
-                <View style={s.imageGrid}>
-                  {clientRefImages.map((img, i) => (
-                    <Image key={i} src={img} style={s.imageThumb} />
-                  ))}
-                </View>
-              </View>
-            )}
+        {cadImages?.length > 0 && (
+          <View style={s.cadSection} wrap={false}>
+            <Text style={s.imageColLabel}>CAD Render{cadImages.length > 1 ? "s" : ""}</Text>
+            <View style={s.imageGridFull}>
+              {cadImages.map((img, i) => (
+                <Image key={i} src={img} style={s.imageThumbFull} />
+              ))}
+            </View>
           </View>
         )}
 
@@ -234,9 +227,7 @@ export function QuotePdfDocument({
           <View key={idx} style={[s.tr, idx % 2 ? s.trAlt : {}]} wrap={false}>
             <Text style={[s.td, { width: "6%" }]}>{idx + 1}</Text>
             <Text style={[s.td, { width: "12%" }]}>{(r.mode || "natural") === "lgd" ? "Lab grown" : r.stoneTypeSel || "Mined"}</Text>
-            <Text style={[s.td, { width: "30%" }]}>
-              {c.shape} · {c.size}
-            </Text>
+            <Text style={[s.td, { width: "30%" }]}>{shapeSizeText(c)}</Text>
             <Text style={[s.tdR, { width: "10%" }]}>{r.pcs}</Text>
             <Text style={[s.tdR, { width: "14%" }]}>{fmt(c.totalWt, 3)}</Text>
             {showPrices && <Text style={[s.tdR, { width: "14%" }]}>{fmtC(c.perCt)}</Text>}
@@ -316,7 +307,6 @@ export function QuotePdfDocument({
         )}
 
         <View style={s.fixedFooter} fixed>
-          <Text>Generated {new Date().toLocaleString()}</Text>
           <Text render={({ pageNumber, totalPages }) => `Page ${pageNumber} of ${totalPages}`} />
         </View>
       </Page>
