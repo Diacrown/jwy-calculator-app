@@ -2,6 +2,9 @@ import { useState, useMemo, useCallback, useEffect } from "react";
 import { fetchLiveSheetData } from "./sheetData.js";
 import { POLL_INTERVAL_MS } from "./config.js";
 import { parseOrderFormJson } from "./pdfParser.js";
+import { pdf } from "@react-pdf/renderer";
+import JSZip from "jszip";
+import { QuotePdfDocument } from "./pdfDocument.jsx";
 
 /* ============================================================
    REFERENCE DATA
@@ -41,12 +44,40 @@ const LOCATIONS = [
   { code: "DMR", currency: "INR", duty: 0.0 },
 ];
 
+// Item# first-letter -> location, for auto-selecting Location when an
+// Item# is entered/imported. Only the 8 confirmed mappings -- DMG and
+// DMR intentionally have no letter and are never auto-selected. This is
+// only a convenience default for initial loading; the user can freely
+// change Location afterward regardless of what the Item# implies.
+const ITEM_LETTER_TO_LOCATION = {
+  T: "DMT",
+  M: "WSME",
+  S: "WSSY",
+  B: "WSBN",
+  N: "WSNZ",
+  K: "WSUK",
+  I: "WSIT",
+  P: "WSPL",
+};
+
 // Shape display order for the Select Size dropdown, matching the CAD
 // Order Form's own shape dropdown sequence.
 const SHAPE_ORDER = [
   "Round", "Baguette", "Carre", "Emerald", "Heart", "Marquise", "Oval",
   "Princess", "Pear", "Radiant", "Single Cut", "Sq. Cushion", "Sq. Emerald",
   "Tappered Bagguette", "Triangle", "Trilliant",
+];
+
+// Matches the CAD Order Form's own Stone Type dropdown exactly. Only
+// "Mined" and "Lab grown" have real pricing data (DiaSSP grid / LGD
+// bands) -- every other value here always prices manually (see
+// rowCalcs), and "Mount" additionally never gets a setting charge.
+const STONE_TYPE_OPTIONS = [
+  "Mined", "Lab grown", "CZ", "Mount", "Semi-Mount", "Cabochon", "Color",
+  "Opal", "Alexandrite", "Ametrine", "Amethyst", "Aquamarine", "Citrine",
+  "Emerald", "Garnet", "Hessonite Garnet", "Iolite", "Morganite", "Pearl",
+  "Peridot", "Ruby", "Sapphire", "Spinel", "Tanzanite", "Topaz",
+  "Tourmaline", "Zircon",
 ];
 
 const ALLOYS = [
@@ -491,7 +522,10 @@ const DIA_SIZE = [
 // DiaSSP: $/ct grid by group code and clarity grade. INFERRED row-group
 // mapping for the small M-suffix sizes (R00-R25) -- confirm against real
 // DiaSize column E and correct if needed.
-const DIA_SSP = {
+// Sample/fallback data -- used only if the live Natural Prices sheet
+// isn't reachable. Real structure confirmed: SizeGroup column maps to
+// SSP pricing, same group-code keying as this table already uses.
+const SAMPLE_NATURAL_PRICES = {
   R00: { "TW VS": 470, "TW SI1": 450, "TW SI2": 410, "TW SI3": 390, "TW I1": 350, "WH SI": 370, "IJ SI2-I1": 340 },
   R02: { "TW VS": 420, "TW SI1": 400, "TW SI2": 370, "TW SI3": 350, "TW I1": 320, "WH SI": 330, "IJ SI2-I1": 300 },
   R09: { "TW VS": 540, "TW SI1": 520, "TW SI2": 470, "TW SI3": 450, "TW I1": 410, "WH SI": 430, "IJ SI2-I1": 365 },
@@ -516,21 +550,25 @@ const DIA_SSP = {
 const NATURAL_GRADES = ["TW VS", "TW SI1", "TW SI2", "TW SI3", "TW I1", "WH SI", "IJ SI2-I1"];
 
 // LGD pricing: per-ct, banded by carat weight, non-cert vs cert (graded)
-const LGD_NONCERT = [
-  { shape: "RND", minCt: 0.0, maxCt: 0.0099, rate: 135 }, // ~ -2 (0.005ct)
-  { shape: "RND", minCt: 0.01, maxCt: 0.99, rate: 100 },
+// Sample/fallback LGD pricing -- used only if the live sheet isn't
+// reachable. Confirmed structure: one row per (Shape, MinCt, MaxCt),
+// three real columns (D_VVS2, D_VS1, Non_cert). Bands above 1.49ct are
+// UNVERIFIED placeholders from an earlier chat paste, pending
+// confirmation against the live sheet.
+const SAMPLE_LGD_BANDS = [
+  { shape: "RND", minCt: 0.001, maxCt: 0.009, dvvs2: null, dvs1: null, nonCert: 135 },
+  { shape: "RND", minCt: 0.01, maxCt: 0.49, dvvs2: null, dvs1: null, nonCert: 100 },
+  { shape: "RND", minCt: 0.5, maxCt: 0.89, dvvs2: 230, dvs1: 200, nonCert: 100 },
+  { shape: "FANCY", minCt: 0.5, maxCt: 0.89, dvvs2: 280, dvs1: 250, nonCert: 150 },
+  { shape: "RND", minCt: 0.9, maxCt: 1.49, dvvs2: 170, dvs1: 160, nonCert: null },
+  { shape: "FANCY", minCt: 0.9, maxCt: 1.49, dvvs2: 170, dvs1: 160, nonCert: null },
+  { shape: "ODD", minCt: 0.01, maxCt: 3.99, dvvs2: null, dvs1: null, nonCert: 250 },
+  // UNVERIFIED -- not yet confirmed against the live sheet.
+  { shape: "RND & FANCY", minCt: 1.5, maxCt: 1.99, dvvs2: 200, dvs1: 170, nonCert: null },
+  { shape: "RND & FANCY", minCt: 2.0, maxCt: 3.99, dvvs2: 220, dvs1: 180, nonCert: null },
+  { shape: "RND & FANCY", minCt: 4.0, maxCt: 4.99, dvvs2: 280, dvs1: 250, nonCert: null },
 ];
-const LGD_CERT = [
-  { shape: "RND & FANCY", minCt: 0.9, maxCt: 1.49, labVS: 170, dvvs2: 160, dvs1: null },
-  { shape: "RND & FANCY", minCt: 1.5, maxCt: 1.99, labVS: 200, dvvs2: 170, dvs1: null },
-  { shape: "RND & FANCY", minCt: 2.0, maxCt: 3.99, labVS: 220, dvvs2: 180, dvs1: null },
-  { shape: "RND & FANCY", minCt: 4.0, maxCt: 4.99, labVS: 280, dvvs2: 250, dvs1: null },
-  { shape: "FANCY", minCt: 0.01, maxCt: 0.49, labVS: 280, dvvs2: 250, dvs1: 200 },
-  { shape: "FANCY", minCt: 0.5, maxCt: 0.89, labVS: 280, dvvs2: 250, dvs1: 150 },
-  { shape: "RND", minCt: 0.5, maxCt: 0.89, labVS: 230, dvvs2: 200, dvs1: 100 },
-  { shape: "ODD", minCt: 0.01, maxCt: 3.99, labVS: 250, dvvs2: null, dvs1: null },
-];
-const LGD_GRADES = ["Non-cert", "Lab VS", "D/VVS2", "D/VS1"];
+const LGD_GRADES = ["Non-cert", "D/VVS2", "D/VS1"];
 
 const QUALITY_OPTIONS = [...NATURAL_GRADES, "Lab grown"];
 
@@ -550,6 +588,20 @@ const fmt = (n, dp = 2) =>
 
 const fmtCurrency = (n, dp = 2) => "$" + fmt(n, dp);
 
+// Real currency symbols for the final local-currency total. AUD/NZD
+// spelled out (matches USD/EUR/etc conventions on this multi-currency
+// quote) rather than the A$/NZ$ shorthand.
+const CURRENCY_SYMBOLS = {
+  USD: "$",
+  EUR: "€",
+  GBP: "£",
+  AUD: "AUD $",
+  NZD: "NZD $",
+  PLN: "zł",
+  INR: "₹",
+};
+const fmtLocal = (n, currencyCode, dp = 2) => (CURRENCY_SYMBOLS[currencyCode] || "$") + fmt(n, dp);
+
 // Rounds a final quote figure UP to the next multiple of 5 (e.g. 682.41
 // -> 685, 680.00 -> 680 unchanged since it's already a multiple of 5).
 // Applied only to the customer-facing grand totals, not to intermediate
@@ -558,7 +610,7 @@ const fmtCurrency = (n, dp = 2) => "$" + fmt(n, dp);
 const roundUp5 = (n) => (isFinite(n) ? Math.ceil(n / 5) * 5 : 0);
 
 function emptyRow() {
-  return { mode: "natural", shapeSel: "", sizeCode: "", quality: "TW SI1", lgdGrade: "Non-cert", lgdShape: "RND", pcs: "", customShape: "", customWt: "", customRate: "", manualRate: "" };
+  return { mode: "natural", stoneTypeSel: "Mined", shapeSel: "", sizeCode: "", quality: "TW SI1", lgdGrade: "Non-cert", lgdShape: "RND", pcs: "", customShape: "", customWt: "", customRate: "", manualRate: "" };
 }
 
 // "Made with Love" logo, embedded as base64 in both colorways so print
@@ -569,6 +621,16 @@ const LOGO_BLACK = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAVQAAAFUCAYAAA
 const LOGO_WHITE = "data:image/png;base64,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";
 
 const CUSTOM_CODE = "__CUSTOM__";
+
+// Safety guard, matching the same check in pdfDocument.jsx (duplicated
+// intentionally -- separate bundles): flags if the entered "3D render
+// link" is actually this app's own address, which would otherwise
+// silently become a clickable path into the internal tool once printed
+// (PDF readers auto-linkify plain URL text).
+const OWN_APP_DOMAIN_FRAGMENT = "jwy-calculator";
+function isOwnAppLink(url) {
+  return typeof url === "string" && url.toLowerCase().includes(OWN_APP_DOMAIN_FRAGMENT);
+}
 
 // Step 1 (MetalMaster "NetRate/Gm" for the base metal): wastage-adjusted
 // base rate, $/gm of PURE metal -- mirrors
@@ -629,12 +691,16 @@ export default function JwyCalculator() {
     itemSize: "",
     customer: "",
     cadType: "Medium",
+    remarks: "",
   });
   const [location, setLocation] = useState("WSSY");
   // Which round of quoting this represents (Q1 = initial, Q2 = revised,
   // etc.) -- saved with each quote snapshot and shown on the printout so
   // it's clear at a glance which stage a given quote is at.
   const [quoteStage, setQuoteStage] = useState("Q1");
+  // Customizable print date -- defaults to today, editable via a date
+  // picker before printing so a quote can be backdated/forward-dated.
+  const [printDate, setPrintDate] = useState(() => new Date().toISOString().slice(0, 10));
   // Manual override on the final local-currency price (e.g. team wants
   // to quote 1800 AUD instead of a calculated 2000 AUD, as a discount or
   // markup). Empty means "use the calculated total, unchanged" -- the
@@ -645,7 +711,7 @@ export default function JwyCalculator() {
   const [primaryGramWt, setPrimaryGramWt] = useState(3.6);
   const [secondaryAlloyShort, setSecondaryAlloyShort] = useState("14KT WG-PD");
   const [secondaryGramWt, setSecondaryGramWt] = useState(0.5);
-  const [rows, setRows] = useState(Array.from({ length: 12 }, emptyRow));
+  const [rows, setRows] = useState(Array.from({ length: 5 }, emptyRow));
   const [savedQuotes, setSavedQuotes] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem("jwyQuotes") || "[]");
@@ -656,8 +722,8 @@ export default function JwyCalculator() {
   const [pdfStatus, setPdfStatus] = useState(""); // "", "loading", "unmapped", "error", "done"
   const [pdfFileName, setPdfFileName] = useState("");
   const [pdfImport, setPdfImport] = useState(null);
-  const [cadImage, setCadImage] = useState("");
-  const [clientRefImage, setClientRefImage] = useState("");
+  const [cadImages, setCadImages] = useState([]);
+  const [clientRefImages, setClientRefImages] = useState([]);
   const [turntableLink, setTurntableLink] = useState("");
 
   // Live data: each table falls back independently to its bundled sample
@@ -673,6 +739,8 @@ export default function JwyCalculator() {
     laborMinFlat: LABOR_MIN_FLAT,
     cadFees: CAD_FEES,
     settingTiers: SETTING_TIERS,
+    naturalPrices: null,
+    labGrownPrices: null,
   });
   const [tableSources, setTableSources] = useState({
     metalRates: "sample",
@@ -681,6 +749,8 @@ export default function JwyCalculator() {
     locations: "sample",
     cadFeesAndLabor: "sample",
     settingTiers: "sample",
+    naturalPrices: "sample",
+    labGrownPrices: "sample",
   });
   const [rateLoading, setRateLoading] = useState(false);
   const [rateErrors, setRateErrors] = useState({});
@@ -703,6 +773,8 @@ export default function JwyCalculator() {
         laborMinFlat: data.cadFeesAndLabor ? data.cadFeesAndLabor.laborMinFlat : prev.laborMinFlat,
         cadFees: data.cadFeesAndLabor ? data.cadFeesAndLabor.cadFees : prev.cadFees,
         settingTiers: data.settingTiers && data.settingTiers.length ? data.settingTiers : prev.settingTiers,
+        naturalPrices: data.naturalPrices && Object.keys(data.naturalPrices).length ? data.naturalPrices : prev.naturalPrices,
+        labGrownPrices: data.labGrownPrices && data.labGrownPrices.length ? data.labGrownPrices : prev.labGrownPrices,
       }));
       setTableSources({
         metalRates: data.metalRates ? "live" : "sample",
@@ -711,6 +783,8 @@ export default function JwyCalculator() {
         locations: data.locations ? "live" : "sample",
         cadFeesAndLabor: data.cadFeesAndLabor ? "live" : "sample",
         settingTiers: data.settingTiers ? "live" : "sample",
+        naturalPrices: data.naturalPrices ? "live" : "sample",
+        labGrownPrices: data.labGrownPrices ? "live" : "sample",
       });
       setRateErrors(errors);
       setLastSync(new Date());
@@ -730,9 +804,9 @@ export default function JwyCalculator() {
   // Shared by both import paths (PDF and direct JSON) -- applies a
   // successful parse result to calculator state identically either way.
   const applyImportResult = (fileName, resultData) => {
-    const { jobInfo: ji, metals, metalWarnings, stones, cadImageDataUrl, clientRefImageDataUrl, derivedSummary } = resultData;
-    if (cadImageDataUrl) setCadImage(cadImageDataUrl);
-    if (clientRefImageDataUrl) setClientRefImage(clientRefImageDataUrl);
+    const { jobInfo: ji, metals, metalWarnings, stones, cadImageDataUrls, clientRefImageDataUrls, derivedSummary } = resultData;
+    if (cadImageDataUrls?.length) setCadImages((prev) => [...cadImageDataUrls, ...prev]);
+    if (clientRefImageDataUrls?.length) setClientRefImages((prev) => [...clientRefImageDataUrls, ...prev]);
 
     // Apply job info. There's no true customer-name field on the card,
     // so we leave Customer untouched rather than stuffing Style code
@@ -744,7 +818,12 @@ export default function JwyCalculator() {
       jobNo: ji.jobNo || prev.jobNo,
       itemNo: ji.itemNo || prev.itemNo,
       itemSize: ji.itemSize || prev.itemSize,
+      remarks: ji.clientNotes || prev.remarks,
     }));
+    if (ji.itemNo) {
+      const mappedLoc = ITEM_LETTER_TO_LOCATION[ji.itemNo.trim().charAt(0).toUpperCase()];
+      if (mappedLoc) setLocation(mappedLoc);
+    }
 
     // Apply metals (already weight-sorted: primary = heavier).
     if (metals.primary) {
@@ -760,25 +839,24 @@ export default function JwyCalculator() {
       setSecondaryGramWt(metals.secondary.wt);
     }
 
-    // Apply stones -> calculator rows. Each row carries its own pricing
-    // mode, so cards mixing mined and lab-grown stones import fully.
-    const newRows = Array.from({ length: 12 }, emptyRow);
-    stones.slice(0, 12).forEach((s, i) => {
-      newRows[i] = {
-        mode: s.diamondMode || "natural",
-        shapeSel: s.isCustom ? CUSTOM_CODE : s.matchedShape || "",
-        sizeCode: s.isCustom ? CUSTOM_CODE : s.sizeCode || "",
-        quality: "TW SI1",
-        lgdGrade: "Non-cert",
-        lgdShape: s.lgdShape || "RND",
-        pcs: s.qty ? String(s.qty) : "",
-        customShape: s.customShape || "",
-        customWt: s.customWt ? String(s.customWt) : "",
-        customRate: "",
-        manualRate: "",
-      };
-    });
-    setRows(newRows);
+    // Apply stones -> calculator rows. Sized to exactly the number of
+    // stones on the card (no padding to a fixed count) -- "Add custom
+    // stone row" covers adding more later.
+    const newRows = stones.map((s) => ({
+      mode: s.diamondMode || "natural",
+      stoneTypeSel: STONE_TYPE_OPTIONS.includes(s.stoneType) ? s.stoneType : s.diamondMode === "lgd" ? "Lab grown" : "Mined",
+      shapeSel: s.isCustom ? CUSTOM_CODE : s.matchedShape || "",
+      sizeCode: s.isCustom ? CUSTOM_CODE : s.sizeCode || "",
+      quality: "TW SI1",
+      lgdGrade: "Non-cert",
+      lgdShape: s.lgdShape || "RND",
+      pcs: s.qty ? String(s.qty) : "",
+      customShape: s.customShape || "",
+      customWt: s.customWt ? String(s.customWt) : "",
+      customRate: "",
+      manualRate: "",
+    }));
+    setRows(newRows.length ? newRows : Array.from({ length: 5 }, emptyRow));
 
     setPdfImport({
       fileName,
@@ -846,15 +924,15 @@ export default function JwyCalculator() {
   };
 
   const clearAll = () => {
-    setJobInfo({ designer: "", jobNo: "", itemNo: "", itemSize: "", customer: "", cadType: "Medium" });
+    setJobInfo({ designer: "", jobNo: "", itemNo: "", itemSize: "", customer: "", cadType: "Medium", remarks: "" });
     setPrimaryGramWt(0);
     setSecondaryGramWt(0);
-    setRows(Array.from({ length: 12 }, emptyRow));
+    setRows(Array.from({ length: 5 }, emptyRow));
     setPdfImport(null);
     setPdfStatus("");
     setPdfFileName("");
-    setCadImage("");
-    setClientRefImage("");
+    setCadImages([]);
+    setClientRefImages([]);
     setTurntableLink("");
     setManualPriceOverride("");
   };
@@ -872,12 +950,16 @@ export default function JwyCalculator() {
     jobInfo,
     location,
     quoteStage,
+    printDate,
     primaryAlloyShort,
     primaryGramWt,
     secondaryAlloyShort,
     secondaryGramWt,
     rows,
     manualPriceOverride,
+    cadImages,
+    clientRefImages,
+    turntableLink,
     // Frozen audit record of what the formula actually calculated at
     // save time -- kept even if manualPriceOverride is set, so a later
     // review can always see both "what we calculated" and "what we
@@ -898,15 +980,19 @@ export default function JwyCalculator() {
   };
 
   const applySnapshot = (q) => {
-    setJobInfo({ itemNo: "", itemSize: "", ...q.jobInfo });
+    setJobInfo({ itemNo: "", itemSize: "", remarks: "", ...q.jobInfo });
     setLocation(q.location);
     setQuoteStage(q.quoteStage || "Q1");
+    setPrintDate(q.printDate || new Date().toISOString().slice(0, 10));
     setPrimaryAlloyShort(q.primaryAlloyShort);
     setPrimaryGramWt(q.primaryGramWt);
     setSecondaryAlloyShort(q.secondaryAlloyShort);
     setSecondaryGramWt(q.secondaryGramWt);
     setRows(q.rows.map((r) => ({ ...emptyRow(), ...r })));
     setManualPriceOverride(q.manualPriceOverride || "");
+    setCadImages(q.cadImages || []);
+    setClientRefImages(q.clientRefImages || []);
+    setTurntableLink(q.turntableLink || "");
   };
 
   const deleteQuote = (id) => {
@@ -925,24 +1011,12 @@ export default function JwyCalculator() {
     return `${base}_${stamp}`;
   };
 
-  // Downloads the exact current calculator state as a .json file --
-  // this is what "Load saved quote" reads back in later. No new backend,
-  // no Drive API: this is a plain browser file download, which is about
-  // as close to "cannot fail" as a save mechanism gets. Filing it into
-  // Drive (e.g. via a locally-synced Drive folder as your default
-  // downloads location) is a one-time browser setting, not something
-  // this code needs to manage.
-  const downloadQuoteJson = (filenameBase) => {
+  // Builds the exact current calculator state as a JSON Blob, for
+  // bundling into the same zip as the PDF (see doPrint below) -- this is
+  // what "Load saved quote" reads back in later.
+  const buildSnapshotJsonBlob = () => {
     const snapshot = buildSnapshot();
-    const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${filenameBase}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    return new Blob([JSON.stringify(snapshot, null, 2)], { type: "application/json" });
   };
 
   // Manual metal-rate override: if the live sheet ever drops (network
@@ -984,7 +1058,20 @@ export default function JwyCalculator() {
   // anything the "Add row" button is meant for) rather than requiring
   // the user to also manually switch the Shape dropdown to "Custom".
   const addCustomRow = () => {
-    setRows((prev) => [...prev, { ...emptyRow(), shapeSel: CUSTOM_CODE, sizeCode: CUSTOM_CODE }]);
+    setRows((prev) => {
+      // Find the last row that's actually been filled in (has a shape
+      // or custom description, and a quantity) -- the new row goes
+      // right after it, not at the literal end of the array, so it
+      // appears where the user is actually working.
+      let lastActiveIdx = -1;
+      for (let i = 0; i < prev.length; i++) {
+        const r = prev[i];
+        if ((r.sizeCode || r.customShape) && (parseFloat(r.pcs) || 0) > 0) lastActiveIdx = i;
+      }
+      const newRow = { ...emptyRow(), shapeSel: CUSTOM_CODE, sizeCode: CUSTOM_CODE };
+      const insertAt = lastActiveIdx + 1;
+      return [...prev.slice(0, insertAt), newRow, ...prev.slice(insertAt)];
+    });
   };
 
   const removeRow = (idx) => {
@@ -994,15 +1081,24 @@ export default function JwyCalculator() {
   const rowCalcs = useMemo(() => {
     return rows.map((row) => {
       const pcs = parseFloat(row.pcs) || 0;
+      const isMount = row.stoneTypeSel === "Mount";
       if (row.sizeCode === CUSTOM_CODE) {
         const wtPerPc = parseFloat(row.customWt) || 0;
         const perCt = parseFloat(row.customRate) || 0;
         const totalWt = wtPerPc * pcs;
         const tier = settingRateFor(wtPerPc, settingTiersLive);
-        const settingTotal = pcs > 0 ? (tier.type === "PER CT" ? tier.rate * totalWt : tier.rate * pcs) : 0;
+        // Mount is structural, not a priced stone -- it never gets a
+        // setting charge, regardless of any weight/qty entered.
+        const settingTotal = isMount ? 0 : pcs > 0 ? (tier.type === "PER CT" ? tier.rate * totalWt : tier.rate * pcs) : 0;
+        // A real Shape can be selected with only the Size made custom
+        // (e.g. "Round" with a hand-typed size) -- in that case show the
+        // real shape and the typed description as the size, rather than
+        // falling back to a generic "Custom"/"manual entry" pairing that
+        // would lose the shape that's actually known.
+        const hasRealShape = row.shapeSel && row.shapeSel !== CUSTOM_CODE;
         return {
-          shape: row.customShape || "Custom",
-          size: "manual entry",
+          shape: hasRealShape ? row.shapeSel : row.customShape || "Custom",
+          size: hasRealShape ? row.customShape || "custom size" : "manual entry",
           wtPerPc,
           totalWt,
           perCt,
@@ -1018,13 +1114,25 @@ export default function JwyCalculator() {
       }
       const totalWt = sizeEntry.wt * pcs;
       const isNatural = (row.mode || "natural") === "natural";
+      // Only "Mined" and "Lab grown" have real pricing data (DiaSSP grid
+      // and LGD bands respectively). Every other stone type (CZ, Mount,
+      // Semi-Mount, Cabochon, Color, or any specific colored gem) always
+      // prices manually, even if the shape/size happens to match
+      // something in the catalog -- that catalog has no price data for
+      // any of these, only dimensions.
+      const stoneType = row.stoneTypeSel || "Mined";
+      const isOtherType = stoneType !== "Mined" && stoneType !== "Lab grown";
 
       let perCt = 0;
       let priceEditable = false;
-      if (isNatural) {
+      if (isOtherType) {
+        perCt = parseFloat(row.manualRate) || 0;
+        priceEditable = true;
+      } else if (isNatural) {
         if (sizeEntry.group) {
-          // Round natural: priced from the DiaSSP grid.
-          const grid = DIA_SSP[sizeEntry.group];
+          // Round natural: priced from the Natural Prices (DiaSSP) grid,
+          // keyed by SizeGroup -- live-fetched when available.
+          const grid = (liveData.naturalPrices || SAMPLE_NATURAL_PRICES)[sizeEntry.group];
           perCt = grid?.[row.quality] || 0;
         } else {
           // Fancy natural: no DiaSSP price for this shape yet. The rate
@@ -1034,28 +1142,25 @@ export default function JwyCalculator() {
           priceEditable = true;
         }
       } else {
-        // LGD prices from the FANCY/ODD/cert bands regardless of
-        // whether the matched size entry has a DiaSSP group -- LGD
-        // pricing never depends on that grid.
+        // LGD prices from the unified band table -- one row per
+        // (shape, weight range) with three real columns (D/VVS2, D/VS1,
+        // Non-cert), matching the live sheet exactly.
         const wtPerPc = sizeEntry.wt;
-        if (wtPerPc < 0.01 || row.lgdGrade === "Non-cert") {
-          const band = LGD_NONCERT.find((b) => wtPerPc >= b.minCt && wtPerPc <= b.maxCt);
-          perCt = band?.rate || 0;
-        } else {
-          const band = LGD_CERT.find(
-            (b) => (b.shape === row.lgdShape || b.shape === "RND & FANCY") && wtPerPc >= b.minCt && wtPerPc <= b.maxCt
-          );
-          if (band) {
-            if (row.lgdGrade === "Lab VS") perCt = band.labVS || 0;
-            else if (row.lgdGrade === "D/VVS2") perCt = band.dvvs2 || 0;
-            else if (row.lgdGrade === "D/VS1") perCt = band.dvs1 || 0;
-          }
+        const lgdBands = liveData.labGrownPrices || SAMPLE_LGD_BANDS;
+        const band = lgdBands.find(
+          (b) => (b.shape === row.lgdShape || b.shape === "RND & FANCY") && wtPerPc >= b.minCt && wtPerPc <= b.maxCt
+        );
+        if (band) {
+          if (row.lgdGrade === "D/VVS2") perCt = band.dvvs2 || 0;
+          else if (row.lgdGrade === "D/VS1") perCt = band.dvs1 || 0;
+          else perCt = band.nonCert || 0; // "Non-cert", also the default
         }
       }
 
       const total = totalWt * perCt;
       const tier = settingRateFor(sizeEntry.wt, settingTiersLive);
-      const settingTotal = tier.type === "PER CT" ? tier.rate * totalWt : tier.rate * pcs;
+      // Mount is structural, not a priced stone -- never a setting charge.
+      const settingTotal = isMount ? 0 : tier.type === "PER CT" ? tier.rate * totalWt : tier.rate * pcs;
 
       return {
         shape: sizeEntry.shape,
@@ -1069,7 +1174,7 @@ export default function JwyCalculator() {
         priceEditable,
       };
     });
-  }, [rows, settingTiersLive]);
+  }, [rows, settingTiersLive, liveData.naturalPrices, liveData.labGrownPrices]);
 
   const totals = useMemo(() => {
     const totalWt = rowCalcs.reduce((s, r) => s + r.totalWt, 0);
@@ -1122,53 +1227,89 @@ export default function JwyCalculator() {
   const effectiveTotalLocal = hasOverride ? overrideNum : totalWithDutyLocal;
   const breakupPct = (val) => (grossTotalUSD > 0 ? (val / grossTotalUSD) * 100 : 0);
 
-  const [printVariant, setPrintVariant] = useState(null);
-  const doPrint = (variant) => {
-    const filenameBase = quoteFilenameBase();
-    downloadQuoteJson(filenameBase);
-    const originalTitle = document.title;
-    document.title = filenameBase;
-    setPrintVariant(variant);
-    setTimeout(() => {
-      window.print();
-      setTimeout(() => {
-        setPrintVariant(null);
-        document.title = originalTitle;
-      }, 400);
-    }, 80);
+  const [pdfGenerating, setPdfGenerating] = useState(null); // null | "full" | "priceOnly"
+
+  // Shared by both Print and Preview -- builds the actual PDF blob.
+  const generatePdfBlob = async (variant) => {
+    const rowsWithCalcs = rows
+      .map((r, i) => ({ r, c: rowCalcs[i] }))
+      .filter(({ r, c }) => (r.sizeCode || r.customShape) && c.totalWt > 0);
+
+    return pdf(
+      <QuotePdfDocument
+        variant={variant}
+        jobInfo={jobInfo}
+        locInfo={locInfo}
+        primaryAlloy={primaryAlloy}
+        primaryGramWt={primaryGramWt}
+        secondaryAlloy={secondaryAlloy}
+        secondaryGramWt={secondaryGramWt}
+        rowsWithCalcs={rowsWithCalcs}
+        totals={totals}
+        casting={casting}
+        labor={labor}
+        cadFee={cadFee}
+        totalWithDutyUSD={totalWithDutyUSD}
+        totalWithDutyLocal={totalWithDutyLocal}
+        fxRate={fxRate}
+        cadImages={cadImages}
+        turntableLink={turntableLink}
+        quoteStage={quoteStage}
+        hasOverride={hasOverride}
+        effectiveTotalLocal={effectiveTotalLocal}
+        logoBlack={LOGO_BLACK}
+        printDate={printDate}
+      />
+    ).toBlob();
+  };
+
+  // Opens the PDF in a new tab, no download, no JSON, no zip -- a pure
+  // look-before-you-commit preview.
+  const doPreview = async (variant) => {
+    setPdfGenerating(variant + "-preview");
+    try {
+      const pdfBlob = await generatePdfBlob(variant);
+      const url = URL.createObjectURL(pdfBlob);
+      window.open(url, "_blank");
+      // Deliberately not revoking the URL immediately -- the new tab
+      // needs it to stay valid while it's open.
+    } catch (err) {
+      alert("Couldn't generate the PDF: " + ((err && err.message) || String(err)));
+    } finally {
+      setPdfGenerating(null);
+    }
+  };
+
+  const doPrint = async (variant) => {
+    setPdfGenerating(variant);
+    try {
+      const filenameBase = quoteFilenameBase();
+      const pdfBlob = await generatePdfBlob(variant);
+      const jsonBlob = buildSnapshotJsonBlob();
+
+      const zip = new JSZip();
+      zip.file(`${filenameBase}.pdf`, pdfBlob);
+      zip.file(`${filenameBase}.json`, jsonBlob);
+      const zipBlob = await zip.generateAsync({ type: "blob" });
+
+      const url = URL.createObjectURL(zipBlob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${filenameBase}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert("Couldn't generate the PDF: " + ((err && err.message) || String(err)));
+    } finally {
+      setPdfGenerating(null);
+    }
   };
 
   return (
     <div style={styles.app}>
       <GlobalStyles />
-      <div className="print-only">
-        <PrintQuote
-          variant={printVariant || "full"}
-          jobInfo={jobInfo}
-          locInfo={locInfo}
-          primaryAlloy={primaryAlloy}
-          primaryGramWt={primaryGramWt}
-          secondaryAlloy={secondaryAlloy}
-          secondaryGramWt={secondaryGramWt}
-          rows={rows}
-          rowCalcs={rowCalcs}
-          totals={totals}
-          casting={casting}
-          labor={labor}
-          cadFee={cadFee}
-          grossTotalUSD={grossTotalUSD}
-          totalWithDutyUSD={totalWithDutyUSD}
-          totalWithDutyLocal={totalWithDutyLocal}
-          fxRate={fxRate}
-          cadImage={cadImage}
-          clientRefImage={clientRefImage}
-          turntableLink={turntableLink}
-          quoteStage={quoteStage}
-          hasOverride={hasOverride}
-          effectiveTotalLocal={effectiveTotalLocal}
-        />
-      </div>
-      <div className="screen-only">
       <TopBar
         jobInfo={jobInfo}
         pdfFileName={pdfFileName}
@@ -1189,6 +1330,13 @@ export default function JwyCalculator() {
           cadFees={liveData.cadFees}
           turntableLink={turntableLink}
           setTurntableLink={setTurntableLink}
+        />
+
+        <ImagesCard
+          cadImages={cadImages}
+          setCadImages={setCadImages}
+          clientRefImages={clientRefImages}
+          setClientRefImages={setClientRefImages}
         />
 
         {pdfImport && <PdfImportReview pdfImport={pdfImport} />}
@@ -1234,8 +1382,12 @@ export default function JwyCalculator() {
           onLoad={loadQuote}
           onDelete={deleteQuote}
           onPrint={doPrint}
+          onPreview={doPreview}
           quoteStage={quoteStage}
           setQuoteStage={setQuoteStage}
+          pdfGenerating={pdfGenerating}
+          printDate={printDate}
+          setPrintDate={setPrintDate}
         />
 
         <BreakupSummary
@@ -1256,7 +1408,8 @@ export default function JwyCalculator() {
           hasOverride={hasOverride}
           effectiveTotalLocal={effectiveTotalLocal}
         />
-      </div>
+
+        <RemarksCard jobInfo={jobInfo} setJobInfo={setJobInfo} />
       </div>
     </div>
   );
@@ -1266,272 +1419,6 @@ export default function JwyCalculator() {
    SUB-COMPONENTS
    ============================================================ */
 
-
-function PrintQuote({
-  variant, jobInfo, locInfo, primaryAlloy, primaryGramWt, secondaryAlloy, secondaryGramWt,
-  rows, rowCalcs, totals, casting, labor, cadFee, grossTotalUSD, totalWithDutyUSD,
-  totalWithDutyLocal, fxRate, cadImage, clientRefImage, turntableLink, quoteStage,
-  hasOverride, effectiveTotalLocal,
-}) {
-  const showPrices = variant === "full";
-  const activeRows = rows
-    .map((r, i) => ({ r, c: rowCalcs[i], i }))
-    .filter(({ r, c }) => (r.sizeCode || r.customShape) && c.totalWt > 0);
-
-  const ROSE = "#9C4A63";
-  const INK = "#241B1E";
-  const MUTED = "#7A6870";
-  const HAIRLINE = "#E8D9DE";
-
-  const cell = { padding: "8px 10px", fontSize: 12, color: INK, borderBottom: `1px solid ${HAIRLINE}` };
-  const cellR = { ...cell, textAlign: "right", fontVariantNumeric: "tabular-nums" };
-  const hd = {
-    padding: "8px 10px",
-    fontWeight: 700,
-    fontSize: 10,
-    letterSpacing: 0.6,
-    textTransform: "uppercase",
-    color: "#fff",
-    background: ROSE,
-  };
-  const hdR = { ...hd, textAlign: "right" };
-
-  return (
-    <div style={{ fontFamily: '"Inter", Arial, sans-serif', color: INK }}>
-      {/* Repeating header/footer -- position:fixed inside @media print
-          makes these reappear on every physical printed page (Chrome
-          and Chromium-based browsers render fixed elements per-page
-          when printing). Kept small and unobtrusive per spec. */}
-      <div className="print-fixed-header">
-        <img src={LOGO_BLACK} alt="Made with Love" style={{ height: 22 }} />
-        <span style={{ fontSize: 10, color: MUTED, letterSpacing: 0.4 }}>JWY Calculator</span>
-      </div>
-      <div className="print-fixed-footer">
-        <img src={LOGO_BLACK} alt="" style={{ height: 12, opacity: 0.7 }} />
-        <span>World Shiner · {showPrices ? "Internal Quotation" : "Price Summary"}</span>
-      </div>
-
-      <div style={{ padding: "30px 34px", maxWidth: 780, margin: "0 auto" }}>
-      {/* ---- Letterhead ---- */}
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "flex-start",
-          borderBottom: `3px solid ${ROSE}`,
-          paddingBottom: 14,
-          marginBottom: 20,
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <img src={LOGO_BLACK} alt="Made with Love" style={{ height: 40, width: "auto" }} />
-          <div>
-            <div style={{ fontSize: 9, letterSpacing: 1.2, textTransform: "uppercase", color: MUTED, marginBottom: 2 }}>
-              World Shiner — Fine Jewelry Manufacturing
-            </div>
-            <div style={{ fontSize: 20, fontWeight: 700, fontFamily: '"Playfair Display", Georgia, serif' }}>
-              {showPrices ? "Quotation" : "Price Summary"}
-            </div>
-          </div>
-        </div>
-        <div style={{ textAlign: "right", fontSize: 11.5, color: MUTED, lineHeight: 1.6 }}>
-          <div>
-            <b style={{ color: INK }}>Job:</b> {jobInfo.jobNo || "—"}
-            {quoteStage && (
-              <span style={{ marginLeft: 8, background: ROSE, color: "#fff", fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: 10 }}>
-                {quoteStage}
-              </span>
-            )}
-          </div>
-          <div>
-            <b style={{ color: INK }}>Date:</b> {new Date().toLocaleDateString()}
-          </div>
-          {jobInfo.customer && (
-            <div>
-              <b style={{ color: INK }}>Customer:</b> {jobInfo.customer}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* ---- Design presentation: images up front, as a manufacturer would lead with the render ---- */}
-      {(cadImage || clientRefImage) && (
-        <div style={{ display: "flex", gap: 16, marginBottom: 20, breakInside: "avoid" }}>
-          {cadImage && (
-            <div style={{ flex: "1 1 50%" }}>
-              <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: 0.5, color: MUTED, marginBottom: 5 }}>
-                CAD Render
-              </div>
-              <img
-                src={cadImage}
-                alt="CAD render"
-                style={{ width: "100%", maxHeight: 260, objectFit: "contain", border: `1px solid ${HAIRLINE}`, borderRadius: 6, background: "#fff" }}
-              />
-            </div>
-          )}
-          {clientRefImage && (
-            <div style={{ flex: "1 1 50%" }}>
-              <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: 0.5, color: MUTED, marginBottom: 5 }}>
-                Client Reference
-              </div>
-              <img
-                src={clientRefImage}
-                alt="Client reference"
-                style={{ width: "100%", maxHeight: 260, objectFit: "contain", border: `1px solid ${HAIRLINE}`, borderRadius: 6, background: "#fff" }}
-              />
-            </div>
-          )}
-        </div>
-      )}
-
-      {turntableLink && (
-        <div style={{ fontSize: 12, marginBottom: 18 }}>
-          <b>3D render / turntable: </b>
-          <a href={turntableLink} style={{ color: ROSE }}>
-            {turntableLink}
-          </a>
-        </div>
-      )}
-
-      {/* ---- Job specification ---- */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(3, 1fr)",
-          gap: 0,
-          border: `1px solid ${HAIRLINE}`,
-          borderRadius: 6,
-          overflow: "hidden",
-          marginBottom: 20,
-          breakInside: "avoid",
-        }}
-      >
-        {[
-          ["Primary metal", primaryAlloy ? `${primaryAlloy.short} · ${fmt(parseFloat(primaryGramWt) || 0, 2)}g` : "—"],
-          [
-            "Secondary metal",
-            secondaryAlloy && (parseFloat(secondaryGramWt) || 0) > 0
-              ? `${secondaryAlloy.short} · ${fmt(parseFloat(secondaryGramWt) || 0, 2)}g`
-              : "—",
-          ],
-          ["Item size", jobInfo.itemSize || "—"],
-        ].map(([label, val], i) => (
-          <div key={label} style={{ padding: "10px 12px", borderLeft: i === 0 ? "none" : `1px solid ${HAIRLINE}`, background: i % 2 ? "#FBF5F7" : "#fff" }}>
-            <div style={{ fontSize: 9.5, textTransform: "uppercase", letterSpacing: 0.5, color: MUTED, marginBottom: 3 }}>{label}</div>
-            <div style={{ fontSize: 12.5, fontWeight: 600 }}>{val}</div>
-          </div>
-        ))}
-      </div>
-
-      {/* ---- Stone schedule ---- */}
-      <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, color: ROSE, marginBottom: 6 }}>
-        Stone Schedule
-      </div>
-      <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 20, breakInside: "avoid" }}>
-        <thead>
-          <tr>
-            <th style={hd}>Pos</th>
-            <th style={hd}>Type</th>
-            <th style={hd}>Shape / Size</th>
-            <th style={hdR}>Qty</th>
-            <th style={hdR}>Total Ct</th>
-            {showPrices && <th style={hdR}>$/Ct</th>}
-            {showPrices && <th style={hdR}>$ Total</th>}
-          </tr>
-        </thead>
-        <tbody>
-          {activeRows.map(({ r, c, i }, idx) => (
-            <tr key={i} style={{ background: idx % 2 ? "#FBF5F7" : "#fff" }}>
-              <td style={cell}>{i + 1}</td>
-              <td style={cell}>{(r.mode || "natural") === "lgd" ? "Lab grown" : "Mined"}</td>
-              <td style={cell}>
-                {c.shape} · {c.size}
-              </td>
-              <td style={cellR}>{r.pcs}</td>
-              <td style={cellR}>{fmt(c.totalWt, 3)}</td>
-              {showPrices && <td style={cellR}>{fmtCurrency(c.perCt)}</td>}
-              {showPrices && <td style={cellR}>{fmtCurrency(c.total)}</td>}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-
-      {/* ---- Totals ---- */}
-      {showPrices ? (
-        <div style={{ display: "flex", justifyContent: "flex-end", breakInside: "avoid" }}>
-          <table style={{ borderCollapse: "collapse", minWidth: 320 }}>
-            <tbody>
-              {[
-                ["Casting", casting],
-                ["Labor", labor],
-                [`CAD (${jobInfo.cadType})`, cadFee],
-                ["Diamonds", totals.diamondTotal],
-                ["Setting", totals.settingTotal],
-              ].map(([label, val]) => (
-                <tr key={label}>
-                  <td style={{ ...cell, border: "none" }}>{label}</td>
-                  <td style={{ ...cellR, border: "none" }}>{fmtCurrency(val)}</td>
-                </tr>
-              ))}
-              <tr>
-                <td style={{ ...cell, border: "none", borderTop: `1px solid ${HAIRLINE}`, fontWeight: 700 }}>
-                  Gross total (USD)
-                </td>
-                <td style={{ ...cellR, border: "none", borderTop: `1px solid ${HAIRLINE}`, fontWeight: 700 }}>
-                  {fmtCurrency(grossTotalUSD)}
-                </td>
-              </tr>
-              <tr>
-                <td style={{ ...cell, border: "none" }}>With {(locInfo.duty * 100).toFixed(0)}% duty (USD)</td>
-                <td style={{ ...cellR, border: "none" }}>{fmtCurrency(totalWithDutyUSD)}</td>
-              </tr>
-              {hasOverride && (
-                <tr>
-                  <td style={{ ...cell, border: "none", color: MUTED, fontStyle: "italic" }}>
-                    Calculated ({locInfo.currency})
-                  </td>
-                  <td style={{ ...cellR, border: "none", color: MUTED, fontStyle: "italic" }}>
-                    {fmtCurrency(totalWithDutyLocal)}
-                  </td>
-                </tr>
-              )}
-              <tr>
-                <td style={{ padding: "10px", background: ROSE, color: "#fff", fontWeight: 700, borderRadius: "6px 0 0 6px" }}>
-                  {locInfo.code} total ({locInfo.currency}, fx {fmt(fxRate, 3)})
-                </td>
-                <td
-                  style={{
-                    padding: "10px",
-                    background: ROSE,
-                    color: "#fff",
-                    fontWeight: 700,
-                    textAlign: "right",
-                    fontVariantNumeric: "tabular-nums",
-                    borderRadius: "0 6px 6px 0",
-                  }}
-                >
-                  {fmtCurrency(effectiveTotalLocal)}
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <div style={{ textAlign: "right", marginTop: 10, breakInside: "avoid" }}>
-          <div style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: 0.8, color: MUTED }}>
-            Total ({locInfo.currency})
-          </div>
-          <div style={{ fontSize: 30, fontWeight: 700, color: ROSE }}>{fmtCurrency(effectiveTotalLocal)}</div>
-        </div>
-      )}
-
-      <div style={{ marginTop: 26, paddingTop: 12, borderTop: `1px solid ${HAIRLINE}`, fontSize: 9.5, color: MUTED, textAlign: "center" }}>
-        Generated {new Date().toLocaleString()}
-      </div>
-      </div>
-    </div>
-  );
-}
 
 function GlobalStyles() {
   return (
@@ -1543,41 +1430,6 @@ function GlobalStyles() {
       th, td { text-align: left; }
       ::-webkit-scrollbar { height: 8px; width: 8px; }
       ::-webkit-scrollbar-thumb { background: #E3C3CD; border-radius: 4px; }
-      .print-only { display: none; }
-      .print-fixed-header, .print-fixed-footer { display: none; }
-      @media print {
-        .screen-only { display: none !important; }
-        .print-only { display: block !important; }
-        @page { margin: 16mm 12mm 14mm; }
-        img { max-width: 100%; }
-        tr { break-inside: avoid; }
-
-        .print-fixed-header {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          position: fixed;
-          top: -12mm;
-          left: 0;
-          right: 0;
-          padding-bottom: 4px;
-          border-bottom: 1px solid #E8D9DE;
-        }
-        .print-fixed-footer {
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          gap: 6px;
-          position: fixed;
-          bottom: -10mm;
-          left: 0;
-          right: 0;
-          font-size: 8.5px;
-          color: #9C8A92;
-          padding-top: 3px;
-          border-top: 1px solid #E8D9DE;
-        }
-      }
     `}</style>
   );
 }
@@ -1597,14 +1449,20 @@ function TopBar({ jobInfo, pdfFileName, pdfStatus, pdfImport, onJsonUpload, onSa
           <button style={styles.uploadBtn} onClick={onClear} type="button">
             Clear form
           </button>
-          <label style={styles.uploadBtn} title="Reload a quote previously saved via the Print button">
+          <label style={styles.uploadBtn}>
             <i className="ti ti-file-upload" aria-hidden="true" style={{ fontSize: 15, marginRight: 6 }} />
             Load saved quote
+            <span title="Push Jwy Calc Json File" style={styles.infoIcon}>
+              ⓘ
+            </span>
             <input type="file" accept="application/json,.json" style={{ display: "none" }} onChange={onSavedQuoteUpload} />
           </label>
-          <label style={styles.uploadBtn} title="Import the .json exported by the CAD Order Form's Export Order Data button">
+          <label style={styles.uploadBtn}>
             <i className="ti ti-file-upload" aria-hidden="true" style={{ fontSize: 15, marginRight: 6 }} />
             Load order data
+            <span title="Push Cad order form Json File" style={styles.infoIcon}>
+              ⓘ
+            </span>
             <input type="file" accept="application/json,.json" style={{ display: "none" }} onChange={onJsonUpload} />
           </label>
         </div>
@@ -1754,7 +1612,12 @@ function JobInfoCard({ jobInfo, setJobInfo, location, setLocation, locationList,
             style={styles.input}
             placeholder="e.g. B00630"
             value={jobInfo.itemNo}
-            onChange={(e) => setJobInfo({ ...jobInfo, itemNo: e.target.value })}
+            onChange={(e) => {
+              const val = e.target.value;
+              setJobInfo({ ...jobInfo, itemNo: val });
+              const mappedLoc = ITEM_LETTER_TO_LOCATION[val.trim().charAt(0).toUpperCase()];
+              if (mappedLoc) setLocation(mappedLoc);
+            }}
           />
         </Field>
         <Field label="Item size">
@@ -1802,7 +1665,145 @@ function JobInfoCard({ jobInfo, setJobInfo, location, setLocation, locationList,
             value={turntableLink}
             onChange={(e) => setTurntableLink(e.target.value)}
           />
+          {isOwnAppLink(turntableLink) && (
+            <div style={{ fontSize: 10.5, color: "#B5651D", marginTop: 3 }}>
+              ⚠ This looks like the calculator's own address, not a 3D render link. It won't be printed on the PDF.
+            </div>
+          )}
         </Field>
+      </div>
+    </div>
+  );
+}
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
+}
+
+function Lightbox({ src, onClose }) {
+  if (!src) return null;
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(20,14,17,0.85)",
+        zIndex: 1000,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        cursor: "zoom-out",
+      }}
+    >
+      <img src={src} alt="Preview" style={{ maxWidth: "90vw", maxHeight: "90vh", borderRadius: 8, boxShadow: "0 8px 40px rgba(0,0,0,0.5)" }} />
+      <button
+        type="button"
+        onClick={onClose}
+        style={{
+          position: "absolute",
+          top: 20,
+          right: 24,
+          background: "rgba(255,255,255,0.15)",
+          color: "#fff",
+          border: "none",
+          borderRadius: "50%",
+          width: 34,
+          height: 34,
+          fontSize: 18,
+          cursor: "pointer",
+        }}
+      >
+        ×
+      </button>
+    </div>
+  );
+}
+
+function ImageGroup({ label, images, setImages }) {
+  const [lightboxSrc, setLightboxSrc] = useState(null);
+  const onAddFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const dataUrl = await fileToDataUrl(file);
+    setImages((prev) => [...prev, dataUrl]);
+    e.target.value = "";
+  };
+  const removeImage = (idx) => setImages((prev) => prev.filter((_, i) => i !== idx));
+
+  return (
+    <div style={{ flex: 1, minWidth: 200 }}>
+      <div style={styles.label}>
+        {label} {images.length > 0 ? `(${images.length})` : ""}
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
+        {images.map((img, i) => (
+          <div key={i} style={{ position: "relative" }}>
+            <img
+              src={img}
+              alt={`${label} ${i + 1}`}
+              onClick={() => setLightboxSrc(img)}
+              title="Click to preview"
+              style={{
+                width: 30,
+                height: 30,
+                objectFit: "cover",
+                borderRadius: 5,
+                border: `1px solid ${ROSE_TINT_STRONG}`,
+                cursor: "zoom-in",
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => removeImage(i)}
+              title="Remove"
+              style={{
+                position: "absolute",
+                top: -6,
+                right: -6,
+                background: "#B5651D",
+                color: "#fff",
+                border: "none",
+                borderRadius: "50%",
+                width: 15,
+                height: 15,
+                fontSize: 10,
+                lineHeight: "15px",
+                cursor: "pointer",
+                padding: 0,
+              }}
+            >
+              ×
+            </button>
+          </div>
+        ))}
+        <label style={{ ...styles.smallBtn, cursor: "pointer" }}>
+          + Add
+          <input type="file" accept="image/*" style={{ display: "none" }} onChange={onAddFile} />
+        </label>
+      </div>
+      <Lightbox src={lightboxSrc} onClose={() => setLightboxSrc(null)} />
+    </div>
+  );
+}
+
+function ImagesCard({ cadImages, setCadImages, clientRefImages, setClientRefImages }) {
+  return (
+    <div style={styles.card}>
+      <div style={styles.rowBetween}>
+        <span style={styles.panelTitle}>Images</span>
+        <span style={{ fontSize: 11, color: "var(--muted)" }}>
+          Auto-filled by JSON import -- click a thumbnail to preview full-size
+        </span>
+      </div>
+      <div style={{ display: "flex", gap: 20, marginTop: 12, flexWrap: "wrap" }}>
+        <ImageGroup label="CAD renders" images={cadImages} setImages={setCadImages} />
+        <ImageGroup label="Client reference" images={clientRefImages} setImages={setClientRefImages} />
       </div>
     </div>
   );
@@ -1994,22 +1995,61 @@ function MetalPanel({ title, alloyShort, setAlloyShort, alloyList, gramWt, setGr
   );
 }
 
-function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, quoteStage, setQuoteStage }) {
+function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, onPreview, quoteStage, setQuoteStage, pdfGenerating, printDate, setPrintDate }) {
   const [selected, setSelected] = useState("");
+
+  const PrintButton = ({ variant, label }) => (
+    <div
+      style={{
+        display: "inline-flex",
+        alignItems: "stretch",
+        borderRadius: 6,
+        overflow: "hidden",
+        opacity: pdfGenerating ? 0.6 : 1,
+      }}
+    >
+      <button
+        style={{ ...styles.toggleBtn, ...styles.toggleBtnActive, borderRadius: 0, borderRight: "1px solid rgba(255,255,255,0.35)" }}
+        onClick={() => onPrint(variant)}
+        type="button"
+        disabled={!!pdfGenerating}
+      >
+        {pdfGenerating === variant ? "Generating…" : label}
+      </button>
+      <button
+        title="Preview without downloading"
+        style={{ ...styles.toggleBtn, ...styles.toggleBtnActive, borderRadius: 0, padding: "7px 10px" }}
+        onClick={() => onPreview(variant)}
+        type="button"
+        disabled={!!pdfGenerating}
+      >
+        {pdfGenerating === variant + "-preview" ? "…" : "👁"}
+      </button>
+    </div>
+  );
+
   return (
-    <div style={{ ...styles.card, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+    <div style={{ ...styles.card, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
       <SectionLabel eyebrow="04" title="Quotes" noMargin />
-      <select style={{ ...styles.input, width: 90 }} value={quoteStage} onChange={(e) => setQuoteStage(e.target.value)} title="Which round of quoting this is">
-        <option value="Q1">Q1</option>
-        <option value="Q2">Q2</option>
-        <option value="Q3">Q3</option>
-        <option value="Q4">Q4</option>
-      </select>
-      <button style={styles.toggleBtn} onClick={onSave} type="button">
-        Save current quote
+      <input
+        style={{ ...styles.inputSm, width: 48 }}
+        value={quoteStage}
+        onChange={(e) => setQuoteStage(e.target.value)}
+        placeholder="Q1"
+        title="Which round of quoting this is -- type anything (Q1, Q2, Revised, ...)"
+      />
+      <input
+        type="date"
+        style={{ ...styles.inputSm, width: 122 }}
+        value={printDate}
+        onChange={(e) => setPrintDate(e.target.value)}
+        title="Date shown on the printed quote -- defaults to today, editable"
+      />
+      <button style={styles.smallBtn} onClick={onSave} type="button">
+        Save
       </button>
       <select
-        style={{ ...styles.input, minWidth: 220 }}
+        style={{ ...styles.inputSm, minWidth: 160 }}
         value={selected}
         onChange={(e) => setSelected(e.target.value)}
       >
@@ -2020,16 +2060,11 @@ function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, quoteSt
           </option>
         ))}
       </select>
-      <button
-        style={styles.toggleBtn}
-        type="button"
-        disabled={!selected}
-        onClick={() => selected && onLoad(Number(selected))}
-      >
+      <button style={styles.smallBtn} type="button" disabled={!selected} onClick={() => selected && onLoad(Number(selected))}>
         Load
       </button>
       <button
-        style={styles.toggleBtn}
+        style={styles.smallBtn}
         type="button"
         disabled={!selected}
         onClick={() => {
@@ -2041,15 +2076,9 @@ function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, quoteSt
       >
         Delete
       </button>
-      <button style={{ ...styles.toggleBtn, ...styles.toggleBtnActive }} onClick={() => onPrint("full")} type="button">
-        Print (full prices)
-      </button>
-      <button style={{ ...styles.toggleBtn, ...styles.toggleBtnActive }} onClick={() => onPrint("ssp")} type="button">
-        Print (price only)
-      </button>
-      <span style={{ fontSize: 11, color: "var(--muted)" }}>
-        Saved on this device (browser storage) — clearing browser data removes them.
-      </span>
+      <PrintButton variant="full" label="Print (full prices)" />
+      <PrintButton variant="priceOnly" label="Print (price only)" />
+      <span style={{ fontSize: 10.5, color: "var(--muted)" }}>👁 previews · main button downloads PDF+JSON zip.</span>
     </div>
   );
 }
@@ -2089,12 +2118,19 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow })
                   </td>
                   <td style={styles.td}>
                     <select
-                      style={{ ...styles.inputSm, width: 74 }}
-                      value={row.mode || "natural"}
-                      onChange={(e) => updateRow(i, { mode: e.target.value })}
+                      style={{ ...styles.inputSm, width: 108 }}
+                      value={row.stoneTypeSel || "Mined"}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        const newMode = val === "Lab grown" ? "lgd" : "natural";
+                        updateRow(i, { stoneTypeSel: val, mode: newMode });
+                      }}
                     >
-                      <option value="natural">Mined</option>
-                      <option value="lgd">Lab grown</option>
+                      {STONE_TYPE_OPTIONS.map((t) => (
+                        <option key={t} value={t}>
+                          {t}
+                        </option>
+                      ))}
                     </select>
                   </td>
                   <td style={styles.td}>
@@ -2135,11 +2171,25 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow })
                         value={row.customShape}
                         onChange={(e) => updateRow(i, { customShape: e.target.value })}
                       />
+                    ) : row.sizeCode === CUSTOM_CODE ? (
+                      <input
+                        style={{ ...styles.inputSm, width: 90 }}
+                        placeholder="Describe size"
+                        value={row.customShape}
+                        onChange={(e) => updateRow(i, { customShape: e.target.value })}
+                      />
                     ) : (
                       <select
                         style={styles.inputSm}
                         value={row.sizeCode}
-                        onChange={(e) => updateRow(i, { sizeCode: e.target.value })}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (val === CUSTOM_CODE) {
+                            updateRow(i, { sizeCode: CUSTOM_CODE, customShape: "", customWt: "", customRate: "" });
+                          } else {
+                            updateRow(i, { sizeCode: val });
+                          }
+                        }}
                       >
                         <option value="">Select size</option>
                         {DIA_SIZE.filter((d) => d.shape === row.shapeSel).map((d) => (
@@ -2147,12 +2197,15 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow })
                             {d.code} · {d.size} ({d.wt}ct)
                           </option>
                         ))}
+                        <option value={CUSTOM_CODE}>Custom entry…</option>
                       </select>
                     )}
                   </td>
                   <td style={{ ...styles.td, fontSize: 12, color: "var(--muted)" }}>{calc.size}</td>
                   <td style={styles.td}>
-                    {(row.mode || "natural") === "natural" ? (
+                    {row.stoneTypeSel && row.stoneTypeSel !== "Mined" && row.stoneTypeSel !== "Lab grown" ? (
+                      <span style={{ fontSize: 11, color: "var(--muted)", fontStyle: "italic" }}>manual $/ct</span>
+                    ) : (row.mode || "natural") === "natural" ? (
                       <select
                         style={styles.inputSm}
                         value={row.quality}
@@ -2319,7 +2372,7 @@ function BreakupSummary({
       </div>
       <div style={styles.divider} />
 
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
         <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 600 }}>
           Override final price ({locInfo.currency})
         </span>
@@ -2356,11 +2409,11 @@ function BreakupSummary({
             {locInfo.code} total · {locInfo.currency}
             {hasOverride && (
               <span style={{ marginLeft: 6, fontWeight: 400, opacity: 0.85 }}>
-                (calculated: {fmtCurrency(totalWithDutyLocal)})
+                (calculated: {fmtLocal(totalWithDutyLocal, locInfo.currency)})
               </span>
             )}
           </div>
-          <div style={styles.bigValue}>{fmtCurrency(effectiveTotalLocal)}</div>
+          <div style={styles.bigValue}>{fmtLocal(effectiveTotalLocal, locInfo.currency)}</div>
           <div style={styles.fxNote}>fx rate {fmt(fxRate, 3)}</div>
         </div>
       </div>
@@ -2368,9 +2421,23 @@ function BreakupSummary({
   );
 }
 
+function RemarksCard({ jobInfo, setJobInfo }) {
+  return (
+    <div style={styles.card}>
+      <SectionLabel eyebrow="06" title="Remarks" />
+      <textarea
+        style={{ ...styles.input, width: "100%", minHeight: 70, resize: "vertical", fontFamily: "inherit" }}
+        placeholder="Internal notes, client instructions, or anything worth flagging on this job..."
+        value={jobInfo.remarks}
+        onChange={(e) => setJobInfo({ ...jobInfo, remarks: e.target.value })}
+      />
+    </div>
+  );
+}
+
 function SectionLabel({ eyebrow, title, noMargin }) {
   return (
-    <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: noMargin ? 0 : 12 }}>
+    <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: noMargin ? 0 : 8 }}>
       <span style={styles.eyebrow}>{eyebrow}</span>
       <span style={styles.panelTitle}>{title}</span>
     </div>
@@ -2409,7 +2476,7 @@ const styles = {
   shell: {
     maxWidth: 1180,
     margin: "0 auto",
-    padding: "20px 24px 40px",
+    padding: "14px 20px 28px",
   },
   topBar: {
     background: INK,
@@ -2418,7 +2485,7 @@ const styles = {
   topBarInner: {
     maxWidth: 1180,
     margin: "0 auto",
-    padding: "14px 24px",
+    padding: "10px 20px",
     display: "flex",
     justifyContent: "space-between",
     alignItems: "center",
@@ -2459,6 +2526,12 @@ const styles = {
     padding: "8px 14px",
     cursor: "pointer",
   },
+  infoIcon: {
+    marginLeft: 6,
+    fontSize: 12,
+    color: "#D8B7C2",
+    cursor: "help",
+  },
   pdfStatusBar: {
     maxWidth: 1180,
     margin: "0 auto",
@@ -2471,8 +2544,8 @@ const styles = {
     background: "#FFFFFF",
     border: `1px solid ${ROSE_TINT_STRONG}`,
     borderRadius: 10,
-    padding: "18px 20px",
-    marginTop: 14,
+    padding: "12px 16px",
+    marginTop: 10,
   },
   rowBetween: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 },
   eyebrow: {
@@ -2547,11 +2620,11 @@ const styles = {
   },
   sourcePillLive: { background: ROSE_TINT, color: ROSE_DARK },
   syncNote: { fontSize: 11, color: MUTED, marginTop: 6 },
-  fieldRow: { display: "flex", gap: 14, flexWrap: "wrap" },
+  fieldRow: { display: "flex", gap: 10, flexWrap: "wrap" },
   label: { fontSize: 10.5, color: MUTED, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 },
   input: {
-    height: 33,
-    padding: "0 9px",
+    height: 30,
+    padding: "0 8px",
     borderRadius: 6,
     border: `1px solid ${ROSE_TINT_STRONG}`,
     fontSize: 13,
@@ -2569,7 +2642,7 @@ const styles = {
     width: 100,
     color: INK,
   },
-  grid2: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: 0 },
+  grid2: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 0 },
   table: { fontSize: 12.5, marginTop: 10 },
   theadRow: { borderBottom: `2px solid ${ROSE_TINT_STRONG}` },
   th: { padding: "6px 8px", color: MUTED, fontWeight: 600, fontSize: 10.5, textTransform: "uppercase", letterSpacing: 0.3 },
@@ -2613,12 +2686,12 @@ const styles = {
     fontWeight: 500,
   },
   toggleBtnActive: { background: ROSE, color: "#fff", borderColor: ROSE },
-  breakupGrid: { display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10 },
+  breakupGrid: { display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 6 },
   metricCard: {
     position: "relative",
     background: ROSE_TINT,
-    borderRadius: 8,
-    padding: "14px 14px 12px",
+    borderRadius: 7,
+    padding: "10px 10px 9px",
     overflow: "hidden",
   },
   metricTab: {
@@ -2629,15 +2702,15 @@ const styles = {
     height: 3,
     background: ROSE,
   },
-  metricLabel: { fontSize: 11, color: ROSE_DARK, fontWeight: 600, marginBottom: 4 },
-  metricValue: { fontSize: 18, fontWeight: 700, color: INK, fontVariantNumeric: "tabular-nums" },
-  metricPct: { fontSize: 10.5, color: MUTED, marginTop: 3 },
-  divider: { height: 1, background: ROSE_TINT_STRONG, margin: "18px 0" },
-  totalsGrid: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14 },
-  totalBlockMuted: { background: "#2E2227", borderRadius: 8, padding: "16px 18px" },
-  totalBlock: { background: ROSE_DARK, borderRadius: 8, padding: "16px 18px" },
-  metricLabelOnDark: { fontSize: 11, color: "#D8B7C2", fontWeight: 600, marginBottom: 6 },
-  bigValueMuted: { fontSize: 21, fontWeight: 700, color: "#F1E2E6", fontVariantNumeric: "tabular-nums" },
-  bigValue: { fontSize: 23, fontWeight: 700, color: "#fff", fontVariantNumeric: "tabular-nums" },
-  fxNote: { fontSize: 10.5, color: "#D8B7C2", marginTop: 4 },
+  metricLabel: { fontSize: 10.5, color: ROSE_DARK, fontWeight: 600, marginBottom: 3 },
+  metricValue: { fontSize: 16, fontWeight: 700, color: INK, fontVariantNumeric: "tabular-nums" },
+  metricPct: { fontSize: 10, color: MUTED, marginTop: 2 },
+  divider: { height: 1, background: ROSE_TINT_STRONG, margin: "12px 0" },
+  totalsGrid: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 },
+  totalBlockMuted: { background: "#2E2227", borderRadius: 7, padding: "11px 13px" },
+  totalBlock: { background: ROSE_DARK, borderRadius: 7, padding: "11px 13px" },
+  metricLabelOnDark: { fontSize: 10.5, color: "#D8B7C2", fontWeight: 600, marginBottom: 4 },
+  bigValueMuted: { fontSize: 18, fontWeight: 700, color: "#F1E2E6", fontVariantNumeric: "tabular-nums" },
+  bigValue: { fontSize: 20, fontWeight: 700, color: "#fff", fontVariantNumeric: "tabular-nums" },
+  fxNote: { fontSize: 10, color: "#D8B7C2", marginTop: 3 },
 };
