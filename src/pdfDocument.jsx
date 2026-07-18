@@ -23,7 +23,6 @@ const s = StyleSheet.create({
     borderBottom: `0.5pt solid ${HAIRLINE}`,
     paddingBottom: 4,
   },
-  fixedHeaderText: { fontSize: 7, color: MUTED },
   fixedFooter: {
     position: "absolute",
     bottom: 16,
@@ -146,7 +145,6 @@ export function QuotePdfDocument({
       <Page size="A4" style={s.page} wrap>
         <View style={s.fixedHeader} fixed>
           {logoBlack && <Image src={logoBlack} style={{ width: 14, height: 11 }} />}
-          <Text style={s.fixedHeaderText}>JWY Calculator</Text>
         </View>
 
         <View style={s.letterhead}>
