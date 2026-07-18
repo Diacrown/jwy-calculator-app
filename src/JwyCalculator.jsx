@@ -588,17 +588,15 @@ const fmt = (n, dp = 2) =>
 
 const fmtCurrency = (n, dp = 2) => "$" + fmt(n, dp);
 
-// Real currency symbols for the final local-currency total. AUD and NZD
-// both conventionally use "$" too, but on a multi-currency international
-// quote that's ambiguous, so they're prefixed (A$/NZ$) same as common
-// real-world usage. USD stays plain "$" since that's the default/implied
-// reading in this context.
+// Real currency symbols for the final local-currency total. AUD/NZD
+// spelled out (matches USD/EUR/etc conventions on this multi-currency
+// quote) rather than the A$/NZ$ shorthand.
 const CURRENCY_SYMBOLS = {
   USD: "$",
   EUR: "€",
   GBP: "£",
-  AUD: "A$",
-  NZD: "NZ$",
+  AUD: "AUD $",
+  NZD: "NZD $",
   PLN: "zł",
   INR: "₹",
 };
@@ -690,6 +688,9 @@ export default function JwyCalculator() {
   // etc.) -- saved with each quote snapshot and shown on the printout so
   // it's clear at a glance which stage a given quote is at.
   const [quoteStage, setQuoteStage] = useState("Q1");
+  // Customizable print date -- defaults to today, editable via a date
+  // picker before printing so a quote can be backdated/forward-dated.
+  const [printDate, setPrintDate] = useState(() => new Date().toISOString().slice(0, 10));
   // Manual override on the final local-currency price (e.g. team wants
   // to quote 1800 AUD instead of a calculated 2000 AUD, as a discount or
   // markup). Empty means "use the calculated total, unchanged" -- the
@@ -941,6 +942,7 @@ export default function JwyCalculator() {
     jobInfo,
     location,
     quoteStage,
+    printDate,
     primaryAlloyShort,
     primaryGramWt,
     secondaryAlloyShort,
@@ -973,6 +975,7 @@ export default function JwyCalculator() {
     setJobInfo({ itemNo: "", itemSize: "", remarks: "", ...q.jobInfo });
     setLocation(q.location);
     setQuoteStage(q.quoteStage || "Q1");
+    setPrintDate(q.printDate || new Date().toISOString().slice(0, 10));
     setPrimaryAlloyShort(q.primaryAlloyShort);
     setPrimaryGramWt(q.primaryGramWt);
     setSecondaryAlloyShort(q.secondaryAlloyShort);
@@ -1047,7 +1050,20 @@ export default function JwyCalculator() {
   // anything the "Add row" button is meant for) rather than requiring
   // the user to also manually switch the Shape dropdown to "Custom".
   const addCustomRow = () => {
-    setRows((prev) => [...prev, { ...emptyRow(), shapeSel: CUSTOM_CODE, sizeCode: CUSTOM_CODE }]);
+    setRows((prev) => {
+      // Find the last row that's actually been filled in (has a shape
+      // or custom description, and a quantity) -- the new row goes
+      // right after it, not at the literal end of the array, so it
+      // appears where the user is actually working.
+      let lastActiveIdx = -1;
+      for (let i = 0; i < prev.length; i++) {
+        const r = prev[i];
+        if ((r.sizeCode || r.customShape) && (parseFloat(r.pcs) || 0) > 0) lastActiveIdx = i;
+      }
+      const newRow = { ...emptyRow(), shapeSel: CUSTOM_CODE, sizeCode: CUSTOM_CODE };
+      const insertAt = lastActiveIdx + 1;
+      return [...prev.slice(0, insertAt), newRow, ...prev.slice(insertAt)];
+    });
   };
 
   const removeRow = (idx) => {
@@ -1066,9 +1082,15 @@ export default function JwyCalculator() {
         // Mount is structural, not a priced stone -- it never gets a
         // setting charge, regardless of any weight/qty entered.
         const settingTotal = isMount ? 0 : pcs > 0 ? (tier.type === "PER CT" ? tier.rate * totalWt : tier.rate * pcs) : 0;
+        // A real Shape can be selected with only the Size made custom
+        // (e.g. "Round" with a hand-typed size) -- in that case show the
+        // real shape and the typed description as the size, rather than
+        // falling back to a generic "Custom"/"manual entry" pairing that
+        // would lose the shape that's actually known.
+        const hasRealShape = row.shapeSel && row.shapeSel !== CUSTOM_CODE;
         return {
-          shape: row.customShape || "Custom",
-          size: "manual entry",
+          shape: hasRealShape ? row.shapeSel : row.customShape || "Custom",
+          size: hasRealShape ? row.customShape || "custom size" : "manual entry",
           wtPerPc,
           totalWt,
           perCt,
@@ -1225,12 +1247,12 @@ export default function JwyCalculator() {
           totalWithDutyLocal={totalWithDutyLocal}
           fxRate={fxRate}
           cadImages={cadImages}
-          clientRefImages={clientRefImages}
           turntableLink={turntableLink}
           quoteStage={quoteStage}
           hasOverride={hasOverride}
           effectiveTotalLocal={effectiveTotalLocal}
           logoBlack={LOGO_BLACK}
+          printDate={printDate}
         />
       ).toBlob();
 
@@ -1334,6 +1356,8 @@ export default function JwyCalculator() {
           quoteStage={quoteStage}
           setQuoteStage={setQuoteStage}
           pdfGenerating={pdfGenerating}
+          printDate={printDate}
+          setPrintDate={setPrintDate}
         />
 
         <BreakupSummary
@@ -1395,14 +1419,20 @@ function TopBar({ jobInfo, pdfFileName, pdfStatus, pdfImport, onJsonUpload, onSa
           <button style={styles.uploadBtn} onClick={onClear} type="button">
             Clear form
           </button>
-          <label style={styles.uploadBtn} title="Reload a quote previously saved via the Print button">
+          <label style={styles.uploadBtn}>
             <i className="ti ti-file-upload" aria-hidden="true" style={{ fontSize: 15, marginRight: 6 }} />
             Load saved quote
+            <span title="Push Jwy Calc Json File" style={styles.infoIcon}>
+              ⓘ
+            </span>
             <input type="file" accept="application/json,.json" style={{ display: "none" }} onChange={onSavedQuoteUpload} />
           </label>
-          <label style={styles.uploadBtn} title="Import the .json exported by the CAD Order Form's Export Order Data button">
+          <label style={styles.uploadBtn}>
             <i className="ti ti-file-upload" aria-hidden="true" style={{ fontSize: 15, marginRight: 6 }} />
             Load order data
+            <span title="Push Cad order form Json File" style={styles.infoIcon}>
+              ⓘ
+            </span>
             <input type="file" accept="application/json,.json" style={{ display: "none" }} onChange={onJsonUpload} />
           </label>
         </div>
@@ -1930,17 +1960,25 @@ function MetalPanel({ title, alloyShort, setAlloyShort, alloyList, gramWt, setGr
   );
 }
 
-function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, quoteStage, setQuoteStage, pdfGenerating }) {
+function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, quoteStage, setQuoteStage, pdfGenerating, printDate, setPrintDate }) {
   const [selected, setSelected] = useState("");
   return (
     <div style={{ ...styles.card, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
       <SectionLabel eyebrow="04" title="Quotes" noMargin />
-      <select style={{ ...styles.input, width: 90 }} value={quoteStage} onChange={(e) => setQuoteStage(e.target.value)} title="Which round of quoting this is">
-        <option value="Q1">Q1</option>
-        <option value="Q2">Q2</option>
-        <option value="Q3">Q3</option>
-        <option value="Q4">Q4</option>
-      </select>
+      <input
+        style={{ ...styles.input, width: 70 }}
+        value={quoteStage}
+        onChange={(e) => setQuoteStage(e.target.value)}
+        placeholder="Q1"
+        title="Which round of quoting this is -- type anything (Q1, Q2, Revised, ...)"
+      />
+      <input
+        type="date"
+        style={{ ...styles.input, width: 140 }}
+        value={printDate}
+        onChange={(e) => setPrintDate(e.target.value)}
+        title="Date shown on the printed quote -- defaults to today, editable"
+      />
       <button style={styles.toggleBtn} onClick={onSave} type="button">
         Save current quote
       </button>
@@ -2088,11 +2126,25 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow })
                         value={row.customShape}
                         onChange={(e) => updateRow(i, { customShape: e.target.value })}
                       />
+                    ) : row.sizeCode === CUSTOM_CODE ? (
+                      <input
+                        style={{ ...styles.inputSm, width: 90 }}
+                        placeholder="Describe size"
+                        value={row.customShape}
+                        onChange={(e) => updateRow(i, { customShape: e.target.value })}
+                      />
                     ) : (
                       <select
                         style={styles.inputSm}
                         value={row.sizeCode}
-                        onChange={(e) => updateRow(i, { sizeCode: e.target.value })}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (val === CUSTOM_CODE) {
+                            updateRow(i, { sizeCode: CUSTOM_CODE, customShape: "", customWt: "", customRate: "" });
+                          } else {
+                            updateRow(i, { sizeCode: val });
+                          }
+                        }}
                       >
                         <option value="">Select size</option>
                         {DIA_SIZE.filter((d) => d.shape === row.shapeSel).map((d) => (
@@ -2100,6 +2152,7 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow })
                             {d.code} · {d.size} ({d.wt}ct)
                           </option>
                         ))}
+                        <option value={CUSTOM_CODE}>Custom entry…</option>
                       </select>
                     )}
                   </td>
@@ -2427,6 +2480,12 @@ const styles = {
     borderRadius: 6,
     padding: "8px 14px",
     cursor: "pointer",
+  },
+  infoIcon: {
+    marginLeft: 6,
+    fontSize: 12,
+    color: "#D8B7C2",
+    cursor: "help",
   },
   pdfStatusBar: {
     maxWidth: 1180,
