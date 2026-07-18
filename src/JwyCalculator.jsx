@@ -1221,41 +1221,62 @@ export default function JwyCalculator() {
 
   const [pdfGenerating, setPdfGenerating] = useState(null); // null | "full" | "priceOnly"
 
+  // Shared by both Print and Preview -- builds the actual PDF blob.
+  const generatePdfBlob = async (variant) => {
+    const rowsWithCalcs = rows
+      .map((r, i) => ({ r, c: rowCalcs[i] }))
+      .filter(({ r, c }) => (r.sizeCode || r.customShape) && c.totalWt > 0);
+
+    return pdf(
+      <QuotePdfDocument
+        variant={variant}
+        jobInfo={jobInfo}
+        locInfo={locInfo}
+        primaryAlloy={primaryAlloy}
+        primaryGramWt={primaryGramWt}
+        secondaryAlloy={secondaryAlloy}
+        secondaryGramWt={secondaryGramWt}
+        rowsWithCalcs={rowsWithCalcs}
+        totals={totals}
+        casting={casting}
+        labor={labor}
+        cadFee={cadFee}
+        totalWithDutyUSD={totalWithDutyUSD}
+        totalWithDutyLocal={totalWithDutyLocal}
+        fxRate={fxRate}
+        cadImages={cadImages}
+        turntableLink={turntableLink}
+        quoteStage={quoteStage}
+        hasOverride={hasOverride}
+        effectiveTotalLocal={effectiveTotalLocal}
+        logoBlack={LOGO_BLACK}
+        printDate={printDate}
+      />
+    ).toBlob();
+  };
+
+  // Opens the PDF in a new tab, no download, no JSON, no zip -- a pure
+  // look-before-you-commit preview.
+  const doPreview = async (variant) => {
+    setPdfGenerating(variant + "-preview");
+    try {
+      const pdfBlob = await generatePdfBlob(variant);
+      const url = URL.createObjectURL(pdfBlob);
+      window.open(url, "_blank");
+      // Deliberately not revoking the URL immediately -- the new tab
+      // needs it to stay valid while it's open.
+    } catch (err) {
+      alert("Couldn't generate the PDF: " + ((err && err.message) || String(err)));
+    } finally {
+      setPdfGenerating(null);
+    }
+  };
+
   const doPrint = async (variant) => {
     setPdfGenerating(variant);
     try {
       const filenameBase = quoteFilenameBase();
-      const rowsWithCalcs = rows
-        .map((r, i) => ({ r, c: rowCalcs[i] }))
-        .filter(({ r, c }) => (r.sizeCode || r.customShape) && c.totalWt > 0);
-
-      const pdfBlob = await pdf(
-        <QuotePdfDocument
-          variant={variant}
-          jobInfo={jobInfo}
-          locInfo={locInfo}
-          primaryAlloy={primaryAlloy}
-          primaryGramWt={primaryGramWt}
-          secondaryAlloy={secondaryAlloy}
-          secondaryGramWt={secondaryGramWt}
-          rowsWithCalcs={rowsWithCalcs}
-          totals={totals}
-          casting={casting}
-          labor={labor}
-          cadFee={cadFee}
-          totalWithDutyUSD={totalWithDutyUSD}
-          totalWithDutyLocal={totalWithDutyLocal}
-          fxRate={fxRate}
-          cadImages={cadImages}
-          turntableLink={turntableLink}
-          quoteStage={quoteStage}
-          hasOverride={hasOverride}
-          effectiveTotalLocal={effectiveTotalLocal}
-          logoBlack={LOGO_BLACK}
-          printDate={printDate}
-        />
-      ).toBlob();
-
+      const pdfBlob = await generatePdfBlob(variant);
       const jsonBlob = buildSnapshotJsonBlob();
 
       const zip = new JSZip();
@@ -1353,6 +1374,7 @@ export default function JwyCalculator() {
           onLoad={loadQuote}
           onDelete={deleteQuote}
           onPrint={doPrint}
+          onPreview={doPreview}
           quoteStage={quoteStage}
           setQuoteStage={setQuoteStage}
           pdfGenerating={pdfGenerating}
@@ -1960,7 +1982,7 @@ function MetalPanel({ title, alloyShort, setAlloyShort, alloyList, gramWt, setGr
   );
 }
 
-function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, quoteStage, setQuoteStage, pdfGenerating, printDate, setPrintDate }) {
+function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, onPreview, quoteStage, setQuoteStage, pdfGenerating, printDate, setPrintDate }) {
   const [selected, setSelected] = useState("");
   return (
     <div style={{ ...styles.card, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
@@ -2024,6 +2046,15 @@ function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, quoteSt
         {pdfGenerating === "full" ? "Generating…" : "Print (full prices)"}
       </button>
       <button
+        title="Preview without downloading"
+        style={{ ...styles.smallBtn, opacity: pdfGenerating ? 0.6 : 1 }}
+        onClick={() => onPreview("full")}
+        type="button"
+        disabled={!!pdfGenerating}
+      >
+        {pdfGenerating === "full-preview" ? "…" : "👁"}
+      </button>
+      <button
         style={{ ...styles.toggleBtn, ...styles.toggleBtnActive, opacity: pdfGenerating ? 0.6 : 1 }}
         onClick={() => onPrint("priceOnly")}
         type="button"
@@ -2031,8 +2062,17 @@ function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, quoteSt
       >
         {pdfGenerating === "priceOnly" ? "Generating…" : "Print (price only)"}
       </button>
+      <button
+        title="Preview without downloading"
+        style={{ ...styles.smallBtn, opacity: pdfGenerating ? 0.6 : 1 }}
+        onClick={() => onPreview("priceOnly")}
+        type="button"
+        disabled={!!pdfGenerating}
+      >
+        {pdfGenerating === "priceOnly-preview" ? "…" : "👁"}
+      </button>
       <span style={{ fontSize: 11, color: "var(--muted)" }}>
-        Downloads a .zip with the PDF and a reloadable .json snapshot together.
+        Print downloads a .zip (PDF + reloadable .json). Preview just opens the PDF.
       </span>
     </div>
   );
@@ -2392,7 +2432,7 @@ function RemarksCard({ jobInfo, setJobInfo }) {
 
 function SectionLabel({ eyebrow, title, noMargin }) {
   return (
-    <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: noMargin ? 0 : 12 }}>
+    <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: noMargin ? 0 : 8 }}>
       <span style={styles.eyebrow}>{eyebrow}</span>
       <span style={styles.panelTitle}>{title}</span>
     </div>
@@ -2431,7 +2471,7 @@ const styles = {
   shell: {
     maxWidth: 1180,
     margin: "0 auto",
-    padding: "20px 24px 40px",
+    padding: "14px 20px 28px",
   },
   topBar: {
     background: INK,
@@ -2440,7 +2480,7 @@ const styles = {
   topBarInner: {
     maxWidth: 1180,
     margin: "0 auto",
-    padding: "14px 24px",
+    padding: "10px 20px",
     display: "flex",
     justifyContent: "space-between",
     alignItems: "center",
@@ -2499,8 +2539,8 @@ const styles = {
     background: "#FFFFFF",
     border: `1px solid ${ROSE_TINT_STRONG}`,
     borderRadius: 10,
-    padding: "18px 20px",
-    marginTop: 14,
+    padding: "12px 16px",
+    marginTop: 10,
   },
   rowBetween: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 },
   eyebrow: {
@@ -2575,11 +2615,11 @@ const styles = {
   },
   sourcePillLive: { background: ROSE_TINT, color: ROSE_DARK },
   syncNote: { fontSize: 11, color: MUTED, marginTop: 6 },
-  fieldRow: { display: "flex", gap: 14, flexWrap: "wrap" },
+  fieldRow: { display: "flex", gap: 10, flexWrap: "wrap" },
   label: { fontSize: 10.5, color: MUTED, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 },
   input: {
-    height: 33,
-    padding: "0 9px",
+    height: 30,
+    padding: "0 8px",
     borderRadius: 6,
     border: `1px solid ${ROSE_TINT_STRONG}`,
     fontSize: 13,
@@ -2597,7 +2637,7 @@ const styles = {
     width: 100,
     color: INK,
   },
-  grid2: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: 0 },
+  grid2: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 0 },
   table: { fontSize: 12.5, marginTop: 10 },
   theadRow: { borderBottom: `2px solid ${ROSE_TINT_STRONG}` },
   th: { padding: "6px 8px", color: MUTED, fontWeight: 600, fontSize: 10.5, textTransform: "uppercase", letterSpacing: 0.3 },
@@ -2641,7 +2681,7 @@ const styles = {
     fontWeight: 500,
   },
   toggleBtnActive: { background: ROSE, color: "#fff", borderColor: ROSE },
-  breakupGrid: { display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10 },
+  breakupGrid: { display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8 },
   metricCard: {
     position: "relative",
     background: ROSE_TINT,
@@ -2661,7 +2701,7 @@ const styles = {
   metricValue: { fontSize: 18, fontWeight: 700, color: INK, fontVariantNumeric: "tabular-nums" },
   metricPct: { fontSize: 10.5, color: MUTED, marginTop: 3 },
   divider: { height: 1, background: ROSE_TINT_STRONG, margin: "18px 0" },
-  totalsGrid: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14 },
+  totalsGrid: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10 },
   totalBlockMuted: { background: "#2E2227", borderRadius: 8, padding: "16px 18px" },
   totalBlock: { background: ROSE_DARK, borderRadius: 8, padding: "16px 18px" },
   metricLabelOnDark: { fontSize: 11, color: "#D8B7C2", fontWeight: 600, marginBottom: 6 },
