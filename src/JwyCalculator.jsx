@@ -701,7 +701,7 @@ export default function JwyCalculator() {
   const [primaryGramWt, setPrimaryGramWt] = useState(3.6);
   const [secondaryAlloyShort, setSecondaryAlloyShort] = useState("14KT WG-PD");
   const [secondaryGramWt, setSecondaryGramWt] = useState(0.5);
-  const [rows, setRows] = useState(Array.from({ length: 12 }, emptyRow));
+  const [rows, setRows] = useState(Array.from({ length: 5 }, emptyRow));
   const [savedQuotes, setSavedQuotes] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem("jwyQuotes") || "[]");
@@ -829,26 +829,24 @@ export default function JwyCalculator() {
       setSecondaryGramWt(metals.secondary.wt);
     }
 
-    // Apply stones -> calculator rows. Each row carries its own pricing
-    // mode, so cards mixing mined and lab-grown stones import fully.
-    const newRows = Array.from({ length: 12 }, emptyRow);
-    stones.slice(0, 12).forEach((s, i) => {
-      newRows[i] = {
-        mode: s.diamondMode || "natural",
-        stoneTypeSel: STONE_TYPE_OPTIONS.includes(s.stoneType) ? s.stoneType : s.diamondMode === "lgd" ? "Lab grown" : "Mined",
-        shapeSel: s.isCustom ? CUSTOM_CODE : s.matchedShape || "",
-        sizeCode: s.isCustom ? CUSTOM_CODE : s.sizeCode || "",
-        quality: "TW SI1",
-        lgdGrade: "Non-cert",
-        lgdShape: s.lgdShape || "RND",
-        pcs: s.qty ? String(s.qty) : "",
-        customShape: s.customShape || "",
-        customWt: s.customWt ? String(s.customWt) : "",
-        customRate: "",
-        manualRate: "",
-      };
-    });
-    setRows(newRows);
+    // Apply stones -> calculator rows. Sized to exactly the number of
+    // stones on the card (no padding to a fixed count) -- "Add custom
+    // stone row" covers adding more later.
+    const newRows = stones.map((s) => ({
+      mode: s.diamondMode || "natural",
+      stoneTypeSel: STONE_TYPE_OPTIONS.includes(s.stoneType) ? s.stoneType : s.diamondMode === "lgd" ? "Lab grown" : "Mined",
+      shapeSel: s.isCustom ? CUSTOM_CODE : s.matchedShape || "",
+      sizeCode: s.isCustom ? CUSTOM_CODE : s.sizeCode || "",
+      quality: "TW SI1",
+      lgdGrade: "Non-cert",
+      lgdShape: s.lgdShape || "RND",
+      pcs: s.qty ? String(s.qty) : "",
+      customShape: s.customShape || "",
+      customWt: s.customWt ? String(s.customWt) : "",
+      customRate: "",
+      manualRate: "",
+    }));
+    setRows(newRows.length ? newRows : Array.from({ length: 5 }, emptyRow));
 
     setPdfImport({
       fileName,
@@ -919,7 +917,7 @@ export default function JwyCalculator() {
     setJobInfo({ designer: "", jobNo: "", itemNo: "", itemSize: "", customer: "", cadType: "Medium", remarks: "" });
     setPrimaryGramWt(0);
     setSecondaryGramWt(0);
-    setRows(Array.from({ length: 12 }, emptyRow));
+    setRows(Array.from({ length: 5 }, emptyRow));
     setPdfImport(null);
     setPdfStatus("");
     setPdfFileName("");
@@ -1984,11 +1982,42 @@ function MetalPanel({ title, alloyShort, setAlloyShort, alloyList, gramWt, setGr
 
 function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, onPreview, quoteStage, setQuoteStage, pdfGenerating, printDate, setPrintDate }) {
   const [selected, setSelected] = useState("");
+
+  const PrintButton = ({ variant, label }) => (
+    <div
+      style={{
+        display: "inline-flex",
+        alignItems: "stretch",
+        borderRadius: 6,
+        overflow: "hidden",
+        opacity: pdfGenerating ? 0.6 : 1,
+      }}
+    >
+      <button
+        style={{ ...styles.toggleBtn, ...styles.toggleBtnActive, borderRadius: 0, borderRight: "1px solid rgba(255,255,255,0.35)" }}
+        onClick={() => onPrint(variant)}
+        type="button"
+        disabled={!!pdfGenerating}
+      >
+        {pdfGenerating === variant ? "Generating…" : label}
+      </button>
+      <button
+        title="Preview without downloading"
+        style={{ ...styles.toggleBtn, ...styles.toggleBtnActive, borderRadius: 0, padding: "7px 10px" }}
+        onClick={() => onPreview(variant)}
+        type="button"
+        disabled={!!pdfGenerating}
+      >
+        {pdfGenerating === variant + "-preview" ? "…" : "👁"}
+      </button>
+    </div>
+  );
+
   return (
-    <div style={{ ...styles.card, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+    <div style={{ ...styles.card, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
       <SectionLabel eyebrow="04" title="Quotes" noMargin />
       <input
-        style={{ ...styles.input, width: 70 }}
+        style={{ ...styles.inputSm, width: 48 }}
         value={quoteStage}
         onChange={(e) => setQuoteStage(e.target.value)}
         placeholder="Q1"
@@ -1996,16 +2025,16 @@ function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, onPrevi
       />
       <input
         type="date"
-        style={{ ...styles.input, width: 140 }}
+        style={{ ...styles.inputSm, width: 122 }}
         value={printDate}
         onChange={(e) => setPrintDate(e.target.value)}
         title="Date shown on the printed quote -- defaults to today, editable"
       />
-      <button style={styles.toggleBtn} onClick={onSave} type="button">
-        Save current quote
+      <button style={styles.smallBtn} onClick={onSave} type="button">
+        Save
       </button>
       <select
-        style={{ ...styles.input, minWidth: 220 }}
+        style={{ ...styles.inputSm, minWidth: 160 }}
         value={selected}
         onChange={(e) => setSelected(e.target.value)}
       >
@@ -2016,16 +2045,11 @@ function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, onPrevi
           </option>
         ))}
       </select>
-      <button
-        style={styles.toggleBtn}
-        type="button"
-        disabled={!selected}
-        onClick={() => selected && onLoad(Number(selected))}
-      >
+      <button style={styles.smallBtn} type="button" disabled={!selected} onClick={() => selected && onLoad(Number(selected))}>
         Load
       </button>
       <button
-        style={styles.toggleBtn}
+        style={styles.smallBtn}
         type="button"
         disabled={!selected}
         onClick={() => {
@@ -2037,43 +2061,9 @@ function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, onPrevi
       >
         Delete
       </button>
-      <button
-        style={{ ...styles.toggleBtn, ...styles.toggleBtnActive, opacity: pdfGenerating ? 0.6 : 1 }}
-        onClick={() => onPrint("full")}
-        type="button"
-        disabled={!!pdfGenerating}
-      >
-        {pdfGenerating === "full" ? "Generating…" : "Print (full prices)"}
-      </button>
-      <button
-        title="Preview without downloading"
-        style={{ ...styles.smallBtn, opacity: pdfGenerating ? 0.6 : 1 }}
-        onClick={() => onPreview("full")}
-        type="button"
-        disabled={!!pdfGenerating}
-      >
-        {pdfGenerating === "full-preview" ? "…" : "👁"}
-      </button>
-      <button
-        style={{ ...styles.toggleBtn, ...styles.toggleBtnActive, opacity: pdfGenerating ? 0.6 : 1 }}
-        onClick={() => onPrint("priceOnly")}
-        type="button"
-        disabled={!!pdfGenerating}
-      >
-        {pdfGenerating === "priceOnly" ? "Generating…" : "Print (price only)"}
-      </button>
-      <button
-        title="Preview without downloading"
-        style={{ ...styles.smallBtn, opacity: pdfGenerating ? 0.6 : 1 }}
-        onClick={() => onPreview("priceOnly")}
-        type="button"
-        disabled={!!pdfGenerating}
-      >
-        {pdfGenerating === "priceOnly-preview" ? "…" : "👁"}
-      </button>
-      <span style={{ fontSize: 11, color: "var(--muted)" }}>
-        Print downloads a .zip (PDF + reloadable .json). Preview just opens the PDF.
-      </span>
+      <PrintButton variant="full" label="Print (full prices)" />
+      <PrintButton variant="priceOnly" label="Print (price only)" />
+      <span style={{ fontSize: 10.5, color: "var(--muted)" }}>👁 previews · main button downloads PDF+JSON zip.</span>
     </div>
   );
 }
@@ -2367,7 +2357,7 @@ function BreakupSummary({
       </div>
       <div style={styles.divider} />
 
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
         <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 600 }}>
           Override final price ({locInfo.currency})
         </span>
@@ -2681,12 +2671,12 @@ const styles = {
     fontWeight: 500,
   },
   toggleBtnActive: { background: ROSE, color: "#fff", borderColor: ROSE },
-  breakupGrid: { display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8 },
+  breakupGrid: { display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 6 },
   metricCard: {
     position: "relative",
     background: ROSE_TINT,
-    borderRadius: 8,
-    padding: "14px 14px 12px",
+    borderRadius: 7,
+    padding: "10px 10px 9px",
     overflow: "hidden",
   },
   metricTab: {
@@ -2697,15 +2687,15 @@ const styles = {
     height: 3,
     background: ROSE,
   },
-  metricLabel: { fontSize: 11, color: ROSE_DARK, fontWeight: 600, marginBottom: 4 },
-  metricValue: { fontSize: 18, fontWeight: 700, color: INK, fontVariantNumeric: "tabular-nums" },
-  metricPct: { fontSize: 10.5, color: MUTED, marginTop: 3 },
-  divider: { height: 1, background: ROSE_TINT_STRONG, margin: "18px 0" },
-  totalsGrid: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10 },
-  totalBlockMuted: { background: "#2E2227", borderRadius: 8, padding: "16px 18px" },
-  totalBlock: { background: ROSE_DARK, borderRadius: 8, padding: "16px 18px" },
-  metricLabelOnDark: { fontSize: 11, color: "#D8B7C2", fontWeight: 600, marginBottom: 6 },
-  bigValueMuted: { fontSize: 21, fontWeight: 700, color: "#F1E2E6", fontVariantNumeric: "tabular-nums" },
-  bigValue: { fontSize: 23, fontWeight: 700, color: "#fff", fontVariantNumeric: "tabular-nums" },
-  fxNote: { fontSize: 10.5, color: "#D8B7C2", marginTop: 4 },
+  metricLabel: { fontSize: 10.5, color: ROSE_DARK, fontWeight: 600, marginBottom: 3 },
+  metricValue: { fontSize: 16, fontWeight: 700, color: INK, fontVariantNumeric: "tabular-nums" },
+  metricPct: { fontSize: 10, color: MUTED, marginTop: 2 },
+  divider: { height: 1, background: ROSE_TINT_STRONG, margin: "12px 0" },
+  totalsGrid: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 },
+  totalBlockMuted: { background: "#2E2227", borderRadius: 7, padding: "11px 13px" },
+  totalBlock: { background: ROSE_DARK, borderRadius: 7, padding: "11px 13px" },
+  metricLabelOnDark: { fontSize: 10.5, color: "#D8B7C2", fontWeight: 600, marginBottom: 4 },
+  bigValueMuted: { fontSize: 18, fontWeight: 700, color: "#F1E2E6", fontVariantNumeric: "tabular-nums" },
+  bigValue: { fontSize: 20, fontWeight: 700, color: "#fff", fontVariantNumeric: "tabular-nums" },
+  fxNote: { fontSize: 10, color: "#D8B7C2", marginTop: 3 },
 };
