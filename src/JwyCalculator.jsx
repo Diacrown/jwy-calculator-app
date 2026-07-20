@@ -42,7 +42,6 @@ const LOCATIONS = [
   { code: "WSIT", currency: "EUR", duty: 0.02 },
   { code: "WSPL", currency: "PLN", duty: 0.02 },
   { code: "DMR", currency: "INR", duty: 0.0 },
-  { code: "DIA", currency: "USD", duty: 0.0 },
 ];
 
 // Item# first-letter -> location, for auto-selecting Location when an
@@ -684,7 +683,7 @@ function castingCost(gramWt, alloy, metalRates) {
    MAIN COMPONENT
    ============================================================ */
 
-export default function JwyCalculator() {
+function JwyCalculatorApp() {
   const [jobInfo, setJobInfo] = useState({
     designer: "Kunal",
     jobNo: "S01022",
@@ -740,8 +739,8 @@ export default function JwyCalculator() {
     laborMinFlat: LABOR_MIN_FLAT,
     cadFees: CAD_FEES,
     settingTiers: SETTING_TIERS,
-    naturalPrices: SAMPLE_NATURAL_PRICES,
-    labGrownPrices: SAMPLE_LGD_BANDS,
+    naturalPrices: null,
+    labGrownPrices: null,
   });
   const [tableSources, setTableSources] = useState({
     metalRates: "sample",
@@ -998,6 +997,17 @@ export default function JwyCalculator() {
 
   const deleteQuote = (id) => {
     persistQuotes(savedQuotes.filter((s) => s.id !== id));
+  };
+
+  // Fetches a quote from cloud storage (via search-quotes -> pick one)
+  // and restores it exactly like any other saved quote -- same
+  // applySnapshot() path as "Load saved quote", just sourced from the
+  // cloud database/blob instead of a local file upload.
+  const loadFromCloud = async (filenameBase) => {
+    const res = await fetch(`/.netlify/functions/load-quote?filenameBase=${encodeURIComponent(filenameBase)}`);
+    if (!res.ok) throw new Error("Couldn't load that quote from the cloud");
+    const snapshot = await res.json();
+    applySnapshot(snapshot);
   };
 
   // Builds a filename from whichever of Job No / Item No are actually
@@ -1301,6 +1311,30 @@ export default function JwyCalculator() {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
+
+      // Cloud archive, best-effort -- the local .zip above has already
+      // succeeded regardless of what happens here. If this fails (no
+      // database set up yet, network hiccup, whatever), the person
+      // still has their quote; they just won't be able to find it via
+      // search later. Never throws into the outer catch.
+      try {
+        const pdfBase64 = await blobToBase64(pdfBlob);
+        const jsonText = await jsonBlob.text();
+        await fetch("/.netlify/functions/save-quote", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            filenameBase,
+            jobNo: jobInfo.jobNo,
+            itemNo: jobInfo.itemNo,
+            quoteStage,
+            pdfBase64,
+            jsonText,
+          }),
+        });
+      } catch (cloudErr) {
+        console.warn("Cloud archive skipped:", cloudErr);
+      }
     } catch (err) {
       alert("Couldn't generate the PDF: " + ((err && err.message) || String(err)));
     } finally {
@@ -1389,6 +1423,7 @@ export default function JwyCalculator() {
           pdfGenerating={pdfGenerating}
           printDate={printDate}
           setPrintDate={setPrintDate}
+          loadFromCloud={loadFromCloud}
         />
 
         <BreakupSummary
@@ -1683,6 +1718,17 @@ function fileToDataUrl(file) {
     r.onload = () => resolve(r.result);
     r.onerror = reject;
     r.readAsDataURL(file);
+  });
+}
+
+// Same mechanism as fileToDataUrl but strips the "data:...;base64,"
+// prefix, since the save-quote function wants raw base64 to decode.
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result.split(",")[1] || "");
+    r.onerror = reject;
+    r.readAsDataURL(blob);
   });
 }
 
@@ -1996,7 +2042,110 @@ function MetalPanel({ title, alloyShort, setAlloyShort, alloyList, gramWt, setGr
   );
 }
 
-function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, onPreview, quoteStage, setQuoteStage, pdfGenerating, printDate, setPrintDate }) {
+function CloudQuoteSearch({ loadFromCloud }) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [loadingId, setLoadingId] = useState(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (query.trim().length < 2) {
+      setResults([]);
+      return;
+    }
+    const t = setTimeout(async () => {
+      setSearching(true);
+      setError("");
+      try {
+        const res = await fetch(`/.netlify/functions/search-quotes?q=${encodeURIComponent(query)}`);
+        if (!res.ok) throw new Error("Search failed");
+        const data = await res.json();
+        setResults(data.results || []);
+      } catch (err) {
+        setError("Search unavailable -- cloud storage may not be set up yet.");
+        setResults([]);
+      } finally {
+        setSearching(false);
+      }
+    }, 350); // debounce
+    return () => clearTimeout(t);
+  }, [query]);
+
+  const pick = async (r) => {
+    setLoadingId(r.id);
+    setError("");
+    try {
+      await loadFromCloud(r.filename_base);
+      setQuery("");
+      setResults([]);
+    } catch (err) {
+      setError((err && err.message) || "Couldn't load that quote.");
+    } finally {
+      setLoadingId(null);
+    }
+  };
+
+  return (
+    <div style={{ position: "relative" }}>
+      <input
+        style={{ ...styles.inputSm, width: 180 }}
+        placeholder="Search Job#/Item# history…"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+      />
+      {(results.length > 0 || searching || error) && (
+        <div
+          style={{
+            position: "absolute",
+            top: "100%",
+            left: 0,
+            marginTop: 4,
+            width: 280,
+            maxHeight: 220,
+            overflowY: "auto",
+            background: "#fff",
+            border: `1px solid ${ROSE_TINT_STRONG}`,
+            borderRadius: 6,
+            boxShadow: "0 4px 16px rgba(0,0,0,0.1)",
+            zIndex: 50,
+          }}
+        >
+          {searching && <div style={{ padding: 8, fontSize: 11.5, color: "var(--muted)" }}>Searching…</div>}
+          {error && <div style={{ padding: 8, fontSize: 11.5, color: "#B5651D" }}>{error}</div>}
+          {!searching &&
+            results.map((r) => (
+              <div
+                key={r.id}
+                onClick={() => pick(r)}
+                style={{
+                  padding: "7px 10px",
+                  fontSize: 12,
+                  cursor: "pointer",
+                  borderBottom: `1px solid ${ROSE_TINT_STRONG}`,
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "#FBF5F7")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "#fff")}
+              >
+                <b>{r.job_no || "—"}</b>
+                {r.item_no ? ` · ${r.item_no}` : ""}
+                {r.quote_stage ? ` · ${r.quote_stage}` : ""}
+                <div style={{ fontSize: 10.5, color: "var(--muted)" }}>
+                  {new Date(r.created_at).toLocaleString()}
+                  {loadingId === r.id ? " · loading…" : ""}
+                </div>
+              </div>
+            ))}
+          {!searching && !error && results.length === 0 && query.trim().length >= 2 && (
+            <div style={{ padding: 8, fontSize: 11.5, color: "var(--muted)" }}>No matches.</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, onPreview, quoteStage, setQuoteStage, pdfGenerating, printDate, setPrintDate, loadFromCloud }) {
   const [selected, setSelected] = useState("");
 
   const PrintButton = ({ variant, label }) => (
@@ -2054,7 +2203,7 @@ function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, onPrevi
         value={selected}
         onChange={(e) => setSelected(e.target.value)}
       >
-        <option value="">Saved quotes…</option>
+        <option value="">Saved quotes (this device)…</option>
         {savedQuotes.map((q) => (
           <option key={q.id} value={q.id}>
             {q.label}
@@ -2077,6 +2226,7 @@ function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, onPrevi
       >
         Delete
       </button>
+      <CloudQuoteSearch loadFromCloud={loadFromCloud} />
       <PrintButton variant="full" label="Print (full prices)" />
       <PrintButton variant="priceOnly" label="Print (price only)" />
       <span style={{ fontSize: 10.5, color: "var(--muted)" }}>👁 previews · main button downloads PDF+JSON zip.</span>
@@ -2715,3 +2865,110 @@ const styles = {
   bigValue: { fontSize: 20, fontWeight: 700, color: "#fff", fontVariantNumeric: "tabular-nums" },
   fxNote: { fontSize: 10, color: "#D8B7C2", marginTop: 3 },
 };
+
+/* ============================================================
+   CLIENT-SIDE PASSWORD GATE
+   Not real security -- this is a deterrent against a stray link
+   reaching someone who shouldn't have it (e.g. a link accidentally
+   left in a customer PDF), not a defense against a determined
+   attacker. The check happens entirely in the browser; anyone who
+   reads the JS source or network traffic could bypass it. Change
+   GATE_PASSWORD below to whatever your team should use, and keep in
+   mind it's visible to anyone who looks at this source file.
+   ============================================================ */
+
+const GATE_PASSWORD = "Admin@1234";
+const GATE_SESSION_KEY = "jwy_gate_unlocked";
+
+function PasswordGate({ onUnlock }) {
+  const [value, setValue] = useState("");
+  const [error, setError] = useState(false);
+
+  const tryUnlock = (e) => {
+    e.preventDefault();
+    if (value === GATE_PASSWORD) {
+      try {
+        sessionStorage.setItem(GATE_SESSION_KEY, "true");
+      } catch {}
+      onUnlock();
+    } else {
+      setError(true);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "#FFFCFD",
+        fontFamily: '"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+      }}
+    >
+      <form
+        onSubmit={tryUnlock}
+        style={{
+          background: "#fff",
+          border: "1px solid #F3DCE3",
+          borderRadius: 10,
+          padding: "28px 30px",
+          width: 300,
+          boxShadow: "0 4px 20px rgba(0,0,0,0.06)",
+        }}
+      >
+        <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 4, color: "#241B1E" }}>Internal tool</div>
+        <div style={{ fontSize: 12.5, color: "#8B7680", marginBottom: 16 }}>Enter the team password to continue.</div>
+        <input
+          type="password"
+          autoFocus
+          value={value}
+          onChange={(e) => {
+            setValue(e.target.value);
+            setError(false);
+          }}
+          style={{
+            width: "100%",
+            height: 36,
+            padding: "0 10px",
+            borderRadius: 6,
+            border: `1px solid ${error ? "#B5651D" : "#F3DCE3"}`,
+            fontSize: 13,
+            marginBottom: 10,
+            boxSizing: "border-box",
+          }}
+        />
+        {error && <div style={{ fontSize: 11.5, color: "#B5651D", marginBottom: 10 }}>Incorrect password.</div>}
+        <button
+          type="submit"
+          style={{
+            width: "100%",
+            height: 36,
+            borderRadius: 6,
+            border: "none",
+            background: "#9C4A63",
+            color: "#fff",
+            fontWeight: 600,
+            fontSize: 13,
+            cursor: "pointer",
+          }}
+        >
+          Continue
+        </button>
+      </form>
+    </div>
+  );
+}
+
+export default function JwyCalculator() {
+  const [unlocked, setUnlocked] = useState(() => {
+    try {
+      return sessionStorage.getItem(GATE_SESSION_KEY) === "true";
+    } catch {
+      return false;
+    }
+  });
+  if (!unlocked) return <PasswordGate onUnlock={() => setUnlocked(true)} />;
+  return <JwyCalculatorApp />;
+}
