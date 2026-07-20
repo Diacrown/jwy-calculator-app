@@ -740,8 +740,8 @@ export default function JwyCalculator() {
     laborMinFlat: LABOR_MIN_FLAT,
     cadFees: CAD_FEES,
     settingTiers: SETTING_TIERS,
-    naturalPrices: NATURAL_PRICES,
-    labGrownPrices: LABGROWN_PRICES,
+    naturalPrices: SAMPLE_NATURAL_PRICES,
+    labGrownPrices: SAMPLE_LGD_BANDS,
   });
   const [tableSources, setTableSources] = useState({
     metalRates: "sample",
