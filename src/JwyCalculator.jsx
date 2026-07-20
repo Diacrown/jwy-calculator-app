@@ -686,8 +686,8 @@ function castingCost(gramWt, alloy, metalRates) {
 
 function JwyCalculatorApp() {
   const [jobInfo, setJobInfo] = useState({
-    designer: "Kunal",
-    jobNo: "S01022",
+    designer: "",
+    jobNo: "",
     itemNo: "",
     itemSize: "",
     customer: "",
@@ -708,10 +708,10 @@ function JwyCalculatorApp() {
   // calculated figure is NEVER overwritten, only supplemented, so it
   // stays available for audit even when a quote was manually adjusted.
   const [manualPriceOverride, setManualPriceOverride] = useState("");
-  const [primaryAlloyShort, setPrimaryAlloyShort] = useState("14KT YG");
-  const [primaryGramWt, setPrimaryGramWt] = useState(3.6);
-  const [secondaryAlloyShort, setSecondaryAlloyShort] = useState("14KT WG-PD");
-  const [secondaryGramWt, setSecondaryGramWt] = useState(0.5);
+  const [primaryAlloyShort, setPrimaryAlloyShort] = useState("");
+  const [primaryGramWt, setPrimaryGramWt] = useState("");
+  const [secondaryAlloyShort, setSecondaryAlloyShort] = useState("");
+  const [secondaryGramWt, setSecondaryGramWt] = useState("");
   const [rows, setRows] = useState(Array.from({ length: 5 }, emptyRow));
   const [savedQuotes, setSavedQuotes] = useState(() => {
     try {
@@ -926,8 +926,10 @@ function JwyCalculatorApp() {
 
   const clearAll = () => {
     setJobInfo({ designer: "", jobNo: "", itemNo: "", itemSize: "", customer: "", cadType: "Medium", remarks: "" });
-    setPrimaryGramWt(0);
-    setSecondaryGramWt(0);
+    setPrimaryAlloyShort("");
+    setPrimaryGramWt("");
+    setSecondaryAlloyShort("");
+    setSecondaryGramWt("");
     setRows(Array.from({ length: 5 }, emptyRow));
     setPdfImport(null);
     setPdfStatus("");
@@ -1370,6 +1372,9 @@ function JwyCalculatorApp() {
           cadFees={liveData.cadFees}
           turntableLink={turntableLink}
           setTurntableLink={setTurntableLink}
+          printDate={printDate}
+          setPrintDate={setPrintDate}
+          loadFromCloud={loadFromCloud}
         />
 
         <ImagesCard
@@ -1426,9 +1431,6 @@ function JwyCalculatorApp() {
           quoteStage={quoteStage}
           setQuoteStage={setQuoteStage}
           pdfGenerating={pdfGenerating}
-          printDate={printDate}
-          setPrintDate={setPrintDate}
-          loadFromCloud={loadFromCloud}
         />
 
         <BreakupSummary
@@ -1480,7 +1482,9 @@ function TopBar({ jobInfo, pdfFileName, pdfStatus, pdfImport, onJsonUpload, onSa
     <div style={styles.topBar}>
       <div style={styles.topBarInner}>
         <div style={styles.brandBlock}>
-          <img src={LOGO_WHITE} alt="Made with Love" style={{ height: 34, width: "auto" }} />
+          <div style={styles.brandLogoBox}>
+            <img src={LOGO_WHITE} alt="Made with Love" style={{ height: 30, width: "auto", display: "block" }} />
+          </div>
           <div>
             <div style={styles.brandTitle}>JWY Calculator</div>
             <div style={styles.brandSub}>Job {jobInfo.jobNo || "—"}</div>
@@ -1627,11 +1631,14 @@ function PdfImportReview({ pdfImport }) {
   );
 }
 
-function JobInfoCard({ jobInfo, setJobInfo, location, setLocation, locationList, cadFees, turntableLink, setTurntableLink }) {
+function JobInfoCard({ jobInfo, setJobInfo, location, setLocation, locationList, cadFees, turntableLink, setTurntableLink, printDate, setPrintDate, loadFromCloud }) {
   return (
     <div style={styles.card}>
-      <SectionLabel eyebrow="01" title="Job details" />
-      <div style={styles.fieldRow}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+        <SectionLabel eyebrow="01" title="Job details" noMargin />
+        <CloudQuoteSearch loadFromCloud={loadFromCloud} />
+      </div>
+      <div style={{ ...styles.fieldRow, marginTop: 10 }}>
         <Field label="Designer">
           <input
             style={styles.input}
@@ -1667,6 +1674,15 @@ function JobInfoCard({ jobInfo, setJobInfo, location, setLocation, locationList,
             placeholder="e.g. UK O"
             value={jobInfo.itemSize}
             onChange={(e) => setJobInfo({ ...jobInfo, itemSize: e.target.value })}
+          />
+        </Field>
+        <Field label="Date">
+          <input
+            type="date"
+            style={styles.input}
+            value={printDate}
+            onChange={(e) => setPrintDate(e.target.value)}
+            title="Date shown on the printed quote -- defaults to today, editable"
           />
         </Field>
         <Field label="Customer" grow>
@@ -2025,6 +2041,7 @@ function MetalPanel({ title, alloyShort, setAlloyShort, alloyList, gramWt, setGr
       <div style={styles.fieldRow}>
         <Field label="Alloy" grow>
           <select style={styles.input} value={alloyShort} onChange={(e) => setAlloyShort(e.target.value)}>
+            <option value="">Select alloy…</option>
             {alloyList.map((a) => (
               <option key={a.short} value={a.short}>
                 {a.short} — {a.name}
@@ -2150,21 +2167,13 @@ function CloudQuoteSearch({ loadFromCloud }) {
   );
 }
 
-function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, onPreview, quoteStage, setQuoteStage, pdfGenerating, printDate, setPrintDate, loadFromCloud }) {
+function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, onPreview, quoteStage, setQuoteStage, pdfGenerating }) {
   const [selected, setSelected] = useState("");
 
   const PrintButton = ({ variant, label }) => (
-    <div
-      style={{
-        display: "inline-flex",
-        alignItems: "stretch",
-        borderRadius: 6,
-        overflow: "hidden",
-        opacity: pdfGenerating ? 0.6 : 1,
-      }}
-    >
+    <div style={{ display: "inline-flex", alignItems: "center", gap: 5, opacity: pdfGenerating ? 0.6 : 1 }}>
       <button
-        style={{ ...styles.toggleBtn, ...styles.toggleBtnActive, borderRadius: 0, borderRight: "1px solid rgba(255,255,255,0.35)" }}
+        style={{ ...styles.toggleBtn, ...styles.toggleBtnActive }}
         onClick={() => onPrint(variant)}
         type="button"
         disabled={!!pdfGenerating}
@@ -2173,7 +2182,7 @@ function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, onPrevi
       </button>
       <button
         title="Preview without downloading"
-        style={{ ...styles.toggleBtn, ...styles.toggleBtnActive, borderRadius: 0, padding: "7px 10px" }}
+        style={{ ...styles.toggleBtn, ...styles.toggleBtnActive, padding: "7px 10px" }}
         onClick={() => onPreview(variant)}
         type="button"
         disabled={!!pdfGenerating}
@@ -2192,13 +2201,6 @@ function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, onPrevi
         onChange={(e) => setQuoteStage(e.target.value)}
         placeholder="Q1"
         title="Which round of quoting this is -- type anything (Q1, Q2, Revised, ...)"
-      />
-      <input
-        type="date"
-        style={{ ...styles.inputSm, width: 122 }}
-        value={printDate}
-        onChange={(e) => setPrintDate(e.target.value)}
-        title="Date shown on the printed quote -- defaults to today, editable"
       />
       <button style={styles.smallBtn} onClick={onSave} type="button">
         Save
@@ -2231,7 +2233,6 @@ function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, onPrevi
       >
         Delete
       </button>
-      <CloudQuoteSearch loadFromCloud={loadFromCloud} />
       <PrintButton variant="full" label="Print (full prices)" />
       <PrintButton variant="priceOnly" label="Print (price only)" />
       <span style={{ fontSize: 10.5, color: "var(--muted)" }}>👁 previews · main button downloads PDF+JSON zip.</span>
@@ -2647,6 +2648,15 @@ const styles = {
     alignItems: "center",
   },
   brandBlock: { display: "flex", alignItems: "center", gap: 12 },
+  brandLogoBox: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: "6px 10px",
+    borderRadius: 8,
+    background: "rgba(255,255,255,0.08)",
+    border: "1px solid rgba(255,255,255,0.18)",
+  },
   brandMark: {
     width: 38,
     height: 38,
