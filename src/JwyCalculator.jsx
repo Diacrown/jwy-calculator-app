@@ -2877,7 +2877,7 @@ const styles = {
    mind it's visible to anyone who looks at this source file.
    ============================================================ */
 
-const GATE_PASSWORD = "changeme123";
+const GATE_PASSWORD = "Admin@1234";
 const GATE_SESSION_KEY = "jwy_gate_unlocked";
 
 function PasswordGate({ onUnlock }) {
