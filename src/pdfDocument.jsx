@@ -35,25 +35,63 @@ const s = StyleSheet.create({
     fontSize: 7,
     color: MUTED,
   },
+
+  // Header: title on the left, logo prominently top-right (highlighted
+  // box) with job info stacked underneath it.
   letterhead: {
     flexDirection: "row",
+    justifyContent: "space-between",
     alignItems: "flex-start",
     borderBottom: `1.5pt solid ${ROSE}`,
     paddingBottom: 10,
     marginBottom: 14,
   },
-  letterheadLeft: { flex: 1, flexDirection: "row", alignItems: "center" },
-  letterheadCenter: { flex: 1, alignItems: "center", justifyContent: "center" },
-  letterheadRight: { flex: 1, alignItems: "flex-end" },
-  quoteTitle: { fontSize: 15, fontWeight: 700, fontFamily: "Times-Roman" },
-  jobInfoLine: { fontSize: 8.5, color: MUTED, marginBottom: 2, flexDirection: "row", gap: 3 },
+  titleBlock: { justifyContent: "center" },
+  tagline: { fontSize: 7, letterSpacing: 1, textTransform: "uppercase", color: MUTED, marginBottom: 3 },
+  quoteTitle: { fontSize: 17, fontWeight: 700, fontFamily: "Times-Roman" },
+  quoteSub: { fontSize: 8, color: MUTED, marginTop: 2 },
+  logoHighlightBox: {
+    border: `1pt solid ${ROSE}`,
+    borderRadius: 5,
+    padding: 6,
+    backgroundColor: TINT,
+    alignItems: "center",
+    marginBottom: 8,
+  },
+  jobInfoLine: { fontSize: 8.5, color: MUTED, marginBottom: 2, flexDirection: "row", gap: 3, justifyContent: "flex-end" },
   jobInfoBold: { color: INK, fontWeight: 700 },
   stageBadge: { backgroundColor: ROSE, color: "#fff", fontSize: 7, fontWeight: 700, paddingHorizontal: 5, paddingVertical: 1, borderRadius: 6, marginLeft: 4 },
 
-  cadSection: { marginBottom: 14 },
-  imageColLabel: { fontSize: 7, letterSpacing: 0.5, textTransform: "uppercase", color: MUTED, marginBottom: 4 },
-  imageGridFull: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
-  imageThumbFull: { width: 170, height: 130, objectFit: "contain", border: `0.5pt solid ${HAIRLINE}`, borderRadius: 3 },
+  // CAD render: the hero image, sized to roughly half the page.
+  cadSection: { marginBottom: 10 },
+  sectionLabel: { fontSize: 8.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, color: ROSE, marginBottom: 5 },
+  cadHero: {
+    width: "100%",
+    height: 300,
+    objectFit: "contain",
+    border: `0.75pt solid ${HAIRLINE}`,
+    borderRadius: 4,
+    backgroundColor: "#fff",
+  },
+  cadExtrasRow: { flexDirection: "row", gap: 6, marginTop: 6 },
+  cadExtraThumb: { width: 80, height: 62, objectFit: "contain", border: `0.5pt solid ${HAIRLINE}`, borderRadius: 3 },
+
+  // Turntable link, styled as a small distinct pill between the CAD
+  // image and the stone schedule.
+  linkPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    backgroundColor: TINT,
+    border: `0.5pt solid ${ROSE}`,
+    borderRadius: 4,
+    paddingVertical: 5,
+    paddingHorizontal: 8,
+    marginBottom: 12,
+    alignSelf: "flex-start",
+  },
+  linkPillLabel: { fontSize: 7.5, fontWeight: 700, color: ROSE, textTransform: "uppercase", letterSpacing: 0.4 },
+  linkPillText: { fontSize: 8, color: INK },
 
   specStrip: { flexDirection: "row", border: `0.5pt solid ${HAIRLINE}`, borderRadius: 4, marginBottom: 14 },
   specCell: { flex: 1, padding: 8, borderLeft: `0.5pt solid ${HAIRLINE}` },
@@ -61,14 +99,24 @@ const s = StyleSheet.create({
   specLabel: { fontSize: 7, textTransform: "uppercase", color: MUTED, marginBottom: 2 },
   specValue: { fontSize: 9, fontWeight: 700 },
 
-  sectionLabel: { fontSize: 8.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, color: ROSE, marginBottom: 5 },
-
+  // Stone schedule -- styled like a packing list: clean, tight rows,
+  // strong header bar.
   tableHeaderRow: { flexDirection: "row", backgroundColor: ROSE },
   th: { color: "#fff", fontSize: 6.5, fontWeight: 700, textTransform: "uppercase", padding: 4 },
   tr: { flexDirection: "row", borderBottom: `0.5pt solid ${HAIRLINE}` },
   trAlt: { backgroundColor: TINT },
   td: { fontSize: 8, padding: 4 },
   tdR: { fontSize: 8, padding: 4, textAlign: "right" },
+
+  // Reference image collage -- one featured tile plus a supporting grid,
+  // rather than a uniform row of equal thumbnails.
+  collageSection: { marginTop: 16, marginBottom: 14 },
+  collageRow: { flexDirection: "row", gap: 6 },
+  collageFeatured: { width: "58%", height: 190, objectFit: "cover", border: `0.75pt solid ${HAIRLINE}`, borderRadius: 4 },
+  collageSideCol: { width: "42%", flexDirection: "column", gap: 6 },
+  collageSideTile: { width: "100%", height: 92, objectFit: "cover", border: `0.5pt solid ${HAIRLINE}`, borderRadius: 4 },
+  collageGridRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 6 },
+  collageGridTile: { width: 118, height: 90, objectFit: "cover", border: `0.5pt solid ${HAIRLINE}`, borderRadius: 4 },
 
   remarksBox: { marginTop: 4, marginBottom: 14, padding: 8, backgroundColor: TINT, borderRadius: 4 },
   remarksLabel: { fontSize: 7, textTransform: "uppercase", color: MUTED, marginBottom: 3, letterSpacing: 0.5 },
@@ -125,6 +173,36 @@ function shapeSizeText(c) {
   return `${c.shape} · ${c.size}`;
 }
 
+// Reference-image collage: one featured tile + supporting tiles, rather
+// than a uniform row of equal thumbnails. Layout adapts to how many
+// images there actually are (1, 2, 3, or 4+).
+function ReferenceCollage({ images }) {
+  if (!images || images.length === 0) return null;
+  const [first, second, third, ...rest] = images;
+
+  return (
+    <View style={s.collageSection} wrap={false}>
+      <Text style={s.sectionLabel}>Reference Images</Text>
+      <View style={s.collageRow}>
+        <Image src={first} style={images.length === 1 ? { ...s.collageFeatured, width: "100%" } : s.collageFeatured} />
+        {images.length > 1 && (
+          <View style={s.collageSideCol}>
+            {second && <Image src={second} style={s.collageSideTile} />}
+            {third && <Image src={third} style={s.collageSideTile} />}
+          </View>
+        )}
+      </View>
+      {rest.length > 0 && (
+        <View style={s.collageGridRow}>
+          {rest.map((img, i) => (
+            <Image key={i} src={img} style={s.collageGridTile} />
+          ))}
+        </View>
+      )}
+    </View>
+  );
+}
+
 export function QuotePdfDocument({
   variant,
   jobInfo,
@@ -142,6 +220,7 @@ export function QuotePdfDocument({
   totalWithDutyLocal,
   fxRate,
   cadImages,
+  clientRefImages,
   turntableLink,
   quoteStage,
   hasOverride,
@@ -151,6 +230,7 @@ export function QuotePdfDocument({
 }) {
   const showPrices = variant === "full";
   const dateText = printDate ? new Date(printDate).toLocaleDateString() : new Date().toLocaleDateString();
+  const showLink = turntableLink && !isOwnAppLink(turntableLink);
 
   return (
     <Document>
@@ -159,12 +239,19 @@ export function QuotePdfDocument({
           {logoBlack && <Image src={logoBlack} style={{ width: 14, height: 11 }} />}
         </View>
 
+        {/* ---- Header: title left, logo prominently top-right ---- */}
         <View style={s.letterhead}>
-          <View style={s.letterheadLeft}>{logoBlack && <Image src={logoBlack} style={{ width: 34, height: 27 }} />}</View>
-          <View style={s.letterheadCenter}>
+          <View style={s.titleBlock}>
+            <Text style={s.tagline}>World Shiner — Fine Jewelry Manufacturing</Text>
             <Text style={s.quoteTitle}>Order Quotation</Text>
+            <Text style={s.quoteSub}>{showPrices ? "Prepared for internal / trade use" : "Itemized breakdown withheld"}</Text>
           </View>
-          <View style={s.letterheadRight}>
+          <View style={{ alignItems: "flex-end" }}>
+            {logoBlack && (
+              <View style={s.logoHighlightBox}>
+                <Image src={logoBlack} style={{ width: 46, height: 36 }} />
+              </View>
+            )}
             <View style={s.jobInfoLine}>
               <Text style={s.jobInfoBold}>Job:</Text>
               <Text>{jobInfo.jobNo || "—"}</Text>
@@ -187,20 +274,28 @@ export function QuotePdfDocument({
           </View>
         </View>
 
+        {/* ---- CAD render: the hero image, ~half the page ---- */}
         {cadImages?.length > 0 && (
           <View style={s.cadSection} wrap={false}>
-            <Text style={s.imageColLabel}>CAD Render{cadImages.length > 1 ? "s" : ""}</Text>
-            <View style={s.imageGridFull}>
-              {cadImages.map((img, i) => (
-                <Image key={i} src={img} style={s.imageThumbFull} />
-              ))}
-            </View>
+            <Text style={s.sectionLabel}>CAD Render</Text>
+            <Image src={cadImages[0]} style={s.cadHero} />
+            {cadImages.length > 1 && (
+              <View style={s.cadExtrasRow}>
+                {cadImages.slice(1, 6).map((img, i) => (
+                  <Image key={i} src={img} style={s.cadExtraThumb} />
+                ))}
+              </View>
+            )}
           </View>
         )}
 
-        {turntableLink && !isOwnAppLink(turntableLink) ? (
-          <Text style={{ fontSize: 8, marginBottom: 10 }}>3D render / turntable: {turntableLink}</Text>
-        ) : null}
+        {/* ---- Turntable / 3D render link, between CAD and stone schedule ---- */}
+        {showLink && (
+          <View style={s.linkPill}>
+            <Text style={s.linkPillLabel}>3D Render</Text>
+            <Text style={s.linkPillText}>{turntableLink}</Text>
+          </View>
+        )}
 
         <View style={s.specStrip} wrap={false}>
           <View style={s.specCellFirst}>
@@ -223,6 +318,7 @@ export function QuotePdfDocument({
           </View>
         </View>
 
+        {/* ---- Stone schedule, styled as a packing list ---- */}
         <Text style={s.sectionLabel}>Stone Schedule</Text>
         <View style={s.tableHeaderRow} fixed>
           <Text style={[s.th, { width: "6%" }]}>Sr.No</Text>
@@ -244,6 +340,9 @@ export function QuotePdfDocument({
             {showPrices && <Text style={[s.tdR, { width: "14%" }]}>{fmtC(c.total)}</Text>}
           </View>
         ))}
+
+        {/* ---- Reference image collage, after the stone schedule ---- */}
+        <ReferenceCollage images={clientRefImages} />
 
         {jobInfo.remarks ? (
           <View style={s.remarksBox} wrap={false}>
