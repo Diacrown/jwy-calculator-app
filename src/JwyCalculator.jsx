@@ -1220,7 +1220,10 @@ function JwyCalculatorApp() {
   // exactly to the displayed total.
   const grossTotalUSD = casting + labor + cadFee + totals.diamondTotal + totals.settingTotal;
   const locInfo = locationList.find((l) => l.code === location) || locationList[0];
-  const fxRate = (currencyRates[locInfo.currency] || 1) * liveData.currencyMarkup;
+  // No markup when the destination is already USD -- that's not a real
+  // currency conversion, so applying the exchange-risk markup there was
+  // wrong (it silently inflated USD-located quotes by 5% for no reason).
+  const fxRate = locInfo.currency === "USD" ? 1 : (currencyRates[locInfo.currency] || 1) * liveData.currencyMarkup;
   // Only the final, customer-facing prices get rounded up to the nearest
   // $5 -- the internal gross total stays exact so duty math and the
   // percentage breakdown remain accurate against real figures, not a
@@ -1265,6 +1268,7 @@ function JwyCalculatorApp() {
         totalWithDutyLocal={totalWithDutyLocal}
         fxRate={fxRate}
         cadImages={cadImages}
+        clientRefImages={clientRefImages}
         turntableLink={turntableLink}
         quoteStage={quoteStage}
         hasOverride={hasOverride}
@@ -2878,7 +2882,7 @@ const styles = {
    mind it's visible to anyone who looks at this source file.
    ============================================================ */
 
-const GATE_PASSWORD = "Admin@1234";
+const GATE_PASSWORD = "changeme123";
 const GATE_SESSION_KEY = "jwy_gate_unlocked";
 
 function PasswordGate({ onUnlock }) {
