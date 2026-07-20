@@ -108,15 +108,24 @@ const s = StyleSheet.create({
   td: { fontSize: 8, padding: 4 },
   tdR: { fontSize: 8, padding: 4, textAlign: "right" },
 
-  // Reference image collage -- one featured tile plus a supporting grid,
-  // rather than a uniform row of equal thumbnails.
+  // Reference-image collage: one featured tile + supporting tiles, rather
+  // than a uniform row of equal thumbnails. Layout adapts to how many
+  // images there actually are (1, 2, 3, or 4+). Wrapped in a single
+  // framed block (border + tint + padding) so it reads as one deliberate
+  // presentation rather than loose floating tiles.
   collageSection: { marginTop: 16, marginBottom: 14 },
+  collageFrame: {
+    border: `1pt solid ${HAIRLINE}`,
+    borderRadius: 6,
+    backgroundColor: TINT,
+    padding: 10,
+  },
   collageRow: { flexDirection: "row", gap: 6 },
-  collageFeatured: { width: "58%", height: 190, objectFit: "cover", border: `0.75pt solid ${HAIRLINE}`, borderRadius: 4 },
+  collageFeatured: { width: "58%", height: 190, objectFit: "cover", border: `0.75pt solid ${HAIRLINE}`, borderRadius: 4, backgroundColor: "#fff" },
   collageSideCol: { width: "42%", flexDirection: "column", gap: 6 },
-  collageSideTile: { width: "100%", height: 92, objectFit: "cover", border: `0.5pt solid ${HAIRLINE}`, borderRadius: 4 },
+  collageSideTile: { width: "100%", height: 92, objectFit: "cover", border: `0.5pt solid ${HAIRLINE}`, borderRadius: 4, backgroundColor: "#fff" },
   collageGridRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 6 },
-  collageGridTile: { width: 118, height: 90, objectFit: "cover", border: `0.5pt solid ${HAIRLINE}`, borderRadius: 4 },
+  collageGridTile: { width: 108, height: 84, objectFit: "cover", border: `0.5pt solid ${HAIRLINE}`, borderRadius: 4, backgroundColor: "#fff" },
 
   remarksBox: { marginTop: 4, marginBottom: 14, padding: 8, backgroundColor: TINT, borderRadius: 4 },
   remarksLabel: { fontSize: 7, textTransform: "uppercase", color: MUTED, marginBottom: 3, letterSpacing: 0.5 },
@@ -182,23 +191,27 @@ function ReferenceCollage({ images }) {
 
   return (
     <View style={s.collageSection} wrap={false}>
-      <Text style={s.sectionLabel}>Reference Images</Text>
-      <View style={s.collageRow}>
-        <Image src={first} style={images.length === 1 ? { ...s.collageFeatured, width: "100%" } : s.collageFeatured} />
-        {images.length > 1 && (
-          <View style={s.collageSideCol}>
-            {second && <Image src={second} style={s.collageSideTile} />}
-            {third && <Image src={third} style={s.collageSideTile} />}
+      <Text style={s.sectionLabel}>
+        Reference Image{images.length > 1 ? `s (${images.length})` : ""}
+      </Text>
+      <View style={s.collageFrame}>
+        <View style={s.collageRow}>
+          <Image src={first} style={images.length === 1 ? { ...s.collageFeatured, width: "100%" } : s.collageFeatured} />
+          {images.length > 1 && (
+            <View style={s.collageSideCol}>
+              {second && <Image src={second} style={s.collageSideTile} />}
+              {third && <Image src={third} style={s.collageSideTile} />}
+            </View>
+          )}
+        </View>
+        {rest.length > 0 && (
+          <View style={s.collageGridRow}>
+            {rest.map((img, i) => (
+              <Image key={i} src={img} style={s.collageGridTile} />
+            ))}
           </View>
         )}
       </View>
-      {rest.length > 0 && (
-        <View style={s.collageGridRow}>
-          {rest.map((img, i) => (
-            <Image key={i} src={img} style={s.collageGridTile} />
-          ))}
-        </View>
-      )}
     </View>
   );
 }
