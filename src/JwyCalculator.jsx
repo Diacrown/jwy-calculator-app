@@ -42,6 +42,7 @@ const LOCATIONS = [
   { code: "WSIT", currency: "EUR", duty: 0.02 },
   { code: "WSPL", currency: "PLN", duty: 0.02 },
   { code: "DMR", currency: "INR", duty: 0.0 },
+  { code: "DIA", currency: "USD", duty: 0.0 },
 ];
 
 // Item# first-letter -> location, for auto-selecting Location when an
