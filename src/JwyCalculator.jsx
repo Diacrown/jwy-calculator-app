@@ -34,7 +34,6 @@ const CURRENCY_MARKUP = 1.05;
 const LOCATIONS = [
   { code: "DMG", currency: "EUR", duty: 0.03 },
   { code: "DMT", currency: "USD", duty: 0.2 },
-  { code: "DIA", currency: "USD", duty: 0.0 },
   { code: "WSME", currency: "AUD", duty: 0.05 },
   { code: "WSSY", currency: "AUD", duty: 0.05 },
   { code: "WSBN", currency: "AUD", duty: 0.05 },
@@ -43,6 +42,7 @@ const LOCATIONS = [
   { code: "WSIT", currency: "EUR", duty: 0.02 },
   { code: "WSPL", currency: "PLN", duty: 0.02 },
   { code: "DMR", currency: "INR", duty: 0.0 },
+  { code: "DIA", currency: "USD", duty: 0.0 },
 ];
 
 // Item# first-letter -> location, for auto-selecting Location when an
@@ -804,10 +804,16 @@ function JwyCalculatorApp() {
 
   // Shared by both import paths (PDF and direct JSON) -- applies a
   // successful parse result to calculator state identically either way.
-  const applyImportResult = (fileName, resultData) => {
+  const applyImportResult = async (fileName, resultData) => {
     const { jobInfo: ji, metals, metalWarnings, stones, cadImageDataUrls, clientRefImageDataUrls, derivedSummary } = resultData;
-    if (cadImageDataUrls?.length) setCadImages((prev) => [...cadImageDataUrls, ...prev]);
-    if (clientRefImageDataUrls?.length) setClientRefImages((prev) => [...clientRefImageDataUrls, ...prev]);
+    if (cadImageDataUrls?.length) {
+      const compressed = await Promise.all(cadImageDataUrls.map((u) => compressDataUrl(u)));
+      setCadImages((prev) => [...compressed, ...prev]);
+    }
+    if (clientRefImageDataUrls?.length) {
+      const compressed = await Promise.all(clientRefImageDataUrls.map((u) => compressDataUrl(u)));
+      setClientRefImages((prev) => [...compressed, ...prev]);
+    }
 
     // Apply job info. There's no true customer-name field on the card,
     // so we leave Customer untouched rather than stuffing Style code
@@ -891,7 +897,7 @@ function JwyCalculatorApp() {
         setPdfImport({ error: result.diag || "Could not read this file" });
         return;
       }
-      applyImportResult(file.name, result.data);
+      await applyImportResult(file.name, result.data);
     } catch (err) {
       setPdfStatus("error");
       setPdfImport({ error: (err && err.message) || String(err) });
@@ -1760,12 +1766,63 @@ function JobInfoCard({ jobInfo, setJobInfo, location, setLocation, locationList,
   );
 }
 
-function fileToDataUrl(file) {
+// Same compression approach as fileToDataUrl, but for an image that
+// arrives already-encoded as a data URL (e.g. from a CAD form JSON
+// import) rather than as a File object. Needed because imported images
+// can be just as large as directly-uploaded ones -- the real 2.8MB test
+// image that caused save-quote failures came in this way, not through
+// the app's own upload button.
+function compressDataUrl(dataUrl, maxDim = 1600, quality = 0.82) {
+  return new Promise((resolve) => {
+    const img = new window.Image();
+    img.onerror = () => resolve(dataUrl); // fallback: keep original if decoding fails
+    img.onload = () => {
+      const { width, height } = img;
+      const scale = Math.min(1, maxDim / Math.max(width, height));
+      const targetW = Math.round(width * scale);
+      const targetH = Math.round(height * scale);
+      const canvas = document.createElement("canvas");
+      canvas.width = targetW;
+      canvas.height = targetH;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0, targetW, targetH);
+      resolve(canvas.toDataURL("image/jpeg", quality));
+    };
+    img.src = dataUrl;
+  });
+}
+
+// Resizes and re-compresses an image at upload time, client-side. This
+// is the real fix for oversized payloads -- an uncompressed phone photo
+// can easily be several MB, and that size then multiplies through
+// everywhere it's used: the app's state, the generated PDF, and the
+// save-quote/send-quote-email request bodies. Netlify Functions cap
+// requests at 6MB (effectively ~4.5MB once base64 overhead is counted),
+// so a single raw photo could exceed that on its own. Resizing to a
+// generous max dimension and re-encoding as JPEG keeps print quality
+// while cutting typical file sizes by 80-95%.
+function fileToDataUrl(file, maxDim = 1600, quality = 0.82) {
   return new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve(r.result);
-    r.onerror = reject;
-    r.readAsDataURL(file);
+    const reader = new FileReader();
+    reader.onerror = reject;
+    reader.onload = () => {
+      const img = new window.Image();
+      img.onerror = () => resolve(reader.result); // fallback: use original if decoding fails
+      img.onload = () => {
+        let { width, height } = img;
+        const scale = Math.min(1, maxDim / Math.max(width, height));
+        const targetW = Math.round(width * scale);
+        const targetH = Math.round(height * scale);
+        const canvas = document.createElement("canvas");
+        canvas.width = targetW;
+        canvas.height = targetH;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, targetW, targetH);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
   });
 }
 
