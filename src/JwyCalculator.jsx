@@ -1298,6 +1298,30 @@ function JwyCalculatorApp() {
     }
   };
 
+  // Generates the PDF (same as Print/Preview) and emails it via the
+  // send-quote-email function. Throws on failure -- the caller (the
+  // email UI) shows the error directly, since unlike the background
+  // cloud-archive step, sending the email IS the whole point of this
+  // action, so failure needs to be visible, not silently swallowed.
+  const doEmail = async (variant, toEmail) => {
+    const filenameBase = quoteFilenameBase();
+    const pdfBlob = await generatePdfBlob(variant);
+    const pdfBase64 = await blobToBase64(pdfBlob);
+    const res = await fetch("/.netlify/functions/send-quote-email", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        to: toEmail,
+        subject: `Quotation - ${jobInfo.jobNo || filenameBase}`,
+        filenameBase,
+        pdfBase64,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Couldn't send the email");
+    return data;
+  };
+
   const doPrint = async (variant) => {
     setPdfGenerating(variant);
     try {
@@ -1428,6 +1452,7 @@ function JwyCalculatorApp() {
           onDelete={deleteQuote}
           onPrint={doPrint}
           onPreview={doPreview}
+          onEmail={doEmail}
           quoteStage={quoteStage}
           setQuoteStage={setQuoteStage}
           pdfGenerating={pdfGenerating}
@@ -1453,6 +1478,8 @@ function JwyCalculatorApp() {
         />
 
         <RemarksCard jobInfo={jobInfo} setJobInfo={setJobInfo} />
+
+        <QuoteStatsPanel />
       </div>
     </div>
   );
@@ -1483,7 +1510,7 @@ function TopBar({ jobInfo, pdfFileName, pdfStatus, pdfImport, onJsonUpload, onSa
       <div style={styles.topBarInner}>
         <div style={styles.brandBlock}>
           <div style={styles.brandLogoBox}>
-            <img src={LOGO_WHITE} alt="Made with Love" style={{ height: 30, width: "auto", display: "block" }} />
+            <img src={LOGO_WHITE} alt="Made with Love" style={{ height: 38, width: "auto", display: "block" }} />
           </div>
           <div>
             <div style={styles.brandTitle}>JWY Calculator</div>
@@ -2064,6 +2091,75 @@ function MetalPanel({ title, alloyShort, setAlloyShort, alloyList, gramWt, setGr
   );
 }
 
+function QuoteStatsPanel() {
+  const [open, setOpen] = useState(false);
+  const [stats, setStats] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const load = async () => {
+    setOpen(true);
+    if (stats) return; // already loaded, don't re-fetch on every toggle
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch("/.netlify/functions/quote-stats");
+      if (!res.ok) throw new Error("Stats unavailable");
+      setStats(await res.json());
+    } catch (err) {
+      setError("Couldn't load quote stats -- cloud storage may not be set up yet.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={styles.card}>
+      <div style={styles.rowBetween}>
+        <span style={styles.panelTitle}>Quote Volume</span>
+        <button style={styles.smallBtn} type="button" onClick={() => (open ? setOpen(false) : load())}>
+          {open ? "Hide" : "Show"}
+        </button>
+      </div>
+      {open && (
+        <div style={{ marginTop: 10 }}>
+          {loading && <div style={{ fontSize: 12, color: "var(--muted)" }}>Loading…</div>}
+          {error && <div style={{ fontSize: 12, color: "#B5651D" }}>{error}</div>}
+          {stats && (
+            <>
+              <div style={{ display: "flex", gap: 20, marginBottom: 10 }}>
+                <div>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: ROSE_DARK }}>{stats.weekCount}</div>
+                  <div style={{ fontSize: 10.5, color: "var(--muted)" }}>last 7 days</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: ROSE_DARK }}>{stats.monthCount}</div>
+                  <div style={{ fontSize: 10.5, color: "var(--muted)" }}>last 30 days</div>
+                </div>
+              </div>
+              {stats.recent?.length > 0 && (
+                <div>
+                  <div style={{ fontSize: 10.5, textTransform: "uppercase", color: "var(--muted)", marginBottom: 4 }}>
+                    Most recent
+                  </div>
+                  {stats.recent.map((r) => (
+                    <div key={r.id} style={{ fontSize: 11.5, padding: "3px 0", borderBottom: `1px solid ${ROSE_TINT_STRONG}` }}>
+                      <b>{r.job_no || "—"}</b>
+                      {r.item_no ? ` · ${r.item_no}` : ""}
+                      {r.quote_stage ? ` · ${r.quote_stage}` : ""}
+                      <span style={{ color: "var(--muted)", marginLeft: 6 }}>{new Date(r.created_at).toLocaleString()}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CloudQuoteSearch({ loadFromCloud }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState([]);
@@ -2167,8 +2263,23 @@ function CloudQuoteSearch({ loadFromCloud }) {
   );
 }
 
-function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, onPreview, quoteStage, setQuoteStage, pdfGenerating }) {
+function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, onPreview, onEmail, quoteStage, setQuoteStage, pdfGenerating }) {
   const [selected, setSelected] = useState("");
+  const [emailTo, setEmailTo] = useState("");
+  const [emailVariant, setEmailVariant] = useState("full");
+  const [emailStatus, setEmailStatus] = useState(""); // "" | "sending" | "sent" | error message
+
+  const sendEmail = async () => {
+    if (!emailTo.trim()) return;
+    setEmailStatus("sending");
+    try {
+      await onEmail(emailVariant, emailTo.trim());
+      setEmailStatus("sent");
+      setTimeout(() => setEmailStatus(""), 3000);
+    } catch (err) {
+      setEmailStatus((err && err.message) || "Couldn't send");
+    }
+  };
 
   const PrintButton = ({ variant, label }) => (
     <div style={{ display: "inline-flex", alignItems: "center", gap: 5, opacity: pdfGenerating ? 0.6 : 1 }}>
@@ -2236,6 +2347,32 @@ function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, onPrevi
       <PrintButton variant="full" label="Print (full prices)" />
       <PrintButton variant="priceOnly" label="Print (price only)" />
       <span style={{ fontSize: 10.5, color: "var(--muted)" }}>👁 previews · main button downloads PDF+JSON zip.</span>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 5, marginLeft: "auto" }}>
+        <input
+          type="email"
+          style={{ ...styles.inputSm, width: 170 }}
+          placeholder="Email quote to…"
+          value={emailTo}
+          onChange={(e) => setEmailTo(e.target.value)}
+        />
+        <select style={{ ...styles.inputSm, width: 110 }} value={emailVariant} onChange={(e) => setEmailVariant(e.target.value)}>
+          <option value="full">Full prices</option>
+          <option value="priceOnly">Price only</option>
+        </select>
+        <button
+          style={styles.smallBtn}
+          type="button"
+          disabled={!emailTo.trim() || emailStatus === "sending"}
+          onClick={sendEmail}
+        >
+          {emailStatus === "sending" ? "Sending…" : "Send"}
+        </button>
+        {emailStatus === "sent" && <span style={{ fontSize: 11, color: "#3A7D5C" }}>✓ Sent</span>}
+        {emailStatus && emailStatus !== "sending" && emailStatus !== "sent" && (
+          <span style={{ fontSize: 10.5, color: "#B5651D" }}>{emailStatus}</span>
+        )}
+      </div>
     </div>
   );
 }
@@ -2892,7 +3029,7 @@ const styles = {
    mind it's visible to anyone who looks at this source file.
    ============================================================ */
 
-const GATE_PASSWORD = "changeme123";
+const GATE_PASSWORD = "Admin@1234";
 const GATE_SESSION_KEY = "jwy_gate_unlocked";
 
 function PasswordGate({ onUnlock }) {
