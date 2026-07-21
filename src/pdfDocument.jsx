@@ -1,4 +1,4 @@
-import { Document, Page, View, Text, Image, StyleSheet } from "@react-pdf/renderer";
+  import { Document, Page, View, Text, Image, StyleSheet } from "@react-pdf/renderer";
 
 // Standard PDF fonts (Helvetica, Times-Roman) are part of the PDF spec
 // itself -- every PDF reader on every platform has them built in. This
@@ -12,17 +12,6 @@ const TINT = "#FBF5F7";
 
 const s = StyleSheet.create({
   page: { padding: "50pt 34pt 40pt", fontFamily: "Helvetica", fontSize: 9, color: INK },
-  fixedHeader: {
-    position: "absolute",
-    top: 14,
-    left: 34,
-    right: 34,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    borderBottom: `0.5pt solid ${HAIRLINE}`,
-    paddingBottom: 4,
-  },
   fixedFooter: {
     position: "absolute",
     bottom: 16,
@@ -47,18 +36,17 @@ const s = StyleSheet.create({
     marginBottom: 14,
   },
   titleBlock: { justifyContent: "center" },
-  tagline: { fontSize: 7, letterSpacing: 1, textTransform: "uppercase", color: MUTED, marginBottom: 3 },
-  quoteTitle: { fontSize: 17, fontWeight: 700, fontFamily: "Times-Roman" },
-  quoteSub: { fontSize: 8, color: MUTED, marginTop: 2 },
+  tagline: { fontSize: 7, letterSpacing: 1.2, textTransform: "uppercase", color: MUTED, marginTop: 4, textAlign: "center" },
+  quoteTitle: { fontSize: 17, fontWeight: 700, fontFamily: "Times-Roman", textAlign: "center" },
   logoHighlightBox: {
     border: `1pt solid ${ROSE}`,
     borderRadius: 5,
     padding: 6,
     backgroundColor: TINT,
     alignItems: "center",
-    marginBottom: 8,
   },
-  jobInfoLine: { fontSize: 8.5, color: MUTED, marginBottom: 2, flexDirection: "row", gap: 3, justifyContent: "flex-end" },
+  jobInfoCol: { alignItems: "flex-start" },
+  jobInfoLine: { fontSize: 8.5, color: MUTED, marginBottom: 2, flexDirection: "row", gap: 3, justifyContent: "flex-start" },
   jobInfoBold: { color: INK, fontWeight: 700 },
   stageBadge: { backgroundColor: ROSE, color: "#fff", fontSize: 7, fontWeight: 700, paddingHorizontal: 5, paddingVertical: 1, borderRadius: 6, marginLeft: 4 },
 
@@ -67,7 +55,7 @@ const s = StyleSheet.create({
   sectionLabel: { fontSize: 8.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, color: ROSE, marginBottom: 5 },
   cadHero: {
     width: "100%",
-    height: 300,
+    height: 380,
     objectFit: "contain",
     border: `0.75pt solid ${HAIRLINE}`,
     borderRadius: 4,
@@ -108,24 +96,19 @@ const s = StyleSheet.create({
   td: { fontSize: 8, padding: 4 },
   tdR: { fontSize: 8, padding: 4, textAlign: "right" },
 
-  // Reference-image collage: one featured tile + supporting tiles, rather
-  // than a uniform row of equal thumbnails. Layout adapts to how many
-  // images there actually are (1, 2, 3, or 4+). Wrapped in a single
-  // framed block (border + tint + padding) so it reads as one deliberate
-  // presentation rather than loose floating tiles.
-  collageSection: { marginTop: 16, marginBottom: 14 },
-  collageFrame: {
-    border: `1pt solid ${HAIRLINE}`,
-    borderRadius: 6,
-    backgroundColor: TINT,
-    padding: 10,
+  // Reference images: a clean, evenly-proportioned grid (no collage) --
+  // two per row, each shown in full (objectFit contain, not cropped),
+  // sized to look deliberate without wasting page space.
+  refImagesSection: { marginTop: 16, marginBottom: 14 },
+  refImagesGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  refImageTile: {
+    width: "48.5%",
+    height: 145,
+    objectFit: "contain",
+    border: `0.75pt solid ${HAIRLINE}`,
+    borderRadius: 4,
+    backgroundColor: "#fff",
   },
-  collageRow: { flexDirection: "row", gap: 6 },
-  collageFeatured: { width: "58%", height: 190, objectFit: "cover", border: `0.75pt solid ${HAIRLINE}`, borderRadius: 4, backgroundColor: "#fff" },
-  collageSideCol: { width: "42%", flexDirection: "column", gap: 6 },
-  collageSideTile: { width: "100%", height: 92, objectFit: "cover", border: `0.5pt solid ${HAIRLINE}`, borderRadius: 4, backgroundColor: "#fff" },
-  collageGridRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 6 },
-  collageGridTile: { width: 108, height: 84, objectFit: "cover", border: `0.5pt solid ${HAIRLINE}`, borderRadius: 4, backgroundColor: "#fff" },
 
   remarksBox: { marginTop: 4, marginBottom: 14, padding: 8, backgroundColor: TINT, borderRadius: 4 },
   remarksLabel: { fontSize: 7, textTransform: "uppercase", color: MUTED, marginBottom: 3, letterSpacing: 0.5 },
@@ -185,32 +168,18 @@ function shapeSizeText(c) {
 // Reference-image collage: one featured tile + supporting tiles, rather
 // than a uniform row of equal thumbnails. Layout adapts to how many
 // images there actually are (1, 2, 3, or 4+).
-function ReferenceCollage({ images }) {
+function ReferenceImages({ images }) {
   if (!images || images.length === 0) return null;
-  const [first, second, third, ...rest] = images;
 
   return (
-    <View style={s.collageSection} wrap={false}>
+    <View style={s.refImagesSection}>
       <Text style={s.sectionLabel}>
         Reference Image{images.length > 1 ? `s (${images.length})` : ""}
       </Text>
-      <View style={s.collageFrame}>
-        <View style={s.collageRow}>
-          <Image src={first} style={images.length === 1 ? { ...s.collageFeatured, width: "100%" } : s.collageFeatured} />
-          {images.length > 1 && (
-            <View style={s.collageSideCol}>
-              {second && <Image src={second} style={s.collageSideTile} />}
-              {third && <Image src={third} style={s.collageSideTile} />}
-            </View>
-          )}
-        </View>
-        {rest.length > 0 && (
-          <View style={s.collageGridRow}>
-            {rest.map((img, i) => (
-              <Image key={i} src={img} style={s.collageGridTile} />
-            ))}
-          </View>
-        )}
+      <View style={s.refImagesGrid}>
+        {images.map((img, i) => (
+          <Image key={i} src={img} style={s.refImageTile} />
+        ))}
       </View>
     </View>
   );
@@ -248,42 +217,41 @@ export function QuotePdfDocument({
   return (
     <Document>
       <Page size="A4" style={s.page} wrap>
-        <View style={s.fixedHeader} fixed>
-          {logoBlack && <Image src={logoBlack} style={{ width: 14, height: 11 }} />}
-        </View>
-
-        {/* ---- Header: title left, logo prominently top-right ---- */}
+        {/* ---- Header: logo left, title+slogan centered, job info right ---- */}
         <View style={s.letterhead}>
-          <View style={s.titleBlock}>
-            <Text style={s.tagline}>World Shiner — Fine Jewelry Manufacturing</Text>
-            <Text style={s.quoteTitle}>Order Quotation</Text>
-            <Text style={s.quoteSub}>{showPrices ? "Prepared for internal / trade use" : "Itemized breakdown withheld"}</Text>
-          </View>
-          <View style={{ alignItems: "flex-end" }}>
+          <View style={{ flex: 1 }}>
             {logoBlack && (
-              <View style={s.logoHighlightBox}>
+              <View style={[s.logoHighlightBox, { alignSelf: "flex-start" }]}>
                 <Image src={logoBlack} style={{ width: 46, height: 36 }} />
               </View>
             )}
-            <View style={s.jobInfoLine}>
-              <Text style={s.jobInfoBold}>Job:</Text>
-              <Text>{jobInfo.jobNo || "—"}</Text>
-              {quoteStage ? <Text style={s.stageBadge}>{quoteStage}</Text> : null}
-            </View>
-            <View style={s.jobInfoLine}>
-              <Text style={s.jobInfoBold}>Item:</Text>
-              <Text>{jobInfo.itemNo || "—"}</Text>
-            </View>
-            <View style={s.jobInfoLine}>
-              <Text style={s.jobInfoBold}>Date:</Text>
-              <Text>{dateText}</Text>
-            </View>
-            {jobInfo.customer ? (
+          </View>
+          <View style={[s.titleBlock, { flex: 1.4, alignItems: "center" }]}>
+            <Text style={s.quoteTitle}>Order Quotation</Text>
+            <Text style={s.tagline}>World Shiner — Fine Jewelry Manufacturing</Text>
+          </View>
+          <View style={{ flex: 1, alignItems: "flex-end" }}>
+            <View style={s.jobInfoCol}>
               <View style={s.jobInfoLine}>
-                <Text style={s.jobInfoBold}>Customer:</Text>
-                <Text>{jobInfo.customer}</Text>
+                <Text style={s.jobInfoBold}>Job:</Text>
+                <Text>{jobInfo.jobNo || "—"}</Text>
+                {quoteStage ? <Text style={s.stageBadge}>{quoteStage}</Text> : null}
               </View>
-            ) : null}
+              <View style={s.jobInfoLine}>
+                <Text style={s.jobInfoBold}>Item:</Text>
+                <Text>{jobInfo.itemNo || "—"}</Text>
+              </View>
+              <View style={s.jobInfoLine}>
+                <Text style={s.jobInfoBold}>Date:</Text>
+                <Text>{dateText}</Text>
+              </View>
+              {jobInfo.customer ? (
+                <View style={s.jobInfoLine}>
+                  <Text style={s.jobInfoBold}>Customer:</Text>
+                  <Text>{jobInfo.customer}</Text>
+                </View>
+              ) : null}
+            </View>
           </View>
         </View>
 
@@ -333,7 +301,7 @@ export function QuotePdfDocument({
 
         {/* ---- Stone schedule, styled as a packing list ---- */}
         <Text style={s.sectionLabel}>Stone Schedule</Text>
-        <View style={s.tableHeaderRow} fixed>
+        <View style={s.tableHeaderRow}>
           <Text style={[s.th, { width: "6%" }]}>Sr.No</Text>
           <Text style={[s.th, { width: "12%" }]}>Type</Text>
           <Text style={[s.th, { width: "30%" }]}>Shape / Size</Text>
@@ -355,7 +323,7 @@ export function QuotePdfDocument({
         ))}
 
         {/* ---- Reference image collage, after the stone schedule ---- */}
-        <ReferenceCollage images={clientRefImages} />
+        <ReferenceImages images={clientRefImages} />
 
         {jobInfo.remarks ? (
           <View style={s.remarksBox} wrap={false}>
