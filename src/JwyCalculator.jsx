@@ -34,6 +34,7 @@ const CURRENCY_MARKUP = 1.05;
 const LOCATIONS = [
   { code: "DMG", currency: "EUR", duty: 0.03 },
   { code: "DMT", currency: "USD", duty: 0.2 },
+  { code: "DIA", currency: "USD", duty: 0.0 },
   { code: "WSME", currency: "AUD", duty: 0.05 },
   { code: "WSSY", currency: "AUD", duty: 0.05 },
   { code: "WSBN", currency: "AUD", duty: 0.05 },
@@ -42,7 +43,6 @@ const LOCATIONS = [
   { code: "WSIT", currency: "EUR", duty: 0.02 },
   { code: "WSPL", currency: "PLN", duty: 0.02 },
   { code: "DMR", currency: "INR", duty: 0.0 },
-  { code: "DIA", currency: "USD", duty: 0.0 },
 ];
 
 // Item# first-letter -> location, for auto-selecting Location when an
