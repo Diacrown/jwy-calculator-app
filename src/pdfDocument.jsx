@@ -98,7 +98,7 @@ const s = StyleSheet.create({
 
   // Reference images: uniform square tiles, fixed pixel size (not
   // percentage-based) for predictable, non-spilling layout -- 3 per row.
-  refImagesSection: { marginTop: 16, marginBottom: 14 },
+  refImagesSection: { marginTop: 20, marginBottom: 20 },
   refImagesGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   refImageTile: {
     width: 160,
