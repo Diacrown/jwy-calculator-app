@@ -1348,35 +1348,41 @@ function JwyCalculatorApp() {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-
-      // Cloud archive, best-effort -- the local .zip above has already
-      // succeeded regardless of what happens here. If this fails (no
-      // database set up yet, network hiccup, whatever), the person
-      // still has their quote; they just won't be able to find it via
-      // search later. Never throws into the outer catch.
-      try {
-        const pdfBase64 = await blobToBase64(pdfBlob);
-        const jsonText = await jsonBlob.text();
-        await fetch("/.netlify/functions/save-quote", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            filenameBase,
-            jobNo: jobInfo.jobNo,
-            itemNo: jobInfo.itemNo,
-            quoteStage,
-            pdfBase64,
-            jsonText,
-          }),
-        });
-      } catch (cloudErr) {
-        console.warn("Cloud archive skipped:", cloudErr);
-      }
     } catch (err) {
       alert("Couldn't generate the PDF: " + ((err && err.message) || String(err)));
     } finally {
       setPdfGenerating(null);
     }
+  };
+
+  // Deliberate, explicit save to the cloud database + blob storage --
+  // separate from Print, so printing twice (e.g. full prices, then
+  // price-only, for the same quote) never creates duplicate database
+  // rows. Throws on failure so the caller (the Sync button) can show
+  // the real error -- in particular, a Job#+Item#+Stage that's already
+  // been saved is rejected with a clear message, not silently
+  // overwritten or duplicated.
+  const doSyncToDb = async () => {
+    const filenameBase = quoteFilenameBase();
+    const pdfBlob = await generatePdfBlob("full");
+    const jsonBlob = buildSnapshotJsonBlob();
+    const pdfBase64 = await blobToBase64(pdfBlob);
+    const jsonText = await jsonBlob.text();
+    const res = await fetch("/.netlify/functions/save-quote", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        filenameBase,
+        jobNo: jobInfo.jobNo,
+        itemNo: jobInfo.itemNo,
+        quoteStage,
+        pdfBase64,
+        jsonText,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Couldn't save to the database");
+    return data;
   };
 
   return (
@@ -1459,6 +1465,7 @@ function JwyCalculatorApp() {
           onPrint={doPrint}
           onPreview={doPreview}
           onEmail={doEmail}
+          onSyncToDb={doSyncToDb}
           quoteStage={quoteStage}
           setQuoteStage={setQuoteStage}
           pdfGenerating={pdfGenerating}
@@ -2320,11 +2327,12 @@ function CloudQuoteSearch({ loadFromCloud }) {
   );
 }
 
-function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, onPreview, onEmail, quoteStage, setQuoteStage, pdfGenerating }) {
+function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, onPreview, onEmail, onSyncToDb, quoteStage, setQuoteStage, pdfGenerating }) {
   const [selected, setSelected] = useState("");
   const [emailTo, setEmailTo] = useState("");
   const [emailVariant, setEmailVariant] = useState("full");
   const [emailStatus, setEmailStatus] = useState(""); // "" | "sending" | "sent" | error message
+  const [syncStatus, setSyncStatus] = useState(""); // "" | "syncing" | "synced" | error message
 
   const sendEmail = async () => {
     if (!emailTo.trim()) return;
@@ -2335,6 +2343,17 @@ function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, onPrevi
       setTimeout(() => setEmailStatus(""), 3000);
     } catch (err) {
       setEmailStatus((err && err.message) || "Couldn't send");
+    }
+  };
+
+  const syncToDb = async () => {
+    setSyncStatus("syncing");
+    try {
+      await onSyncToDb();
+      setSyncStatus("synced");
+      setTimeout(() => setSyncStatus(""), 3000);
+    } catch (err) {
+      setSyncStatus((err && err.message) || "Couldn't save");
     }
   };
 
@@ -2404,6 +2423,16 @@ function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, onPrevi
       <PrintButton variant="full" label="Print (full prices)" />
       <PrintButton variant="priceOnly" label="Print (price only)" />
       <span style={{ fontSize: 10.5, color: "var(--muted)" }}>👁 previews · main button downloads PDF+JSON zip.</span>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <button style={styles.smallBtn} type="button" disabled={syncStatus === "syncing"} onClick={syncToDb}>
+          {syncStatus === "syncing" ? "Saving…" : "Sync to DB"}
+        </button>
+        {syncStatus === "synced" && <span style={{ fontSize: 11, color: "#3A7D5C" }}>✓ Saved</span>}
+        {syncStatus && syncStatus !== "syncing" && syncStatus !== "synced" && (
+          <span style={{ fontSize: 10.5, color: "#B5651D", maxWidth: 260 }}>{syncStatus}</span>
+        )}
+      </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 5, marginLeft: "auto" }}>
         <input
@@ -3086,7 +3115,7 @@ const styles = {
    mind it's visible to anyone who looks at this source file.
    ============================================================ */
 
-const GATE_PASSWORD = "Admin@1234";
+const GATE_PASSWORD = "changeme123";
 const GATE_SESSION_KEY = "jwy_gate_unlocked";
 
 function PasswordGate({ onUnlock }) {
