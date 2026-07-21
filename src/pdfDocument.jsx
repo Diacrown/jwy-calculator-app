@@ -1,4 +1,4 @@
-  import { Document, Page, View, Text, Image, StyleSheet } from "@react-pdf/renderer";
+import { Document, Page, View, Text, Image, StyleSheet } from "@react-pdf/renderer";
 
 // Standard PDF fonts (Helvetica, Times-Roman) are part of the PDF spec
 // itself -- every PDF reader on every platform has them built in. This
@@ -37,7 +37,7 @@ const s = StyleSheet.create({
   },
   titleBlock: { justifyContent: "center" },
   tagline: { fontSize: 7, letterSpacing: 1.2, textTransform: "uppercase", color: MUTED, marginTop: 4, textAlign: "center" },
-  quoteTitle: { fontSize: 17, fontWeight: 700, fontFamily: "Times-Roman", textAlign: "center" },
+  quoteTitle: { fontSize: 17, fontFamily: "Times-Bold", textAlign: "center" },
   logoHighlightBox: {
     border: `1pt solid ${ROSE}`,
     borderRadius: 5,
@@ -96,14 +96,13 @@ const s = StyleSheet.create({
   td: { fontSize: 8, padding: 4 },
   tdR: { fontSize: 8, padding: 4, textAlign: "right" },
 
-  // Reference images: a clean, evenly-proportioned grid (no collage) --
-  // two per row, each shown in full (objectFit contain, not cropped),
-  // sized to look deliberate without wasting page space.
+  // Reference images: uniform square tiles, fixed pixel size (not
+  // percentage-based) for predictable, non-spilling layout -- 3 per row.
   refImagesSection: { marginTop: 16, marginBottom: 14 },
   refImagesGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   refImageTile: {
-    width: "48.5%",
-    height: 145,
+    width: 160,
+    height: 160,
     objectFit: "contain",
     border: `0.75pt solid ${HAIRLINE}`,
     borderRadius: 4,
@@ -217,20 +216,14 @@ export function QuotePdfDocument({
   return (
     <Document>
       <Page size="A4" style={s.page} wrap>
-        {/* ---- Header: logo left, title+slogan centered, job info right ---- */}
+        {/* ---- Header: logo+job info grouped on the left, title+slogan on the right ---- */}
         <View style={s.letterhead}>
-          <View style={{ flex: 1 }}>
+          <View style={{ flex: 1, alignItems: "flex-start" }}>
             {logoBlack && (
-              <View style={[s.logoHighlightBox, { alignSelf: "flex-start" }]}>
+              <View style={[s.logoHighlightBox, { alignSelf: "flex-start", marginBottom: 6 }]}>
                 <Image src={logoBlack} style={{ width: 46, height: 36 }} />
               </View>
             )}
-          </View>
-          <View style={[s.titleBlock, { flex: 1.4, alignItems: "center" }]}>
-            <Text style={s.quoteTitle}>Order Quotation</Text>
-            <Text style={s.tagline}>World Shiner — Fine Jewelry Manufacturing</Text>
-          </View>
-          <View style={{ flex: 1, alignItems: "flex-end" }}>
             <View style={s.jobInfoCol}>
               <View style={s.jobInfoLine}>
                 <Text style={s.jobInfoBold}>Job:</Text>
@@ -252,6 +245,10 @@ export function QuotePdfDocument({
                 </View>
               ) : null}
             </View>
+          </View>
+          <View style={[s.titleBlock, { flex: 1, alignItems: "center", justifyContent: "flex-start" }]}>
+            <Text style={s.quoteTitle}>Order Quotation</Text>
+            <Text style={s.tagline}>W O R L D  S H I N E R  —  F I N E  J E W E L R Y  M A N U F A C T U R I N G</Text>
           </View>
         </View>
 
