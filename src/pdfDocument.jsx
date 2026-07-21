@@ -36,8 +36,8 @@ const s = StyleSheet.create({
     marginBottom: 14,
   },
   titleBlock: { justifyContent: "center" },
-  tagline: { fontSize: 7, letterSpacing: 1.2, textTransform: "uppercase", color: MUTED, marginTop: 4, textAlign: "center" },
-  quoteTitle: { fontSize: 17, fontFamily: "Times-Bold", textAlign: "center" },
+  tagline: { fontSize: 7, letterSpacing: 1, textTransform: "uppercase", color: MUTED },
+  quoteTitle: { fontSize: 19, fontFamily: "Times-Bold", marginTop: 2 },
   logoHighlightBox: {
     border: `1pt solid ${ROSE}`,
     borderRadius: 5,
@@ -48,7 +48,7 @@ const s = StyleSheet.create({
   jobInfoCol: { alignItems: "flex-start" },
   jobInfoLine: { fontSize: 8.5, color: MUTED, marginBottom: 2, flexDirection: "row", gap: 3, justifyContent: "flex-start" },
   jobInfoBold: { color: INK, fontWeight: 700 },
-  stageBadge: { backgroundColor: ROSE, color: "#fff", fontSize: 7, fontWeight: 700, paddingHorizontal: 5, paddingVertical: 1, borderRadius: 6, marginLeft: 4 },
+  stageBadge: { fontSize: 8.5, color: MUTED, marginLeft: 4 },
 
   // CAD render: the hero image, sized to roughly half the page.
   cadSection: { marginBottom: 10 },
@@ -218,22 +218,26 @@ export function QuotePdfDocument({
       <Page size="A4" style={s.page} wrap>
         {/* ---- Header: logo+job info grouped on the left, title+slogan on the right ---- */}
         <View style={s.letterhead}>
-          <View style={{ flex: 1, alignItems: "flex-start" }}>
-            {logoBlack && (
-              <View style={[s.logoHighlightBox, { alignSelf: "flex-start", marginBottom: 6 }]}>
-                <Image src={logoBlack} style={{ width: 46, height: 36 }} />
-              </View>
-            )}
+          <View style={{ flex: 1.4 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+              {logoBlack && <Image src={logoBlack} style={{ width: 22, height: 17 }} />}
+              <Text style={s.tagline}>World Shiner — Fine Jewelry Manufacturing</Text>
+            </View>
+            <Text style={s.quoteTitle}>{showPrices ? "Quotation" : "Price Summary"}</Text>
+          </View>
+          <View style={{ flex: 1, alignItems: "flex-end" }}>
             <View style={s.jobInfoCol}>
               <View style={s.jobInfoLine}>
                 <Text style={s.jobInfoBold}>Job:</Text>
                 <Text>{jobInfo.jobNo || "—"}</Text>
                 {quoteStage ? <Text style={s.stageBadge}>{quoteStage}</Text> : null}
               </View>
-              <View style={s.jobInfoLine}>
-                <Text style={s.jobInfoBold}>Item:</Text>
-                <Text>{jobInfo.itemNo || "—"}</Text>
-              </View>
+              {jobInfo.itemNo ? (
+                <View style={s.jobInfoLine}>
+                  <Text style={s.jobInfoBold}>Item:</Text>
+                  <Text>{jobInfo.itemNo}</Text>
+                </View>
+              ) : null}
               <View style={s.jobInfoLine}>
                 <Text style={s.jobInfoBold}>Date:</Text>
                 <Text>{dateText}</Text>
@@ -245,10 +249,6 @@ export function QuotePdfDocument({
                 </View>
               ) : null}
             </View>
-          </View>
-          <View style={[s.titleBlock, { flex: 1, alignItems: "center", justifyContent: "flex-start" }]}>
-            <Text style={s.quoteTitle}>Order Quotation</Text>
-            <Text style={s.tagline}>W O R L D  S H I N E R  —  F I N E  J E W E L R Y  M A N U F A C T U R I N G</Text>
           </View>
         </View>
 
@@ -319,16 +319,6 @@ export function QuotePdfDocument({
           </View>
         ))}
 
-        {/* ---- Reference image collage, after the stone schedule ---- */}
-        <ReferenceImages images={clientRefImages} />
-
-        {jobInfo.remarks ? (
-          <View style={s.remarksBox} wrap={false}>
-            <Text style={s.remarksLabel}>Remarks</Text>
-            <Text style={s.remarksText}>{jobInfo.remarks}</Text>
-          </View>
-        ) : null}
-
         {showPrices ? (
           <View wrap={false}>
             <View style={s.totalsRow}>
@@ -392,6 +382,16 @@ export function QuotePdfDocument({
             <Text style={s.bigPriceValue}>{fmtL(effectiveTotalLocal, locInfo.currency)}</Text>
           </View>
         )}
+
+        {/* ---- Reference images, after the total ---- */}
+        <ReferenceImages images={clientRefImages} />
+
+        {jobInfo.remarks ? (
+          <View style={s.remarksBox} wrap={false}>
+            <Text style={s.remarksLabel}>Remarks</Text>
+            <Text style={s.remarksText}>{jobInfo.remarks}</Text>
+          </View>
+        ) : null}
 
         <View style={s.fixedFooter} fixed>
           <Text render={({ pageNumber, totalPages }) => `Page ${pageNumber} of ${totalPages}`} />
