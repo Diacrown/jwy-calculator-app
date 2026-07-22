@@ -211,7 +211,7 @@ export function QuotePdfDocument({
 }) {
   const showPrices = variant === "full";
   const dateText = printDate ? new Date(printDate).toLocaleDateString() : new Date().toLocaleDateString();
-  const showLink = turntableLink && !isOwnAppLink(turntableLink);
+  const showLink = Boolean(turntableLink) && !isOwnAppLink(turntableLink);
 
   return (
     <Document>
