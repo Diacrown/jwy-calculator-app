@@ -100,36 +100,36 @@ const DIA_SIZE = [
   { code: "RND0.9M", key: "RND0.9M", shape: "Round", size: "0.9 mm (0.004 ct ±)", wt: 0.004, group: "R00" },
   { code: "RND1.0M", key: "RND1.0M", shape: "Round", size: "1.0 mm (0.005 ct ±)", wt: 0.005, group: "R00" },
   { code: "RND1.1M", key: "RND1.1M", shape: "Round", size: "1.1 mm (0.006 ct ±)", wt: 0.006, group: "R00" },
-  { code: "RND1.2M", key: "RND1.2M", shape: "Round", size: "1.2 mm (0.008 ct ±)", wt: 0.008, group: "R02" },
+  { code: "RND1.2M", key: "RND1.2M", shape: "Round", size: "1.2 mm (0.008 ct ±)", wt: 0.008, group: "R00" },
   { code: "RND1.3M", key: "RND1.3M", shape: "Round", size: "1.3 mm (0.01 ct ±)", wt: 0.01, group: "R02" },
   { code: "RND1.4M", key: "RND1.4M", shape: "Round", size: "1.4 mm (0.012 ct ±)", wt: 0.012, group: "R02" },
   { code: "RND1.5M", key: "RND1.5M", shape: "Round", size: "1.5 mm (0.015 ct ±)", wt: 0.015, group: "R02" },
-  { code: "RND1.6M", key: "RND1.6M", shape: "Round", size: "1.6 mm (0.017 ct ±)", wt: 0.017, group: "R09" },
-  { code: "RND1.7M", key: "RND1.7M", shape: "Round", size: "1.7 mm (0.02 ct ±)", wt: 0.02, group: "R09" },
-  { code: "RND1.8M", key: "RND1.8M", shape: "Round", size: "1.8 mm (0.023 ct ±)", wt: 0.023, group: "R09" },
-  { code: "RND1.9M", key: "RND1.9M", shape: "Round", size: "1.9 mm (0.027 ct ±)", wt: 0.028, group: "R09" },
-  { code: "RND2.0M", key: "RND2.0M", shape: "Round", size: "2.0 mm (0.03 ct ±)", wt: 0.032, group: "R11" },
-  { code: "RND2.1M", key: "RND2.1M", shape: "Round", size: "2.1 mm (0.04 ct ±)", wt: 0.04, group: "R11" },
-  { code: "RND2.2M", key: "RND2.2M", shape: "Round", size: "2.2 mm (0.045 ct ±)", wt: 0.045, group: "R11" },
-  { code: "RND2.3M", key: "RND2.3M", shape: "Round", size: "2.3 mm (0.05 ct ±)", wt: 0.05, group: "R12" },
-  { code: "RND2.4M", key: "RND2.4M", shape: "Round", size: "2.4 mm (0.055 ct ±)", wt: 0.055, group: "R12" },
-  { code: "RND2.5M", key: "RND2.5M", shape: "Round", size: "2.5 mm (0.06 ct ±)", wt: 0.063, group: "R12" },
-  { code: "RND2.6M", key: "RND2.6M", shape: "Round", size: "2.6 mm (0.07 ct ±)", wt: 0.073, group: "R14" },
-  { code: "RND2.7M", key: "RND2.7M", shape: "Round", size: "2.7 mm (0.08ct ±)", wt: 0.08, group: "R14" },
-  { code: "RND2.8M", key: "RND2.8M", shape: "Round", size: "2.8 mm (0.08-0.09 ct ±)", wt: 0.087, group: "R18" },
-  { code: "RND2.9M", key: "RND2.9M", shape: "Round", size: "2.9 mm (0.09-0.10 ct ±)", wt: 0.097, group: "R18" },
-  { code: "RND3.0M", key: "RND3.0M", shape: "Round", size: "3.0 mm (0.10-0.11 ct ±)", wt: 0.107, group: "R20" },
-  { code: "RND3.1M", key: "RND3.1M", shape: "Round", size: "3.1 mm (0.11-0.12 ct ±)", wt: 0.117, group: "R20" },
-  { code: "RND3.2M", key: "RND3.2M", shape: "Round", size: "3.2 mm (0.12-0.13 ct ±)", wt: 0.127, group: "R23" },
-  { code: "RND3.3M", key: "RND3.3M", shape: "Round", size: "3.3 mm (0.14-0.145 ct ±)", wt: 0.143, group: "R23" },
-  { code: "RND3.4M", key: "RND3.4M", shape: "Round", size: "3.4 mm (0.15-0.16 ct ±)", wt: 0.155, group: "R25" },
-  { code: "RND3.5M", key: "RND3.5M", shape: "Round", size: "3.5 mm (0.16-0.17 ct ±)", wt: 0.165, group: "R25" },
-  { code: "RND3.6M", key: "RND3.6M", shape: "Round", size: "3.6 mm (0.17-0.18 ct ±)", wt: 0.175, group: "R25" },
-  { code: "RND3.7M", key: "RND3.7M", shape: "Round", size: "3.7 mm (0.19-0.21 ct ±)", wt: 0.2, group: "R30" },
-  { code: "RND3.8M", key: "RND3.8M", shape: "Round", size: "3.8 mm (0.21-0.23 ct ±)", wt: 0.22, group: "R30" },
-  { code: "RND3.9M", key: "RND3.9M", shape: "Round", size: "3.9 mm (0.23-0.24 ct ±)", wt: 0.235, group: "R30" },
-  { code: "RND4.0M", key: "RND4.0M", shape: "Round", size: "4.0 mm (0.24-0.26 ct ±)", wt: 0.255, group: "R30" },
-  { code: "RND4.1M", key: "RND4.1M", shape: "Round", size: "4.1 mm (0.26-0.29 ct ±)", wt: 0.275, group: "R30" },
+  { code: "RND1.6M", key: "RND1.6M", shape: "Round", size: "1.6 mm (0.017 ct ±)", wt: 0.017, group: "R02" },
+  { code: "RND1.7M", key: "RND1.7M", shape: "Round", size: "1.7 mm (0.02 ct ±)", wt: 0.02, group: "R02" },
+  { code: "RND1.8M", key: "RND1.8M", shape: "Round", size: "1.8 mm (0.023 ct ±)", wt: 0.023, group: "R02" },
+  { code: "RND1.9M", key: "RND1.9M", shape: "Round", size: "1.9 mm (0.027 ct ±)", wt: 0.028, group: "R02" },
+  { code: "RND2.0M", key: "RND2.0M", shape: "Round", size: "2.0 mm (0.03 ct ±)", wt: 0.032, group: "R02" },
+  { code: "RND2.1M", key: "RND2.1M", shape: "Round", size: "2.1 mm (0.04 ct ±)", wt: 0.04, group: "R02" },
+  { code: "RND2.2M", key: "RND2.2M", shape: "Round", size: "2.2 mm (0.045 ct ±)", wt: 0.045, group: "R02" },
+  { code: "RND2.3M", key: "RND2.3M", shape: "Round", size: "2.3 mm (0.05 ct ±)", wt: 0.05, group: "R09" },
+  { code: "RND2.4M", key: "RND2.4M", shape: "Round", size: "2.4 mm (0.055 ct ±)", wt: 0.055, group: "R09" },
+  { code: "RND2.5M", key: "RND2.5M", shape: "Round", size: "2.5 mm (0.06 ct ±)", wt: 0.063, group: "R09" },
+  { code: "RND2.6M", key: "RND2.6M", shape: "Round", size: "2.6 mm (0.07 ct ±)", wt: 0.073, group: "R09" },
+  { code: "RND2.7M", key: "RND2.7M", shape: "Round", size: "2.7 mm (0.08ct ±)", wt: 0.08, group: "R11" },
+  { code: "RND2.8M", key: "RND2.8M", shape: "Round", size: "2.8 mm (0.08-0.09 ct ±)", wt: 0.087, group: "R11" },
+  { code: "RND2.9M", key: "RND2.9M", shape: "Round", size: "2.9 mm (0.09-0.10 ct ±)", wt: 0.097, group: "R12" },
+  { code: "RND3.0M", key: "RND3.0M", shape: "Round", size: "3.0 mm (0.10-0.11 ct ±)", wt: 0.107, group: "R12" },
+  { code: "RND3.1M", key: "RND3.1M", shape: "Round", size: "3.1 mm (0.11-0.12 ct ±)", wt: 0.117, group: "R12" },
+  { code: "RND3.2M", key: "RND3.2M", shape: "Round", size: "3.2 mm (0.12-0.13 ct ±)", wt: 0.127, group: "R12" },
+  { code: "RND3.3M", key: "RND3.3M", shape: "Round", size: "3.3 mm (0.14-0.145 ct ±)", wt: 0.143, group: "R12" },
+  { code: "RND3.4M", key: "RND3.4M", shape: "Round", size: "3.4 mm (0.15-0.16 ct ±)", wt: 0.155, group: "R14" },
+  { code: "RND3.5M", key: "RND3.5M", shape: "Round", size: "3.5 mm (0.16-0.17 ct ±)", wt: 0.165, group: "R14" },
+  { code: "RND3.6M", key: "RND3.6M", shape: "Round", size: "3.6 mm (0.17-0.18 ct ±)", wt: 0.175, group: "R18" },
+  { code: "RND3.7M", key: "RND3.7M", shape: "Round", size: "3.7 mm (0.19-0.21 ct ±)", wt: 0.2, group: "R20" },
+  { code: "RND3.8M", key: "RND3.8M", shape: "Round", size: "3.8 mm (0.21-0.23 ct ±)", wt: 0.22, group: "R20" },
+  { code: "RND3.9M", key: "RND3.9M", shape: "Round", size: "3.9 mm (0.23-0.24 ct ±)", wt: 0.235, group: "R23" },
+  { code: "RND4.0M", key: "RND4.0M", shape: "Round", size: "4.0 mm (0.24-0.26 ct ±)", wt: 0.255, group: "R25" },
+  { code: "RND4.1M", key: "RND4.1M", shape: "Round", size: "4.1 mm (0.26-0.29 ct ±)", wt: 0.275, group: "R25" },
   { code: "RND030W", key: "RND030W", shape: "Round", size: "4.2-4.4 mm ± (0.30-0.34 ct)", wt: 0.32, group: "R30" },
   { code: "RND038W", key: "RND038W", shape: "Round", size: "4.4-4.6 mm ± (0.35-0.39 ct)", wt: 0.365, group: "R38" },
   { code: "RND040W", key: "RND040W", shape: "Round", size: "4.6-4.8 mm ± (0.40-0.44 ct)", wt: 0.415, group: "R40" },
@@ -956,7 +956,16 @@ function JwyCalculatorApp() {
       } else if (isNatural) {
         if (sizeEntry.group) {
           const grid = (liveData.naturalPrices || SAMPLE_NATURAL_PRICES)[sizeEntry.group];
-          perCt = grid?.[row.quality] || 0;
+          const gridPrice = grid?.[row.quality];
+          if (gridPrice) {
+            perCt = gridPrice;
+          } else {
+            // Blank cell in the grid (e.g. TW VS/TW SI1 aren't offered at the
+            // R70/R75/R80 tiers) -- no real price exists here, so fall back
+            // to manual entry instead of silently pricing this at $0.
+            perCt = parseFloat(row.manualRate) || 0;
+            priceEditable = true;
+          }
         } else {
           perCt = parseFloat(row.manualRate) || 0;
           priceEditable = true;
@@ -2849,7 +2858,7 @@ const styles = {
   fxNote: { fontSize: 10, color: "#D8B7C2", marginTop: 3 },
 };
 
-const GATE_PASSWORD = "changeme123";
+const GATE_PASSWORD = "Admin@1234";
 const GATE_SESSION_KEY = "jwy_gate_unlocked";
 
 function PasswordGate({ onUnlock }) {
