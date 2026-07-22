@@ -1491,7 +1491,7 @@ function JwyCalculatorApp() {
         />
 
        
-      </div>
+      </div> <RemarksCard jobInfo={jobInfo} setJobInfo={setJobInfo} />
     </div>
   );
 }
@@ -2378,7 +2378,7 @@ function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, onPrevi
   );
 
   return (
-    <div style={{ ...styles.card, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+   <div style={{ ...styles.card, display: "flex", alignItems: "center", gap: 8, flexWrap: "nowrap", overflowX: "auto" }}>
       <SectionLabel eyebrow="04" title="Quotes" noMargin />
       <input
         style={{ ...styles.inputSm, width: 48 }}
@@ -2435,7 +2435,7 @@ function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, onPrevi
       <div style={{ display: "flex", alignItems: "center", gap: 5, marginLeft: "auto" }}>
         <input
           type="email"
-          style={{ ...styles.inputSm, width: 170 }}
+          style={{ ...styles.inputSm, width: 130 }}
           placeholder="Email quote to…"
           value={emailTo}
           onChange={(e) => setEmailTo(e.target.value)}
