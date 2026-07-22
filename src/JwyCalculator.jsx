@@ -1490,9 +1490,7 @@ function JwyCalculatorApp() {
           effectiveTotalLocal={effectiveTotalLocal}
         />
 
-        <RemarksCard jobInfo={jobInfo} setJobInfo={setJobInfo} />
-
-        <QuoteStatsPanel />
+       
       </div>
     </div>
   );
