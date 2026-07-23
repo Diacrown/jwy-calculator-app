@@ -28,6 +28,11 @@ const LOCATIONS = [
   { code: "WSPL", currency: "PLN", duty: 0.02 },
   { code: "DMR", currency: "INR", duty: 0.0 },
   { code: "DIA", currency: "USD", duty: 0.0 },
+  { code: "DIA", currency: "AUD", duty: 0.0 },
+  { code: "DIA", currency: "EUR", duty: 0.0 },
+  { code: "DIA", currency: "GBP", duty: 0.0 },
+  { code: "DIA", currency: "PLN", duty: 0.0 },
+  { code: "DIA", currency: "NZD", duty: 0.0 },
 ];
 
 const ITEM_LETTER_TO_LOCATION = { T: "DMT", M: "WSME", S: "WSSY", B: "WSBN", N: "WSNZ", K: "WSUK", I: "WSIT", P: "WSPL" };
