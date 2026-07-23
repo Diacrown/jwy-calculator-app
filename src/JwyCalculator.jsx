@@ -2857,7 +2857,7 @@ const styles = {
   fxNote: { fontSize: 10, color: "#D8B7C2", marginTop: 3 },
 };
 
-const GATE_PASSWORD = "changeme123";
+const GATE_PASSWORD = "Admin@1234";
 const GATE_SESSION_KEY = "jwy_gate_unlocked";
 
 function PasswordGate({ onUnlock }) {
