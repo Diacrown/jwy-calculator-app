@@ -1,9 +1,5 @@
 import { Document, Page, View, Text, Image, StyleSheet } from "@react-pdf/renderer";
 
-// Standard PDF fonts (Helvetica, Times-Roman) are part of the PDF spec
-// itself -- every PDF reader on every platform has them built in. This
-// is what actually fixes cross-viewer rendering, rather than just hoping
-// a browser's print-to-PDF step embeds a web font correctly.
 const ROSE = "#9C4A63";
 const INK = "#241B1E";
 const MUTED = "#7A6870";
@@ -24,9 +20,6 @@ const s = StyleSheet.create({
     fontSize: 7,
     color: MUTED,
   },
-
-  // Header: title on the left, logo prominently top-right (highlighted
-  // box) with job info stacked underneath it.
   letterhead: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -50,7 +43,6 @@ const s = StyleSheet.create({
   jobInfoBold: { color: INK, fontWeight: 700 },
   stageBadge: { fontSize: 8.5, color: MUTED, marginLeft: 4 },
 
-  // CAD render: the hero image, sized to roughly half the page.
   cadSection: { marginBottom: 10 },
   sectionLabel: { fontSize: 8.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, color: ROSE, marginBottom: 5 },
   cadHero: {
@@ -64,8 +56,6 @@ const s = StyleSheet.create({
   cadExtrasRow: { flexDirection: "row", gap: 6, marginTop: 6 },
   cadExtraThumb: { width: 80, height: 62, objectFit: "contain", border: `0.5pt solid ${HAIRLINE}`, borderRadius: 3 },
 
-  // Turntable link, styled as a small distinct pill between the CAD
-  // image and the stone schedule.
   linkPill: {
     flexDirection: "row",
     alignItems: "center",
@@ -87,17 +77,16 @@ const s = StyleSheet.create({
   specLabel: { fontSize: 7, textTransform: "uppercase", color: MUTED, marginBottom: 2 },
   specValue: { fontSize: 9, fontWeight: 700 },
 
-  // Stone schedule -- styled like a packing list: clean, tight rows,
-  // strong header bar.
   tableHeaderRow: { flexDirection: "row", backgroundColor: ROSE },
   th: { color: "#fff", fontSize: 6.5, fontWeight: 700, textTransform: "uppercase", padding: 4 },
   tr: { flexDirection: "row", borderBottom: `0.5pt solid ${HAIRLINE}` },
   trAlt: { backgroundColor: TINT },
   td: { fontSize: 8, padding: 4 },
   tdR: { fontSize: 8, padding: 4, textAlign: "right" },
+  totalsFooterRow: { flexDirection: "row", backgroundColor: TINT, borderTop: `1pt solid ${ROSE}` },
+  tdFooter: { fontSize: 8, padding: 4, fontWeight: 700 },
+  tdFooterR: { fontSize: 8, padding: 4, textAlign: "right", fontWeight: 700 },
 
-  // Reference images: uniform square tiles, fixed pixel size (not
-  // percentage-based) for predictable, non-spilling layout -- 3 per row.
   refImagesSection: { marginTop: 20, marginBottom: 20 },
   refImagesGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   refImageTile: {
@@ -135,13 +124,6 @@ const s = StyleSheet.create({
   bigPriceValue: { fontSize: 24, fontWeight: 700, color: ROSE },
 });
 
-// Safety guard: never let a link to this app's own domain end up on a
-// customer-facing PDF. PDF readers auto-linkify plain URL text, so if
-// someone accidentally pastes the calculator's own address into the "3D
-// render link" field (meant for an external Sketchfab/turntable URL), it
-// would otherwise become a clickable path straight into the internal
-// tool. Matches the production domain and any Netlify branch-preview
-// variant of the same site (e.g. "testing--jwy-calculator.netlify.app").
 const OWN_APP_DOMAIN_FRAGMENT = "jwy-calculator";
 function isOwnAppLink(url) {
   return typeof url === "string" && url.toLowerCase().includes(OWN_APP_DOMAIN_FRAGMENT);
@@ -150,23 +132,15 @@ function isOwnAppLink(url) {
 const fmt = (n, dp = 2) =>
   isFinite(n) ? n.toLocaleString(undefined, { minimumFractionDigits: dp, maximumFractionDigits: dp }) : "0.00";
 
-// AUD/NZD spelled out per request, rather than the A$/NZ$ shorthand.
 const CURRENCY_SYMBOLS = { USD: "$", EUR: "€", GBP: "£", AUD: "AUD $", NZD: "NZD $", PLN: "zł", INR: "₹" };
 const fmtC = (n, dp = 2) => "$" + fmt(n, dp);
 const fmtL = (n, code, dp = 2) => (CURRENCY_SYMBOLS[code] || "$") + fmt(n, dp);
 
-// Shape/size cell text -- suppresses the internal "manual entry"
-// placeholder that the app uses on-screen, since it reads like leftover
-// debug text on a customer-facing document. A custom row still shows its
-// actual shape/description, just without that generic suffix.
 function shapeSizeText(c) {
   if (c.size === "manual entry") return c.shape || "—";
   return `${c.shape} · ${c.size}`;
 }
 
-// Reference-image collage: one featured tile + supporting tiles, rather
-// than a uniform row of equal thumbnails. Layout adapts to how many
-// images there actually are (1, 2, 3, or 4+).
 function ReferenceImages({ images }) {
   if (!images || images.length === 0) return null;
 
@@ -209,21 +183,27 @@ export function QuotePdfDocument({
   logoBlack,
   printDate,
 }) {
+  // Three print modes:
+  //  "full"     -- every cost line + grand total (internal/back-office copy)
+  //  "priceOnly" -- just the final total, no breakdown (clean customer copy)
+  //  "noPrice"  -- no pricing anywhere at all, not even a final total
+  //                (e.g. a production/spec sheet for the workshop)
   const showPrices = variant === "full";
+  const showAnyPrice = variant !== "noPrice";
   const dateText = printDate ? new Date(printDate).toLocaleDateString() : new Date().toLocaleDateString();
   const showLink = Boolean(turntableLink) && !isOwnAppLink(turntableLink);
 
   return (
     <Document>
       <Page size="A4" style={s.page} wrap>
-        {/* ---- Header: logo+job info grouped on the left, title+slogan on the right ---- */}
+        {/* ---- Header ---- */}
         <View style={s.letterhead}>
           <View style={{ flex: 1.4 }}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
               {logoBlack && <Image src={logoBlack} style={{ width: 22, height: 17 }} />}
               <Text style={s.tagline}>World Shiner — Fine Jewelry Manufacturing</Text>
             </View>
-            <Text style={s.quoteTitle}>{showPrices ? "Quotation" : "Quotation Order"}</Text>
+            <Text style={s.quoteTitle}>{showAnyPrice ? (showPrices ? "Quotation" : "Quotation Order") : "Production Sheet"}</Text>
           </View>
           <View style={{ flex: 1, alignItems: "flex-end" }}>
             <View style={s.jobInfoCol}>
@@ -252,7 +232,7 @@ export function QuotePdfDocument({
           </View>
         </View>
 
-        {/* ---- CAD render: the hero image, ~half the page ---- */}
+        {/* ---- CAD render ---- */}
         {cadImages?.length > 0 && (
           <View style={s.cadSection} wrap={false}>
             <Text style={s.sectionLabel}>CAD Render</Text>
@@ -267,7 +247,6 @@ export function QuotePdfDocument({
           </View>
         )}
 
-        {/* ---- Turntable / 3D render link, between CAD and stone schedule ---- */}
         {showLink && (
           <View style={s.linkPill}>
             <Text style={s.linkPillLabel}>3D Render</Text>
@@ -296,7 +275,7 @@ export function QuotePdfDocument({
           </View>
         </View>
 
-        {/* ---- Stone schedule, styled as a packing list ---- */}
+        {/* ---- Stone schedule ---- */}
         <Text style={s.sectionLabel}>Stone Schedule</Text>
         <View style={s.tableHeaderRow}>
           <Text style={[s.th, { width: "6%" }]}>Sr.No</Text>
@@ -318,6 +297,16 @@ export function QuotePdfDocument({
             {showPrices && <Text style={[s.tdR, { width: "14%" }]}>{fmtC(c.total)}</Text>}
           </View>
         ))}
+        {/* Totals footer -- total stone count and total carat weight (cttw),
+            shown in every print mode since this isn't pricing information,
+            it's a physical count of what's in the piece. */}
+        <View style={s.totalsFooterRow} wrap={false}>
+          <Text style={[s.tdFooter, { width: "48%" }]}>Total</Text>
+          <Text style={[s.tdFooterR, { width: "10%" }]}>{fmt(totals.totalPcs, 0)}</Text>
+          <Text style={[s.tdFooterR, { width: "14%" }]}>{fmt(totals.totalWt, 3)} cttw</Text>
+          {showPrices && <Text style={[s.tdFooterR, { width: "14%" }]}></Text>}
+          {showPrices && <Text style={[s.tdFooterR, { width: "14%" }]}>{fmtC(totals.diamondTotal)}</Text>}
+        </View>
 
         {showPrices ? (
           <View wrap={false}>
@@ -376,14 +365,15 @@ export function QuotePdfDocument({
               </View>
             </View>
           </View>
-        ) : (
+        ) : variant === "priceOnly" ? (
           <View style={s.bigPriceBlock} wrap={false}>
             <Text style={s.bigPriceLabel}>Total ({locInfo.currency})</Text>
             <Text style={s.bigPriceValue}>{fmtL(effectiveTotalLocal, locInfo.currency)}</Text>
           </View>
-        )}
+        ) : null}
+        {/* variant === "noPrice" -- no price block rendered at all */}
 
-        {/* ---- Reference images, after the total ---- */}
+        {/* ---- Reference images ---- */}
         <ReferenceImages images={clientRefImages} />
 
         {jobInfo.remarks ? (
