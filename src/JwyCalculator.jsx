@@ -1079,6 +1079,53 @@ function JwyCalculatorApp() {
     }
   };
 
+  // Branded HTML email body -- same template regardless of which print
+  // variant (full/priceOnly/noPrice) is attached, since the email itself
+  // never repeats pricing, only the job reference. The PDF attachment is
+  // what actually varies by variant.
+  const buildEmailHtml = () => {
+    const refLine = [
+      jobInfo.jobNo ? `Job ${jobInfo.jobNo}` : null,
+      jobInfo.itemNo ? `Item ${jobInfo.itemNo}` : null,
+      quoteStage || null,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    const greetingName = jobInfo.customer ? jobInfo.customer : "there";
+
+    return `
+<div style="font-family: Georgia, 'Times New Roman', serif; max-width: 480px; margin: 0 auto; color: #241B1E;">
+  <div style="background: #241B1E; padding: 20px 24px; border-bottom: 3px solid #9C4A63;">
+    <div style="color: #fff; font-size: 15px; font-weight: 600; letter-spacing: 0.3px;">World Shiner</div>
+    <div style="color: #D8B7C2; font-size: 11px; margin-top: 2px;">Fine Jewelry Manufacturing</div>
+  </div>
+  <div style="padding: 28px 24px;">
+    <p style="font-size: 14px; line-height: 1.6;">Dear ${greetingName},</p>
+    <p style="font-size: 14px; line-height: 1.6;">
+      Thank you for the opportunity to quote your piece. Please find your quotation attached as a PDF.
+    </p>
+    ${
+      refLine
+        ? `<div style="background: #FBEEF2; border-radius: 6px; padding: 14px 16px; margin: 20px 0; font-size: 13px;">
+      <div style="color: #6E2F42; font-weight: 700; text-transform: uppercase; font-size: 10px; letter-spacing: 0.5px; margin-bottom: 6px;">Job Reference</div>
+      <div>${refLine}</div>
+    </div>`
+        : ""
+    }
+    <p style="font-size: 14px; line-height: 1.6;">
+      If you have any questions about this quotation, or would like to discuss adjustments, please don't hesitate to reach out.
+    </p>
+    <p style="font-size: 14px; line-height: 1.6; margin-top: 24px;">
+      Warm regards,<br/>
+      <strong>World Shiner</strong>
+    </p>
+  </div>
+  <div style="padding: 14px 24px; border-top: 1px solid #F3DCE3; font-size: 10.5px; color: #8B7680;">
+    This quotation is an internal reference and subject to final confirmation.
+  </div>
+</div>`.trim();
+  };
+
   const doEmail = async (variant, toEmail) => {
     const filenameBase = quoteFilenameBase();
     const pdfBlob = await generatePdfBlob(variant);
@@ -1088,7 +1135,9 @@ function JwyCalculatorApp() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         to: toEmail,
-        subject: `Quotation - ${jobInfo.jobNo || filenameBase}`,
+        subject: `Your Quotation — ${jobInfo.jobNo || filenameBase} · World Shiner`,
+        message: "Please find your quotation attached as a PDF.",
+        html: buildEmailHtml(),
         filenameBase,
         pdfBase64,
       }),
@@ -2157,6 +2206,7 @@ function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, onPrevi
               <select style={{ ...styles.inputSm, width: 96 }} value={emailVariant} onChange={(e) => setEmailVariant(e.target.value)}>
                 <option value="full">Full price</option>
                 <option value="priceOnly">Price only</option>
+                <option value="noPrice">No price</option>
               </select>
               <button
                 style={{ ...styles.smallBtn, ...styles.smallBtnAccent }}
