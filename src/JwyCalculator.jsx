@@ -2004,6 +2004,7 @@ function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, onPrevi
   const [emailStatus, setEmailStatus] = useState("");
   const [syncStatus, setSyncStatus] = useState("");
   const [emailOpen, setEmailOpen] = useState(false);
+  const [printVariant, setPrintVariant] = useState("full");
 
   const sendEmail = async () => {
     if (!emailTo.trim()) return;
@@ -2086,32 +2087,32 @@ function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, onPrevi
 
         <div style={styles.toolbarGroup}>
           <span style={styles.toolbarGroupLabel}>Print</span>
+          <select
+            style={{ ...styles.inputSm, width: 108 }}
+            value={printVariant}
+            onChange={(e) => setPrintVariant(e.target.value)}
+          >
+            <option value="full">Full price</option>
+            <option value="priceOnly">Price only</option>
+            <option value="noPrice">No price</option>
+          </select>
           <div style={{ display: "inline-flex", alignItems: "center", gap: 4, opacity: pdfGenerating ? 0.6 : 1 }}>
-            <button style={styles.toggleBtnActive} onClick={() => onPrint("full")} type="button" disabled={!!pdfGenerating}>
-              {pdfGenerating === "full" ? "Generating…" : "Full price"}
+            <button
+              style={styles.toggleBtnActive}
+              onClick={() => onPrint(printVariant)}
+              type="button"
+              disabled={!!pdfGenerating}
+            >
+              {pdfGenerating === printVariant ? "Generating…" : "Download"}
             </button>
             <button
               title="Preview without downloading"
               style={{ ...styles.toggleBtnActive, padding: "7px 9px" }}
-              onClick={() => onPreview("full")}
+              onClick={() => onPreview(printVariant)}
               type="button"
               disabled={!!pdfGenerating}
             >
-              {pdfGenerating === "full-preview" ? "…" : "👁"}
-            </button>
-          </div>
-          <div style={{ display: "inline-flex", alignItems: "center", gap: 4, opacity: pdfGenerating ? 0.6 : 1 }}>
-            <button style={styles.toggleBtnActive} onClick={() => onPrint("priceOnly")} type="button" disabled={!!pdfGenerating}>
-              {pdfGenerating === "priceOnly" ? "Generating…" : "Price only"}
-            </button>
-            <button
-              title="Preview without downloading"
-              style={{ ...styles.toggleBtnActive, padding: "7px 9px" }}
-              onClick={() => onPreview("priceOnly")}
-              type="button"
-              disabled={!!pdfGenerating}
-            >
-              {pdfGenerating === "priceOnly-preview" ? "…" : "👁"}
+              {pdfGenerating === printVariant + "-preview" ? "…" : "👁"}
             </button>
           </div>
         </div>
