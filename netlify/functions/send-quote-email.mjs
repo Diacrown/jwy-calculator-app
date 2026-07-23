@@ -21,7 +21,7 @@ export default async (req) => {
 
   try {
     const body = await req.json();
-    const { to, subject, message, filenameBase, pdfBase64 } = body;
+    const { to, subject, message, html, filenameBase, pdfBase64 } = body;
 
     if (!to || !pdfBase64 || !filenameBase) {
       return new Response(JSON.stringify({ error: "Missing required fields (to, filenameBase, pdfBase64)" }), {
@@ -37,7 +37,10 @@ export default async (req) => {
       from: fromAddress,
       to: [to],
       subject: subject || `Quotation - ${filenameBase}`,
+      // Both are sent when available: html renders in modern email clients,
+      // text is the plain-text fallback for anything that can't render HTML.
       text: message || "Please find the attached quotation.",
+      html: html || undefined,
       attachments: [
         {
           filename: `${filenameBase}.pdf`,
