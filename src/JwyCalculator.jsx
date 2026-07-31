@@ -529,7 +529,7 @@ const fmtLocal = (n, currencyCode, dp = 2) => (CURRENCY_SYMBOLS[currencyCode] ||
 const roundUp5 = (n) => (isFinite(n) ? Math.ceil(n / 5) * 5 : 0);
 
 function emptyRow() {
-  return { mode: "natural", stoneTypeSel: "Mined", shapeSel: "", sizeCode: "", quality: "TW SI1", lgdGrade: "Non-cert", lgdShape: "RND", pcs: "", customShape: "", customWt: "", customRate: "", manualRate: "" };
+  return { mode: "natural", stoneTypeSel: "Mined", shapeSel: "", sizeCode: "", quality: "TW SI1", lgdGrade: "Non-cert", lgdShape: "RND", pcs: "", customShape: "", customWt: "", customRate: "", manualRate: "", proposedQuality: "" };
 }
 
 
@@ -2253,6 +2253,7 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow })
               <th style={styles.th}>Size</th>
               <th style={styles.th}>Spec</th>
               <th style={styles.th}>Quality</th>
+              <th style={styles.th}>Proposed Quality</th>
               <th style={styles.thRight}>Wt/pc</th>
               <th style={styles.thRight}>Pcs</th>
               <th style={styles.thRight}>Total wt</th>
@@ -2398,6 +2399,15 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow })
                       </div>
                     )}
                   </td>
+                  <td style={styles.td}>
+                    <input
+                      style={styles.inputSm}
+                      placeholder="e.g. VS clarity"
+                      value={row.proposedQuality}
+                      onChange={(e) => updateRow(i, { proposedQuality: e.target.value })}
+                      title="Shown to the customer on the Price Only print, instead of the internal quality grade"
+                    />
+                  </td>
                   <td style={styles.tdRight}>
                     {row.sizeCode === CUSTOM_CODE ? (
                       <input
@@ -2467,7 +2477,7 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow })
           </tbody>
           <tfoot>
             <tr style={styles.totalRow}>
-              <td style={styles.td} colSpan={7}>
+              <td style={styles.td} colSpan={8}>
                 Totals
               </td>
               <td style={styles.tdRight}>{fmt(totals.totalPcs, 0)}</td>
