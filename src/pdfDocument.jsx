@@ -212,7 +212,6 @@ export function QuotePdfDocument({
           <View style={{ flex: 1.4 }}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
               {logoBlack && <Image src={logoBlack} style={{ width: 22, height: 17 }} />}
-              <Text style={s.tagline}>World Shiner — Fine Jewelry Manufacturing</Text>
             </View>
             <Text style={s.quoteTitle}>{showAnyPrice ? (showPrices ? "Quotation" : "Quotation Order") : "Production Sheet"}</Text>
           </View>
