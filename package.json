@@ -13,9 +13,11 @@
     "@netlify/neon": "^0.1.2",
     "@react-pdf/renderer": "^3.4.4",
     "jszip": "^3.10.1",
+    "nodemailer": "^9.0.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "resend": "^6.17.2"
+    "resend": "^6.17.2",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.1",
