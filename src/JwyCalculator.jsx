@@ -4,7 +4,9 @@ import { POLL_INTERVAL_MS } from "./config.js";
 import { parseOrderFormJson } from "./pdfParser.js";
 import { pdf } from "@react-pdf/renderer";
 import JSZip from "jszip";
+import * as XLSX from "xlsx";
 import { QuotePdfDocument } from "./pdfDocument.jsx";
+import { mapQuoteToGatiRows } from "./gatiExport.js";
 
 const SAMPLE_METAL_RATES = {
   AU: { label: "Gold", pmRateOz: 4026.45, spotOz: 3984.96, spotSurcharge: 1.05, wastage: 1.1, asOf: "Mon 29 Jun 2026 PM" },
@@ -574,6 +576,8 @@ function JwyCalculatorApp() {
     customer: "",
     cadType: "Medium",
     remarks: "",
+    itemType: "",
+    subCategory: "",
   });
   const [location, setLocation] = useState("WSSY");
   const [quoteStage, setQuoteStage] = useState("Q1");
@@ -688,6 +692,8 @@ function JwyCalculatorApp() {
       itemNo: ji.itemNo || prev.itemNo,
       itemSize: ji.itemSize || prev.itemSize,
       remarks: ji.clientNotes || prev.remarks,
+      itemType: ji.itemType || prev.itemType,
+      subCategory: ji.subCategory || prev.subCategory,
     }));
     if (ji.itemNo) {
       const mappedLoc = ITEM_LETTER_TO_LOCATION[ji.itemNo.trim().charAt(0).toUpperCase()];
@@ -781,7 +787,7 @@ function JwyCalculatorApp() {
   };
 
   const clearAll = () => {
-    setJobInfo({ designer: "", jobNo: "", itemNo: "", itemSize: "", customer: "", cadType: "Medium", remarks: "" });
+    setJobInfo({ designer: "", jobNo: "", itemNo: "", itemSize: "", customer: "", cadType: "Medium", remarks: "", itemType: "", subCategory: "" });
     setPrimaryAlloyShort("");
     setPrimaryGramWt("");
     setSecondaryAlloyShort("");
@@ -932,7 +938,7 @@ function JwyCalculatorApp() {
           wtPerPc,
           totalWt,
           perCt,
-          total: totalWt * perCt,
+          total: Math.round(totalWt * perCt),
           settingTotal,
           settingType: tier.type,
           priceEditable: true,
@@ -982,7 +988,7 @@ function JwyCalculatorApp() {
         }
       }
 
-      const total = totalWt * perCt;
+      const total = Math.round(totalWt * perCt);
       const tier = settingRateFor(sizeEntry.wt, settingTiersLive);
       const settingTotal = isMount ? 0 : tier.type === "PER CT" ? tier.rate * totalWt : tier.rate * pcs;
 
@@ -1003,7 +1009,7 @@ function JwyCalculatorApp() {
   const totals = useMemo(() => {
     const totalWt = rowCalcs.reduce((s, r) => s + r.totalWt, 0);
     const totalPcs = rows.reduce((s, r) => s + (parseFloat(r.pcs) || 0), 0);
-    const diamondTotal = Math.round(rowCalcs.reduce((s, r) => s + r.total, 0));
+    const diamondTotal = rowCalcs.reduce((s, r) => s + r.total, 0);
     const settingTotal = Math.round(rowCalcs.reduce((s, r) => s + r.settingTotal, 0));
     return { totalWt, totalPcs, diamondTotal, settingTotal };
   }, [rowCalcs, rows]);
@@ -1067,6 +1073,48 @@ function JwyCalculatorApp() {
     ).toBlob();
   };
 
+  // Builds a real, downloadable GATI-format .xlsx from the current
+  // quote. Reuses the exact same rowsWithCalcs construction as the PDF,
+  // so the two outputs can never silently disagree with each other.
+  // Returns how many fields still need manual review (NEEDS-GATI-DATA/
+  // RECHECK) so the caller can show that to the person exporting.
+  const doExportGati = () => {
+    const rowsWithCalcs = rows
+      .map((r, i) => ({ r, c: rowCalcs[i] }))
+      .filter(({ r, c }) => (r.sizeCode || r.customShape) && c.totalWt > 0);
+
+    if (rowsWithCalcs.length === 0) {
+      throw new Error("Add at least one stone row before exporting.");
+    }
+
+    const gatiRows = mapQuoteToGatiRows({
+      jobInfo,
+      locInfo,
+      fxRate,
+      primaryAlloy,
+      primaryGramWt,
+      rowsWithCalcs,
+      printDate,
+    });
+
+    let flaggedCount = 0;
+    for (const row of gatiRows) {
+      for (const val of Object.values(row)) {
+        if (typeof val === "string" && (val.startsWith("NEEDS-GATI-DATA:") || val.startsWith("RECHECK:"))) {
+          flaggedCount++;
+        }
+      }
+    }
+
+    const ws = XLSX.utils.json_to_sheet(gatiRows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "GATI Import");
+    const filenameBase = quoteFilenameBase();
+    XLSX.writeFile(wb, `${filenameBase}_GATI.xlsx`);
+
+    return { flaggedCount };
+  };
+
   const doPreview = async (variant) => {
     setPdfGenerating(variant + "-preview");
     try {
@@ -1097,8 +1145,7 @@ function JwyCalculatorApp() {
     return `
 <div style="font-family: Georgia, 'Times New Roman', serif; max-width: 480px; margin: 0 auto; color: #241B1E;">
   <div style="background: #241B1E; padding: 20px 24px; border-bottom: 3px solid #9C4A63;">
-    <div style="color: #fff; font-size: 15px; font-weight: 600; letter-spacing: 0.3px;">World Shiner</div>
-    <div style="color: #D8B7C2; font-size: 11px; margin-top: 2px;">Fine Jewelry Manufacturing</div>
+    <div style="color: #D8B7C2; font-size: 11px;">Fine Jewelry Manufacturing</div>
   </div>
   <div style="padding: 28px 24px;">
     <p style="font-size: 14px; line-height: 1.6;">Dear ${greetingName},</p>
@@ -1117,8 +1164,7 @@ function JwyCalculatorApp() {
       If you have any questions about this quotation, or would like to discuss adjustments, please don't hesitate to reach out.
     </p>
     <p style="font-size: 14px; line-height: 1.6; margin-top: 24px;">
-      Warm regards,<br/>
-      <strong>World Shiner</strong>
+      Warm regards,
     </p>
   </div>
   <div style="padding: 14px 24px; border-top: 1px solid #F3DCE3; font-size: 10.5px; color: #8B7680;">
@@ -1136,7 +1182,7 @@ function JwyCalculatorApp() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         to: toEmail,
-        subject: `Your Quotation — ${jobInfo.jobNo || filenameBase} · World Shiner`,
+        subject: `Your Quotation — ${jobInfo.jobNo || filenameBase}`,
         message: "Please find your quotation attached as a PDF.",
         html: buildEmailHtml(),
         filenameBase,
@@ -1279,6 +1325,7 @@ function JwyCalculatorApp() {
           onPreview={doPreview}
           onEmail={doEmail}
           onSyncToDb={doSyncToDb}
+          onExportGati={doExportGati}
           quoteStage={quoteStage}
           setQuoteStage={setQuoteStage}
           pdfGenerating={pdfGenerating}
@@ -1584,16 +1631,24 @@ function compressDataUrl(dataUrl, maxDim = 1600, quality = 0.82) {
     const img = new window.Image();
     img.onerror = () => resolve(dataUrl);
     img.onload = () => {
-      const { width, height } = img;
-      const scale = Math.min(1, maxDim / Math.max(width, height));
-      const targetW = Math.round(width * scale);
-      const targetH = Math.round(height * scale);
-      const canvas = document.createElement("canvas");
-      canvas.width = targetW;
-      canvas.height = targetH;
-      const ctx = canvas.getContext("2d");
-      ctx.drawImage(img, 0, 0, targetW, targetH);
-      resolve(canvas.toDataURL("image/jpeg", quality));
+      try {
+        const { width, height } = img;
+        if (!width || !height) {
+          resolve(dataUrl); // can't safely resize -- use original rather than risk a malformed image
+          return;
+        }
+        const scale = Math.min(1, maxDim / Math.max(width, height));
+        const targetW = Math.round(width * scale);
+        const targetH = Math.round(height * scale);
+        const canvas = document.createElement("canvas");
+        canvas.width = targetW;
+        canvas.height = targetH;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, targetW, targetH);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      } catch {
+        resolve(dataUrl); // any canvas/encoding failure -- fall back to the original rather than a broken result
+      }
     };
     img.src = dataUrl;
   });
@@ -1607,16 +1662,24 @@ function fileToDataUrl(file, maxDim = 1600, quality = 0.82) {
       const img = new window.Image();
       img.onerror = () => resolve(reader.result);
       img.onload = () => {
-        let { width, height } = img;
-        const scale = Math.min(1, maxDim / Math.max(width, height));
-        const targetW = Math.round(width * scale);
-        const targetH = Math.round(height * scale);
-        const canvas = document.createElement("canvas");
-        canvas.width = targetW;
-        canvas.height = targetH;
-        const ctx = canvas.getContext("2d");
-        ctx.drawImage(img, 0, 0, targetW, targetH);
-        resolve(canvas.toDataURL("image/jpeg", quality));
+        try {
+          let { width, height } = img;
+          if (!width || !height) {
+            resolve(reader.result); // can't safely resize -- use original
+            return;
+          }
+          const scale = Math.min(1, maxDim / Math.max(width, height));
+          const targetW = Math.round(width * scale);
+          const targetH = Math.round(height * scale);
+          const canvas = document.createElement("canvas");
+          canvas.width = targetW;
+          canvas.height = targetH;
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(img, 0, 0, targetW, targetH);
+          resolve(canvas.toDataURL("image/jpeg", quality));
+        } catch {
+          resolve(reader.result); // fall back to the original on any failure
+        }
       };
       img.src = reader.result;
     };
@@ -2047,12 +2110,13 @@ function CloudQuoteSearch({ loadFromCloud }) {
   );
 }
 
-function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, onPreview, onEmail, onSyncToDb, quoteStage, setQuoteStage, pdfGenerating }) {
+function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, onPreview, onEmail, onSyncToDb, onExportGati, quoteStage, setQuoteStage, pdfGenerating }) {
   const [selected, setSelected] = useState("");
   const [emailTo, setEmailTo] = useState("");
   const [emailVariant, setEmailVariant] = useState("full");
   const [emailStatus, setEmailStatus] = useState("");
   const [syncStatus, setSyncStatus] = useState("");
+  const [gatiExportStatus, setGatiExportStatus] = useState("");
   const [emailOpen, setEmailOpen] = useState(false);
   const [printVariant, setPrintVariant] = useState("full");
 
@@ -2076,6 +2140,19 @@ function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, onPrevi
       setTimeout(() => setSyncStatus(""), 3000);
     } catch (err) {
       setSyncStatus((err && err.message) || "Couldn't save");
+    }
+  };
+
+  const exportGati = () => {
+    setGatiExportStatus("exporting");
+    try {
+      const { flaggedCount } = onExportGati();
+      setGatiExportStatus(
+        flaggedCount > 0 ? `Downloaded -- ${flaggedCount} field(s) need review` : "Downloaded -- no flagged fields"
+      );
+      setTimeout(() => setGatiExportStatus(""), 6000);
+    } catch (err) {
+      setGatiExportStatus((err && err.message) || "Couldn't build the GATI file");
     }
   };
 
@@ -2183,6 +2260,19 @@ function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, onPrevi
           {syncStatus && syncStatus !== "syncing" && syncStatus !== "synced" && (
             <span style={styles.statusWarn} title={syncStatus}>
               {syncStatus.length > 40 ? syncStatus.slice(0, 40) + "…" : syncStatus}
+            </span>
+          )}
+          <button
+            style={{ ...styles.smallBtn, ...styles.smallBtnAccent }}
+            type="button"
+            disabled={gatiExportStatus === "exporting"}
+            onClick={exportGati}
+          >
+            {gatiExportStatus === "exporting" ? "Building…" : "Export to GATI"}
+          </button>
+          {gatiExportStatus && gatiExportStatus !== "exporting" && (
+            <span style={gatiExportStatus.startsWith("Downloaded") ? styles.statusOk : styles.statusWarn} title={gatiExportStatus}>
+              {gatiExportStatus.length > 50 ? gatiExportStatus.slice(0, 50) + "…" : gatiExportStatus}
             </span>
           )}
         </div>
