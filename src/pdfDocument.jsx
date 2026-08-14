@@ -1,9 +1,5 @@
 import { Document, Page, View, Text, Image, StyleSheet } from "@react-pdf/renderer";
 
-// Standard PDF fonts (Helvetica, Times-Roman) are part of the PDF spec
-// itself -- every PDF reader on every platform has them built in. This
-// is what actually fixes cross-viewer rendering, rather than just hoping
-// a browser's print-to-PDF step embeds a web font correctly.
 const ROSE = "#9C4A63";
 const INK = "#241B1E";
 const MUTED = "#7A6870";
@@ -12,17 +8,6 @@ const TINT = "#FBF5F7";
 
 const s = StyleSheet.create({
   page: { padding: "50pt 34pt 40pt", fontFamily: "Helvetica", fontSize: 9, color: INK },
-  fixedHeader: {
-    position: "absolute",
-    top: 14,
-    left: 34,
-    right: 34,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    borderBottom: `0.5pt solid ${HAIRLINE}`,
-    paddingBottom: 4,
-  },
   fixedFooter: {
     position: "absolute",
     bottom: 16,
@@ -37,23 +22,54 @@ const s = StyleSheet.create({
   },
   letterhead: {
     flexDirection: "row",
+    justifyContent: "space-between",
     alignItems: "flex-start",
     borderBottom: `1.5pt solid ${ROSE}`,
     paddingBottom: 10,
     marginBottom: 14,
   },
-  letterheadLeft: { flex: 1, flexDirection: "row", alignItems: "center" },
-  letterheadCenter: { flex: 1, alignItems: "center", justifyContent: "center" },
-  letterheadRight: { flex: 1, alignItems: "flex-end" },
-  quoteTitle: { fontSize: 15, fontWeight: 700, fontFamily: "Times-Roman" },
-  jobInfoLine: { fontSize: 8.5, color: MUTED, marginBottom: 2, flexDirection: "row", gap: 3 },
+  titleBlock: { justifyContent: "center" },
+  tagline: { fontSize: 7, letterSpacing: 1, textTransform: "uppercase", color: MUTED },
+  quoteTitle: { fontSize: 19, fontFamily: "Times-Bold", marginTop: 2 },
+  logoHighlightBox: {
+    border: `1pt solid ${ROSE}`,
+    borderRadius: 5,
+    padding: 6,
+    backgroundColor: TINT,
+    alignItems: "center",
+  },
+  jobInfoCol: { alignItems: "flex-start" },
+  jobInfoLine: { fontSize: 8.5, color: MUTED, marginBottom: 2, flexDirection: "row", gap: 3, justifyContent: "flex-start" },
   jobInfoBold: { color: INK, fontWeight: 700 },
-  stageBadge: { backgroundColor: ROSE, color: "#fff", fontSize: 7, fontWeight: 700, paddingHorizontal: 5, paddingVertical: 1, borderRadius: 6, marginLeft: 4 },
+  stageBadge: { fontSize: 8.5, color: MUTED, marginLeft: 4 },
 
-  cadSection: { marginBottom: 14 },
-  imageColLabel: { fontSize: 7, letterSpacing: 0.5, textTransform: "uppercase", color: MUTED, marginBottom: 4 },
-  imageGridFull: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
-  imageThumbFull: { width: 170, height: 130, objectFit: "contain", border: `0.5pt solid ${HAIRLINE}`, borderRadius: 3 },
+  cadSection: { marginBottom: 10 },
+  sectionLabel: { fontSize: 8.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, color: ROSE, marginBottom: 5 },
+  cadHero: {
+    width: "100%",
+    height: 380,
+    objectFit: "contain",
+    border: `0.75pt solid ${HAIRLINE}`,
+    borderRadius: 4,
+    backgroundColor: "#fff",
+  },
+  cadExtrasRow: { flexDirection: "row", gap: 6, marginTop: 6 },
+  cadExtraThumb: { width: 80, height: 62, objectFit: "contain", border: `0.5pt solid ${HAIRLINE}`, borderRadius: 3 },
+
+  linkPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    backgroundColor: TINT,
+    border: `0.5pt solid ${ROSE}`,
+    borderRadius: 4,
+    paddingVertical: 5,
+    paddingHorizontal: 8,
+    marginBottom: 12,
+    alignSelf: "flex-start",
+  },
+  linkPillLabel: { fontSize: 7.5, fontWeight: 700, color: ROSE, textTransform: "uppercase", letterSpacing: 0.4 },
+  linkPillText: { fontSize: 8, color: INK },
 
   specStrip: { flexDirection: "row", border: `0.5pt solid ${HAIRLINE}`, borderRadius: 4, marginBottom: 14 },
   specCell: { flex: 1, padding: 8, borderLeft: `0.5pt solid ${HAIRLINE}` },
@@ -61,14 +77,26 @@ const s = StyleSheet.create({
   specLabel: { fontSize: 7, textTransform: "uppercase", color: MUTED, marginBottom: 2 },
   specValue: { fontSize: 9, fontWeight: 700 },
 
-  sectionLabel: { fontSize: 8.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, color: ROSE, marginBottom: 5 },
-
   tableHeaderRow: { flexDirection: "row", backgroundColor: ROSE },
   th: { color: "#fff", fontSize: 6.5, fontWeight: 700, textTransform: "uppercase", padding: 4 },
   tr: { flexDirection: "row", borderBottom: `0.5pt solid ${HAIRLINE}` },
   trAlt: { backgroundColor: TINT },
   td: { fontSize: 8, padding: 4 },
   tdR: { fontSize: 8, padding: 4, textAlign: "right" },
+  totalsFooterRow: { flexDirection: "row", backgroundColor: TINT, borderTop: `1pt solid ${ROSE}` },
+  tdFooter: { fontSize: 8, padding: 4, fontWeight: 700 },
+  tdFooterR: { fontSize: 8, padding: 4, textAlign: "right", fontWeight: 700 },
+
+  refImagesSection: { marginTop: 20, marginBottom: 20 },
+  refImagesGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  refImageTile: {
+    width: 160,
+    height: 160,
+    objectFit: "contain",
+    border: `0.75pt solid ${HAIRLINE}`,
+    borderRadius: 4,
+    backgroundColor: "#fff",
+  },
 
   remarksBox: { marginTop: 4, marginBottom: 14, padding: 8, backgroundColor: TINT, borderRadius: 4 },
   remarksLabel: { fontSize: 7, textTransform: "uppercase", color: MUTED, marginBottom: 3, letterSpacing: 0.5 },
@@ -96,21 +124,49 @@ const s = StyleSheet.create({
   bigPriceValue: { fontSize: 24, fontWeight: 700, color: ROSE },
 });
 
+const OWN_APP_DOMAIN_FRAGMENT = "jwy-calculator";
+function isOwnAppLink(url) {
+  return typeof url === "string" && url.toLowerCase().includes(OWN_APP_DOMAIN_FRAGMENT);
+}
+
 const fmt = (n, dp = 2) =>
   isFinite(n) ? n.toLocaleString(undefined, { minimumFractionDigits: dp, maximumFractionDigits: dp }) : "0.00";
 
-// AUD/NZD spelled out per request, rather than the A$/NZ$ shorthand.
 const CURRENCY_SYMBOLS = { USD: "$", EUR: "€", GBP: "£", AUD: "AUD $", NZD: "NZD $", PLN: "zł", INR: "₹" };
 const fmtC = (n, dp = 2) => "$" + fmt(n, dp);
 const fmtL = (n, code, dp = 2) => (CURRENCY_SYMBOLS[code] || "$") + fmt(n, dp);
 
-// Shape/size cell text -- suppresses the internal "manual entry"
-// placeholder that the app uses on-screen, since it reads like leftover
-// debug text on a customer-facing document. A custom row still shows its
-// actual shape/description, just without that generic suffix.
 function shapeSizeText(c) {
   if (c.size === "manual entry") return c.shape || "—";
   return `${c.shape} · ${c.size}`;
+}
+
+// Full Prices print: shows the real internal quality grade used for
+// costing (natural TW/SI grade, or the LGD cert grade). Price Only
+// print: shows only what the user manually typed as the customer-facing
+// "proposed quality" for that row -- never the real internal grade.
+function qualityText(r, showPrices) {
+  if (!showPrices) return r.proposedQuality || "—";
+  const isOtherType = r.stoneTypeSel && r.stoneTypeSel !== "Mined" && r.stoneTypeSel !== "Lab grown";
+  if (isOtherType) return "—";
+  return (r.mode || "natural") === "lgd" ? r.lgdGrade || "—" : r.quality || "—";
+}
+
+function ReferenceImages({ images }) {
+  if (!images || images.length === 0) return null;
+
+  return (
+    <View style={s.refImagesSection}>
+      <Text style={s.sectionLabel}>
+        Reference Image{images.length > 1 ? `s (${images.length})` : ""}
+      </Text>
+      <View style={s.refImagesGrid}>
+        {images.map((img, i) => (
+          <Image key={i} src={img} style={s.refImageTile} />
+        ))}
+      </View>
+    </View>
+  );
 }
 
 export function QuotePdfDocument({
@@ -130,6 +186,7 @@ export function QuotePdfDocument({
   totalWithDutyLocal,
   fxRate,
   cadImages,
+  clientRefImages,
   turntableLink,
   quoteStage,
   hasOverride,
@@ -137,58 +194,75 @@ export function QuotePdfDocument({
   logoBlack,
   printDate,
 }) {
+  // Three print modes:
+  //  "full"     -- every cost line + grand total (internal/back-office copy)
+  //  "priceOnly" -- just the final total, no breakdown (clean customer copy)
+  //  "noPrice"  -- no pricing anywhere at all, not even a final total
+  //                (e.g. a production/spec sheet for the workshop)
   const showPrices = variant === "full";
+  const showAnyPrice = variant !== "noPrice";
   const dateText = printDate ? new Date(printDate).toLocaleDateString() : new Date().toLocaleDateString();
+  const showLink = Boolean(turntableLink) && !isOwnAppLink(turntableLink);
 
   return (
     <Document>
       <Page size="A4" style={s.page} wrap>
-        <View style={s.fixedHeader} fixed>
-          {logoBlack && <Image src={logoBlack} style={{ width: 14, height: 11 }} />}
-        </View>
-
+        {/* ---- Header ---- */}
         <View style={s.letterhead}>
-          <View style={s.letterheadLeft}>{logoBlack && <Image src={logoBlack} style={{ width: 34, height: 27 }} />}</View>
-          <View style={s.letterheadCenter}>
-            <Text style={s.quoteTitle}>Order Quotation</Text>
+          <View style={{ flex: 1.4 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+              {logoBlack && <Image src={logoBlack} style={{ width: 22, height: 17 }} />}
+            </View>
+            <Text style={s.quoteTitle}>{showAnyPrice ? (showPrices ? "Quotation" : "Quotation Order") : "Production Sheet"}</Text>
           </View>
-          <View style={s.letterheadRight}>
-            <View style={s.jobInfoLine}>
-              <Text style={s.jobInfoBold}>Job:</Text>
-              <Text>{jobInfo.jobNo || "—"}</Text>
-              {quoteStage ? <Text style={s.stageBadge}>{quoteStage}</Text> : null}
-            </View>
-            <View style={s.jobInfoLine}>
-              <Text style={s.jobInfoBold}>Item:</Text>
-              <Text>{jobInfo.itemNo || "—"}</Text>
-            </View>
-            <View style={s.jobInfoLine}>
-              <Text style={s.jobInfoBold}>Date:</Text>
-              <Text>{dateText}</Text>
-            </View>
-            {jobInfo.customer ? (
+          <View style={{ flex: 1, alignItems: "flex-end" }}>
+            <View style={s.jobInfoCol}>
               <View style={s.jobInfoLine}>
-                <Text style={s.jobInfoBold}>Customer:</Text>
-                <Text>{jobInfo.customer}</Text>
+                <Text style={s.jobInfoBold}>Job:</Text>
+                <Text>{jobInfo.jobNo || "—"}</Text>
+                {quoteStage ? <Text style={s.stageBadge}>{quoteStage}</Text> : null}
               </View>
-            ) : null}
+              {jobInfo.itemNo ? (
+                <View style={s.jobInfoLine}>
+                  <Text style={s.jobInfoBold}>Item:</Text>
+                  <Text>{jobInfo.itemNo}</Text>
+                </View>
+              ) : null}
+              <View style={s.jobInfoLine}>
+                <Text style={s.jobInfoBold}>Date:</Text>
+                <Text>{dateText}</Text>
+              </View>
+              {jobInfo.customer ? (
+                <View style={s.jobInfoLine}>
+                  <Text style={s.jobInfoBold}>Customer:</Text>
+                  <Text>{jobInfo.customer}</Text>
+                </View>
+              ) : null}
+            </View>
           </View>
         </View>
 
+        {/* ---- CAD render ---- */}
         {cadImages?.length > 0 && (
           <View style={s.cadSection} wrap={false}>
-            <Text style={s.imageColLabel}>CAD Render{cadImages.length > 1 ? "s" : ""}</Text>
-            <View style={s.imageGridFull}>
-              {cadImages.map((img, i) => (
-                <Image key={i} src={img} style={s.imageThumbFull} />
-              ))}
-            </View>
+            <Text style={s.sectionLabel}>CAD Render</Text>
+            <Image src={cadImages[0]} style={s.cadHero} />
+            {cadImages.length > 1 && (
+              <View style={s.cadExtrasRow}>
+                {cadImages.slice(1, 6).map((img, i) => (
+                  <Image key={i} src={img} style={s.cadExtraThumb} />
+                ))}
+              </View>
+            )}
           </View>
         )}
 
-        {turntableLink ? (
-          <Text style={{ fontSize: 8, marginBottom: 10 }}>3D render / turntable: {turntableLink}</Text>
-        ) : null}
+        {showLink && (
+          <View style={s.linkPill}>
+            <Text style={s.linkPillLabel}>3D Render</Text>
+            <Text style={s.linkPillText}>{turntableLink}</Text>
+          </View>
+        )}
 
         <View style={s.specStrip} wrap={false}>
           <View style={s.specCellFirst}>
@@ -211,34 +285,40 @@ export function QuotePdfDocument({
           </View>
         </View>
 
+        {/* ---- Stone schedule ---- */}
         <Text style={s.sectionLabel}>Stone Schedule</Text>
-        <View style={s.tableHeaderRow} fixed>
-          <Text style={[s.th, { width: "6%" }]}>Sr.No</Text>
-          <Text style={[s.th, { width: "12%" }]}>Type</Text>
-          <Text style={[s.th, { width: "30%" }]}>Shape / Size</Text>
-          <Text style={[s.th, { width: "10%", textAlign: "right" }]}>Qty</Text>
-          <Text style={[s.th, { width: "14%", textAlign: "right" }]}>Total Ct</Text>
-          {showPrices && <Text style={[s.th, { width: "14%", textAlign: "right" }]}>$/Ct</Text>}
-          {showPrices && <Text style={[s.th, { width: "14%", textAlign: "right" }]}>$ Total</Text>}
+        <View style={s.tableHeaderRow}>
+          <Text style={[s.th, { width: showPrices ? "5%" : "6%" }]}>Sr.No</Text>
+          <Text style={[s.th, { width: showPrices ? "9%" : "12%" }]}>Type</Text>
+          <Text style={[s.th, { width: showPrices ? "19%" : "27%" }]}>Shape / Size</Text>
+          <Text style={[s.th, { width: showPrices ? "13%" : "22%" }]}>Quality</Text>
+          <Text style={[s.th, { width: showPrices ? "8%" : "12%", textAlign: "right" }]}>Qty</Text>
+          <Text style={[s.th, { width: showPrices ? "12%" : "21%", textAlign: "right" }]}>Total Ct</Text>
+          {showPrices && <Text style={[s.th, { width: "15%", textAlign: "right" }]}>$/Ct</Text>}
+          {showPrices && <Text style={[s.th, { width: "19%", textAlign: "right" }]}>$ Total</Text>}
         </View>
         {rowsWithCalcs.map(({ r, c }, idx) => (
           <View key={idx} style={[s.tr, idx % 2 ? s.trAlt : {}]} wrap={false}>
-            <Text style={[s.td, { width: "6%" }]}>{idx + 1}</Text>
-            <Text style={[s.td, { width: "12%" }]}>{(r.mode || "natural") === "lgd" ? "Lab grown" : r.stoneTypeSel || "Mined"}</Text>
-            <Text style={[s.td, { width: "30%" }]}>{shapeSizeText(c)}</Text>
-            <Text style={[s.tdR, { width: "10%" }]}>{r.pcs}</Text>
-            <Text style={[s.tdR, { width: "14%" }]}>{fmt(c.totalWt, 3)}</Text>
-            {showPrices && <Text style={[s.tdR, { width: "14%" }]}>{fmtC(c.perCt)}</Text>}
-            {showPrices && <Text style={[s.tdR, { width: "14%" }]}>{fmtC(c.total)}</Text>}
+            <Text style={[s.td, { width: showPrices ? "5%" : "6%" }]}>{idx + 1}</Text>
+            <Text style={[s.td, { width: showPrices ? "9%" : "12%" }]}>{(r.mode || "natural") === "lgd" ? "Lab grown" : r.stoneTypeSel || "Mined"}</Text>
+            <Text style={[s.td, { width: showPrices ? "19%" : "27%" }]}>{shapeSizeText(c)}</Text>
+            <Text style={[s.td, { width: showPrices ? "13%" : "22%" }]}>{qualityText(r, showPrices)}</Text>
+            <Text style={[s.tdR, { width: showPrices ? "8%" : "12%" }]}>{r.pcs}</Text>
+            <Text style={[s.tdR, { width: showPrices ? "12%" : "21%" }]}>{fmt(c.totalWt, 3)}</Text>
+            {showPrices && <Text style={[s.tdR, { width: "15%" }]}>{fmtC(c.perCt)}</Text>}
+            {showPrices && <Text style={[s.tdR, { width: "19%" }]}>{fmtC(c.total)}</Text>}
           </View>
         ))}
-
-        {jobInfo.remarks ? (
-          <View style={s.remarksBox} wrap={false}>
-            <Text style={s.remarksLabel}>Remarks</Text>
-            <Text style={s.remarksText}>{jobInfo.remarks}</Text>
-          </View>
-        ) : null}
+        {/* Totals footer -- total stone count and total carat weight (cttw),
+            shown in every print mode since this isn't pricing information,
+            it's a physical count of what's in the piece. */}
+        <View style={s.totalsFooterRow} wrap={false}>
+          <Text style={[s.tdFooter, { width: "48%" }]}>Total</Text>
+          <Text style={[s.tdFooterR, { width: "10%" }]}>{fmt(totals.totalPcs, 0)}</Text>
+          <Text style={[s.tdFooterR, { width: "14%" }]}>{fmt(totals.totalWt, 3)} cttw</Text>
+          {showPrices && <Text style={[s.tdFooterR, { width: "14%" }]}></Text>}
+          {showPrices && <Text style={[s.tdFooterR, { width: "14%" }]}>{fmtC(totals.diamondTotal)}</Text>}
+        </View>
 
         {showPrices ? (
           <View wrap={false}>
@@ -297,12 +377,23 @@ export function QuotePdfDocument({
               </View>
             </View>
           </View>
-        ) : (
+        ) : variant === "priceOnly" ? (
           <View style={s.bigPriceBlock} wrap={false}>
             <Text style={s.bigPriceLabel}>Total ({locInfo.currency})</Text>
             <Text style={s.bigPriceValue}>{fmtL(effectiveTotalLocal, locInfo.currency)}</Text>
           </View>
-        )}
+        ) : null}
+        {/* variant === "noPrice" -- no price block rendered at all */}
+
+        {/* ---- Reference images ---- */}
+        <ReferenceImages images={clientRefImages} />
+
+        {jobInfo.remarks ? (
+          <View style={s.remarksBox} wrap={false}>
+            <Text style={s.remarksLabel}>Remarks</Text>
+            <Text style={s.remarksText}>{jobInfo.remarks}</Text>
+          </View>
+        ) : null}
 
         <View style={s.fixedFooter} fixed>
           <Text render={({ pageNumber, totalPages }) => `Page ${pageNumber} of ${totalPages}`} />
