@@ -894,7 +894,7 @@ function JwyCalculatorApp() {
   };
 
   const quoteFilenameBase = () => {
-    const parts = [jobInfo.jobNo, jobInfo.itemNo].filter(Boolean);
+    const parts = [jobInfo.jobNo, jobInfo.itemNo, quoteStage].filter(Boolean);
     const base = parts.length ? parts.join("_") : "quote";
     const now = new Date();
     const pad = (n) => String(n).padStart(2, "0");
@@ -1151,9 +1151,13 @@ function JwyCalculatorApp() {
   // Scope used is drive.file -- the narrowest Drive scope, which only
   // grants access to files this app itself creates, never the user's
   // whole Drive.
+  //
+  // One-click design: the target folder is fixed (VITE_DRIVE_FOLDER_ID),
+  // not typed in each session, and the first "Save to Drive" click of a
+  // session silently authorizes (if needed) as part of that same click
+  // -- no separate "Connect" step to click through first.
   // ============================================================
   const [driveAccessToken, setDriveAccessToken] = useState("");
-  const [driveFolderId, setDriveFolderId] = useState(() => localStorage.getItem("jwyDriveFolderId") || "");
   const driveTokenClientRef = useRef(null);
 
   useEffect(() => {
@@ -1164,41 +1168,43 @@ function JwyCalculatorApp() {
     document.body.appendChild(script);
   }, []);
 
-  const connectDrive = () => {
+  // Returns a valid access token, requesting one via the Google sign-in
+  // popup only if we don't already have one this session.
+  const ensureDriveToken = () => {
+    if (driveAccessToken) return Promise.resolve(driveAccessToken);
     const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
-    if (!clientId) {
-      alert("Google Drive isn't configured yet -- VITE_GOOGLE_CLIENT_ID needs to be set (see DRIVE_SETUP.md).");
-      return;
-    }
-    if (!window.google?.accounts?.oauth2) {
-      alert("Still loading Google's sign-in library -- try again in a moment.");
-      return;
-    }
-    if (!driveTokenClientRef.current) {
-      driveTokenClientRef.current = window.google.accounts.oauth2.initTokenClient({
-        client_id: clientId,
-        scope: "https://www.googleapis.com/auth/drive.file",
-        callback: (resp) => {
-          if (resp.access_token) setDriveAccessToken(resp.access_token);
-        },
-      });
-    }
-    driveTokenClientRef.current.requestAccessToken();
+    if (!clientId) return Promise.reject(new Error("Drive isn't configured yet -- VITE_GOOGLE_CLIENT_ID needs to be set."));
+    if (!window.google?.accounts?.oauth2) return Promise.reject(new Error("Still loading Google's sign-in library -- try again in a moment."));
+
+    return new Promise((resolve, reject) => {
+      if (!driveTokenClientRef.current) {
+        driveTokenClientRef.current = window.google.accounts.oauth2.initTokenClient({
+          client_id: clientId,
+          scope: "https://www.googleapis.com/auth/drive.file",
+          callback: (resp) => {
+            if (resp.access_token) {
+              setDriveAccessToken(resp.access_token);
+              resolve(resp.access_token);
+            } else {
+              reject(new Error("Drive authorization was cancelled or failed."));
+            }
+          },
+        });
+      }
+      driveTokenClientRef.current.requestAccessToken();
+    });
   };
 
-  const setDriveFolder = (id) => {
-    setDriveFolderId(id);
-    localStorage.setItem("jwyDriveFolderId", id);
-  };
+  // Uploads one file to the fixed Drive folder via a direct multipart
+  // request -- no server involved, the browser talks to Drive's API
+  // directly using the passed-in access token (not the state variable,
+  // since a just-obtained token may not have flowed through a re-render
+  // yet when this is called immediately after ensureDriveToken()).
+  async function uploadFileToDrive(filename, blob, mimeType, token) {
+    const folderId = import.meta.env.VITE_DRIVE_FOLDER_ID;
+    if (!folderId) throw new Error("Drive folder isn't configured yet -- VITE_DRIVE_FOLDER_ID needs to be set.");
 
-  // Uploads one file to the configured Drive folder via a direct
-  // multipart request -- no server involved, the browser talks to
-  // Drive's API directly using the user's own access token.
-  async function uploadFileToDrive(filename, blob, mimeType) {
-    if (!driveAccessToken) throw new Error("Connect to Drive first.");
-    if (!driveFolderId) throw new Error("Enter a Drive folder ID first.");
-
-    const metadata = { name: filename, parents: [driveFolderId] };
+    const metadata = { name: filename, parents: [folderId] };
     const boundary = "jwycalc" + Math.random().toString(36).slice(2);
     const fileBase64 = await blobToBase64(blob);
 
@@ -1215,7 +1221,7 @@ function JwyCalculatorApp() {
     const res = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${driveAccessToken}`,
+        Authorization: `Bearer ${token}`,
         "Content-Type": `multipart/related; boundary=${boundary}`,
       },
       body,
@@ -1227,43 +1233,18 @@ function JwyCalculatorApp() {
     return res.json();
   }
 
-  // The "one click" save -- current quote's PDF + JSON, straight to the
-  // configured Drive folder.
-  // PDF only -- Drive is the human-facing archive for staff, who don't
-  // need or understand the JSON snapshot. The actual repopulation
-  // fallback (used by search/reload) is Sync to DB, which keeps saving
-  // both PDF and JSON to the technical database, unaffected by this.
+  // The one-click save -- current quote's PDF straight to the fixed
+  // Drive folder. PDF only -- Drive is the human-facing archive for
+  // staff, who don't need or understand the JSON snapshot. The actual
+  // repopulation fallback (used by search/reload) is Sync to DB, which
+  // keeps saving both PDF and JSON to the technical database,
+  // unaffected by this.
   const doSaveToDrive = async () => {
+    const token = await ensureDriveToken();
     const filenameBase = quoteFilenameBase();
     const pdfBlob = await generatePdfBlob("full");
-    await uploadFileToDrive(`${filenameBase}.pdf`, pdfBlob, "application/pdf");
+    await uploadFileToDrive(`${filenameBase}.pdf`, pdfBlob, "application/pdf", token);
     return { filenameBase };
-  };
-
-  // Bulk migration: copies every quote already saved via "Sync to DB"
-  // (living in Netlify Blob storage) into the same Drive folder. Reuses
-  // the exact PDF/JSON already stored -- nothing gets regenerated, so
-  // what lands in Drive is byte-identical to what's already archived.
-  const doMigrateBlobsToDrive = async (onProgress) => {
-    const listRes = await fetch("/.netlify/functions/list-all-quotes");
-    if (!listRes.ok) throw new Error("Couldn't list stored quotes.");
-    const { quotes } = await listRes.json();
-
-    let done = 0;
-    for (const q of quotes) {
-      const filesRes = await fetch(`/.netlify/functions/get-quote-files?filenameBase=${encodeURIComponent(q.filename_base)}`);
-      if (!filesRes.ok) {
-        done++;
-        onProgress?.(done, quotes.length, `Skipped ${q.filename_base} (couldn't fetch)`);
-        continue;
-      }
-      const { pdfBase64 } = await filesRes.json();
-      const pdfBlob = new Blob([Uint8Array.from(atob(pdfBase64), (c) => c.charCodeAt(0))], { type: "application/pdf" });
-      await uploadFileToDrive(`${q.filename_base}.pdf`, pdfBlob, "application/pdf");
-      done++;
-      onProgress?.(done, quotes.length, q.filename_base);
-    }
-    return { total: quotes.length };
   };
 
   const doPreview = async (variant) => {
@@ -1498,12 +1479,7 @@ function JwyCalculatorApp() {
           onEmail={doEmail}
           onSyncToDb={doSyncToDb}
           onExportGati={doExportGati}
-          driveAccessToken={driveAccessToken}
-          driveFolderId={driveFolderId}
-          onConnectDrive={connectDrive}
-          onSetDriveFolder={setDriveFolder}
           onSaveToDrive={doSaveToDrive}
-          onMigrateBlobsToDrive={doMigrateBlobsToDrive}
           quoteStage={quoteStage}
           setQuoteStage={setQuoteStage}
           pdfGenerating={pdfGenerating}
@@ -2307,12 +2283,7 @@ function QuotesToolbar({
   onEmail,
   onSyncToDb,
   onExportGati,
-  driveAccessToken,
-  driveFolderId,
-  onConnectDrive,
-  onSetDriveFolder,
   onSaveToDrive,
-  onMigrateBlobsToDrive,
   quoteStage,
   setQuoteStage,
   pdfGenerating,
@@ -2324,10 +2295,9 @@ function QuotesToolbar({
   const [syncStatus, setSyncStatus] = useState("");
   const [gatiExportStatus, setGatiExportStatus] = useState("");
   const [driveSaveStatus, setDriveSaveStatus] = useState("");
-  const [migrateStatus, setMigrateStatus] = useState("");
-  const [folderInput, setFolderInput] = useState(driveFolderId);
   const [emailOpen, setEmailOpen] = useState(false);
   const [printVariant, setPrintVariant] = useState("full");
+  const [localOpen, setLocalOpen] = useState(false); // "Local quotes" is de-emphasized/legacy now that Sync to DB + search covers the same need -- collapsed by default
 
   const sendEmail = async () => {
     if (!emailTo.trim()) return;
@@ -2365,8 +2335,9 @@ function QuotesToolbar({
     }
   };
 
-  const applyFolder = () => onSetDriveFolder(folderInput.trim());
-
+  // One click, start to finish -- authorizes with Drive first if this
+  // session hasn't yet, then uploads immediately, no separate "Connect"
+  // step for the user to click through.
   const saveToDrive = async () => {
     setDriveSaveStatus("saving");
     try {
@@ -2378,26 +2349,12 @@ function QuotesToolbar({
     }
   };
 
-  const migrateToDrive = async () => {
-    if (!confirm("This copies every quote already saved via Sync to DB into your Drive folder. It can take a while for many quotes. Continue?")) return;
-    setMigrateStatus("Starting…");
-    try {
-      await onMigrateBlobsToDrive((done, total, name) => {
-        setMigrateStatus(`${done}/${total} -- ${name}`);
-      });
-      setMigrateStatus("✓ Migration complete");
-      setTimeout(() => setMigrateStatus(""), 6000);
-    } catch (err) {
-      setMigrateStatus((err && err.message) || "Migration failed partway through");
-    }
-  };
-
   const Divider = () => <div style={styles.toolbarDivider} />;
 
   return (
-    <div style={styles.card}>
-      <SectionLabel eyebrow="04" title="Quotes" />
-      <div style={styles.toolbarRow}>
+    <>
+      <div style={{ ...styles.card, display: "flex", alignItems: "center", gap: 10 }}>
+        <SectionLabel eyebrow="04" title="Quotes" noMargin />
         <div style={styles.toolbarGroup}>
           <span style={styles.toolbarGroupLabel}>Stage</span>
           <input
@@ -2405,51 +2362,14 @@ function QuotesToolbar({
             value={quoteStage}
             onChange={(e) => setQuoteStage(e.target.value)}
             placeholder="Q1"
-            title="Which round of quoting this is -- Q1, Q2, Revised, etc."
+            title="Which round of quoting this is -- Q1, Q2, Revised, etc. Used in filenames and every save action below."
           />
         </div>
+      </div>
 
-        <Divider />
-
-        <div style={styles.toolbarGroup}>
-          <span style={styles.toolbarGroupLabel}>This device</span>
-          <button style={styles.smallBtn} onClick={onSave} type="button">
-            Save
-          </button>
-          <select
-            style={{ ...styles.inputSm, minWidth: 150, maxWidth: 150 }}
-            value={selected}
-            onChange={(e) => setSelected(e.target.value)}
-          >
-            <option value="">Saved quotes…</option>
-            {savedQuotes.map((q) => (
-              <option key={q.id} value={q.id}>
-                {q.label}
-              </option>
-            ))}
-          </select>
-          <button style={styles.smallBtn} type="button" disabled={!selected} onClick={() => selected && onLoad(Number(selected))}>
-            Load
-          </button>
-          <button
-            style={{ ...styles.smallBtn, ...styles.smallBtnDanger }}
-            type="button"
-            disabled={!selected}
-            onClick={() => {
-              if (selected) {
-                onDelete(Number(selected));
-                setSelected("");
-              }
-            }}
-          >
-            Delete
-          </button>
-        </div>
-
-        <Divider />
-
-        <div style={styles.toolbarGroup}>
-          <span style={styles.toolbarGroupLabel}>Print</span>
+      <div style={styles.card}>
+        <span style={styles.panelTitle}>Print &amp; Preview</span>
+        <div style={{ ...styles.toolbarRow, marginTop: 8 }}>
           <select
             style={{ ...styles.inputSm, width: 108 }}
             value={printVariant}
@@ -2479,140 +2399,158 @@ function QuotesToolbar({
             </button>
           </div>
         </div>
+      </div>
 
-        <Divider />
-
-        <div style={styles.toolbarGroup}>
-          <span style={styles.toolbarGroupLabel}>Cloud</span>
-          <button
-            style={{ ...styles.smallBtn, ...styles.smallBtnAccent }}
-            type="button"
-            disabled={syncStatus === "syncing"}
-            onClick={syncToDb}
-          >
-            {syncStatus === "syncing" ? "Saving…" : "Sync to DB"}
-          </button>
-          {syncStatus === "synced" && <span style={styles.statusOk}>✓ Saved</span>}
-          {syncStatus && syncStatus !== "syncing" && syncStatus !== "synced" && (
-            <span style={styles.statusWarn} title={syncStatus}>
-              {syncStatus.length > 40 ? syncStatus.slice(0, 40) + "…" : syncStatus}
-            </span>
-          )}
-          <button
-            style={{ ...styles.smallBtn, ...styles.smallBtnAccent }}
-            type="button"
-            disabled={gatiExportStatus === "exporting"}
-            onClick={exportGati}
-          >
-            {gatiExportStatus === "exporting" ? "Building…" : "Export to GATI"}
-          </button>
-          {gatiExportStatus && gatiExportStatus !== "exporting" && (
-            <span style={gatiExportStatus.startsWith("Downloaded") ? styles.statusOk : styles.statusWarn} title={gatiExportStatus}>
-              {gatiExportStatus.length > 50 ? gatiExportStatus.slice(0, 50) + "…" : gatiExportStatus}
-            </span>
-          )}
-        </div>
-
-        <Divider />
-
-        <div style={styles.toolbarGroup}>
-          <span style={styles.toolbarGroupLabel}>Drive</span>
-          {!driveAccessToken ? (
-            <button style={styles.smallBtn} type="button" onClick={onConnectDrive}>
-              Connect to Drive
+      <div style={styles.card}>
+        <span style={styles.panelTitle}>Save &amp; Share</span>
+        <div style={{ ...styles.toolbarRow, marginTop: 8 }}>
+          <div style={styles.toolbarGroup}>
+            <button
+              style={{ ...styles.smallBtn, ...styles.smallBtnAccent }}
+              type="button"
+              disabled={syncStatus === "syncing"}
+              onClick={syncToDb}
+            >
+              {syncStatus === "syncing" ? "Saving…" : "Sync to DB"}
             </button>
-          ) : (
-            <>
-              <span style={styles.statusOk} title="Connected for this session">
-                ✓ Connected
+            {syncStatus === "synced" && <span style={styles.statusOk}>✓ Saved</span>}
+            {syncStatus && syncStatus !== "syncing" && syncStatus !== "synced" && (
+              <span style={styles.statusWarn} title={syncStatus}>
+                {syncStatus.length > 40 ? syncStatus.slice(0, 40) + "…" : syncStatus}
               </span>
-              <input
-                style={{ ...styles.inputSm, width: 220 }}
-                placeholder="Paste Drive folder ID"
-                value={folderInput}
-                onChange={(e) => setFolderInput(e.target.value)}
-              />
-              <button style={styles.smallBtn} type="button" onClick={applyFolder} disabled={!folderInput.trim()}>
-                Set folder
+            )}
+          </div>
+
+          <Divider />
+
+          <div style={styles.toolbarGroup}>
+            <button
+              style={{ ...styles.smallBtn, ...styles.smallBtnAccent }}
+              type="button"
+              disabled={driveSaveStatus === "saving"}
+              onClick={saveToDrive}
+            >
+              {driveSaveStatus === "saving" ? "Saving…" : "Save to Drive"}
+            </button>
+            {driveSaveStatus && driveSaveStatus !== "saving" && (
+              <span style={driveSaveStatus.startsWith("✓") ? styles.statusOk : styles.statusWarn} title={driveSaveStatus}>
+                {driveSaveStatus.length > 40 ? driveSaveStatus.slice(0, 40) + "…" : driveSaveStatus}
+              </span>
+            )}
+          </div>
+
+          <Divider />
+
+          <div style={styles.toolbarGroup}>
+            <button
+              style={{ ...styles.smallBtn, ...styles.smallBtnAccent }}
+              type="button"
+              disabled={gatiExportStatus === "exporting"}
+              onClick={exportGati}
+            >
+              {gatiExportStatus === "exporting" ? "Building…" : "Export to GATI"}
+            </button>
+            {gatiExportStatus && gatiExportStatus !== "exporting" && (
+              <span style={gatiExportStatus.startsWith("Downloaded") ? styles.statusOk : styles.statusWarn} title={gatiExportStatus}>
+                {gatiExportStatus.length > 50 ? gatiExportStatus.slice(0, 50) + "…" : gatiExportStatus}
+              </span>
+            )}
+          </div>
+
+          <Divider />
+
+          <div style={styles.toolbarGroup}>
+            {!emailOpen ? (
+              <button style={styles.smallBtn} type="button" onClick={() => setEmailOpen(true)}>
+                ✉ Email quote
               </button>
-              {driveFolderId && (
+            ) : (
+              <>
+                <input
+                  type="email"
+                  autoFocus
+                  style={{ ...styles.inputSm, width: 150 }}
+                  placeholder="Recipient email"
+                  value={emailTo}
+                  onChange={(e) => setEmailTo(e.target.value)}
+                />
+                <select style={{ ...styles.inputSm, width: 96 }} value={emailVariant} onChange={(e) => setEmailVariant(e.target.value)}>
+                  <option value="full">Full price</option>
+                  <option value="priceOnly">Price only</option>
+                  <option value="noPrice">No price</option>
+                </select>
                 <button
                   style={{ ...styles.smallBtn, ...styles.smallBtnAccent }}
                   type="button"
-                  disabled={driveSaveStatus === "saving"}
-                  onClick={saveToDrive}
+                  disabled={!emailTo.trim() || emailStatus === "sending"}
+                  onClick={sendEmail}
                 >
-                  {driveSaveStatus === "saving" ? "Saving…" : "Save to Drive"}
+                  {emailStatus === "sending" ? "Sending…" : "Send"}
                 </button>
-              )}
-              {driveSaveStatus && driveSaveStatus !== "saving" && (
-                <span style={driveSaveStatus.startsWith("✓") ? styles.statusOk : styles.statusWarn} title={driveSaveStatus}>
-                  {driveSaveStatus.length > 40 ? driveSaveStatus.slice(0, 40) + "…" : driveSaveStatus}
-                </span>
-              )}
-              {driveFolderId && (
-                <button style={styles.smallBtn} type="button" disabled={!!migrateStatus && migrateStatus !== "" && !migrateStatus.startsWith("✓")} onClick={migrateToDrive}>
-                  Migrate stored quotes to Drive
+                <button
+                  style={{ ...styles.smallBtn, background: "none" }}
+                  type="button"
+                  onClick={() => {
+                    setEmailOpen(false);
+                    setEmailStatus("");
+                  }}
+                >
+                  ×
                 </button>
-              )}
-              {migrateStatus && (
-                <span style={migrateStatus.startsWith("✓") ? styles.statusOk : styles.statusWarn} title={migrateStatus}>
-                  {migrateStatus.length > 40 ? migrateStatus.slice(0, 40) + "…" : migrateStatus}
-                </span>
-              )}
-            </>
-          )}
-        </div>
-
-        <Divider />
-
-        <div style={{ ...styles.toolbarGroup, marginLeft: "auto" }}>
-          {!emailOpen ? (
-            <button style={styles.smallBtn} type="button" onClick={() => setEmailOpen(true)}>
-              ✉ Email quote
-            </button>
-          ) : (
-            <>
-              <input
-                type="email"
-                autoFocus
-                style={{ ...styles.inputSm, width: 150 }}
-                placeholder="Recipient email"
-                value={emailTo}
-                onChange={(e) => setEmailTo(e.target.value)}
-              />
-              <select style={{ ...styles.inputSm, width: 96 }} value={emailVariant} onChange={(e) => setEmailVariant(e.target.value)}>
-                <option value="full">Full price</option>
-                <option value="priceOnly">Price only</option>
-                <option value="noPrice">No price</option>
-              </select>
-              <button
-                style={{ ...styles.smallBtn, ...styles.smallBtnAccent }}
-                type="button"
-                disabled={!emailTo.trim() || emailStatus === "sending"}
-                onClick={sendEmail}
-              >
-                {emailStatus === "sending" ? "Sending…" : "Send"}
-              </button>
-              <button
-                style={{ ...styles.smallBtn, background: "none" }}
-                type="button"
-                onClick={() => {
-                  setEmailOpen(false);
-                  setEmailStatus("");
-                }}
-              >
-                ×
-              </button>
-              {emailStatus === "sent" && <span style={styles.statusOk}>✓ Sent</span>}
-              {emailStatus && emailStatus !== "sending" && emailStatus !== "sent" && (
-                <span style={styles.statusWarn}>{emailStatus}</span>
-              )}
-            </>
-          )}
+                {emailStatus === "sent" && <span style={styles.statusOk}>✓ Sent</span>}
+                {emailStatus && emailStatus !== "sending" && emailStatus !== "sent" && (
+                  <span style={styles.statusWarn}>{emailStatus}</span>
+                )}
+              </>
+            )}
+          </div>
         </div>
       </div>
-    </div>
+
+      <div style={styles.card}>
+        <div style={styles.rowBetween}>
+          <span style={styles.panelTitle}>Local quotes (this device)</span>
+          <button style={styles.smallBtn} type="button" onClick={() => setLocalOpen((v) => !v)}>
+            {localOpen ? "Hide" : "Show"}
+          </button>
+        </div>
+        {localOpen && (
+          <div style={{ ...styles.toolbarRow, marginTop: 8 }}>
+            <button style={styles.smallBtn} onClick={onSave} type="button">
+              Save
+            </button>
+            <select
+              style={{ ...styles.inputSm, minWidth: 150, maxWidth: 150 }}
+              value={selected}
+              onChange={(e) => setSelected(e.target.value)}
+            >
+              <option value="">Saved quotes…</option>
+              {savedQuotes.map((q) => (
+                <option key={q.id} value={q.id}>
+                  {q.label}
+                </option>
+              ))}
+            </select>
+            <button style={styles.smallBtn} type="button" disabled={!selected} onClick={() => selected && onLoad(Number(selected))}>
+              Load
+            </button>
+            <button
+              style={{ ...styles.smallBtn, ...styles.smallBtnDanger }}
+              type="button"
+              disabled={!selected}
+              onClick={() => {
+                if (selected) {
+                  onDelete(Number(selected));
+                  setSelected("");
+                }
+              }}
+            >
+              Delete
+            </button>
+          </div>
+        )}
+      </div>
+    </>
   );
 }
 
