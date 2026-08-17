@@ -1,9 +1,8 @@
-import { useState, useMemo, useCallback, useEffect } from "react";
+import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { fetchLiveSheetData } from "./sheetData.js";
 import { POLL_INTERVAL_MS } from "./config.js";
 import { parseOrderFormJson } from "./pdfParser.js";
 import { pdf } from "@react-pdf/renderer";
-import JSZip from "jszip";
 import * as XLSX from "xlsx";
 import { QuotePdfDocument } from "./pdfDocument.jsx";
 import { mapQuoteToGatiRows } from "./gatiExport.js";
@@ -666,6 +665,33 @@ function JwyCalculatorApp() {
     } finally {
       setRateLoading(false);
     }
+
+    // Live metals API layer -- independent of the Google Sheet fetch
+    // above, deliberately not nested inside its try/catch. If this
+    // fails for ANY reason (not deployed yet, network issue, API down),
+    // metalRates simply stays whatever the Sheet fetch (or the previous
+    // successful call to this same function) already set -- the app
+    // behaves exactly as it does today. Only overrides metalRates
+    // specifically; every other live-synced table is untouched.
+    try {
+      const res = await fetch("/.netlify/functions/metal-rates");
+      if (res.ok) {
+        const payload = await res.json();
+        if (payload.rates && Object.keys(payload.rates).length) {
+          setLiveData((prev) => ({ ...prev, metalRates: payload.rates }));
+          setTableSources((prev) => ({
+            ...prev,
+            metalRates: payload.source === "cache" ? "live-api-cache" : "live-api",
+          }));
+        }
+      }
+      // A non-ok response (function not deployed, key not configured
+      // yet, etc.) is not an error worth surfacing -- metalRates just
+      // stays on whatever the Sheet already provided.
+    } catch {
+      // Network failure reaching the function -- same: leave metalRates
+      // exactly as-is, no disruption.
+    }
   }, []);
 
   useEffect(() => {
@@ -868,7 +894,7 @@ function JwyCalculatorApp() {
   };
 
   const quoteFilenameBase = () => {
-    const parts = [jobInfo.jobNo, jobInfo.itemNo].filter(Boolean);
+    const parts = [jobInfo.jobNo, jobInfo.itemNo, quoteStage].filter(Boolean);
     const base = parts.length ? parts.join("_") : "quote";
     const now = new Date();
     const pad = (n) => String(n).padStart(2, "0");
@@ -1115,6 +1141,112 @@ function JwyCalculatorApp() {
     return { flaggedCount };
   };
 
+  // ============================================================
+  // Google Drive integration -- uses Google Identity Services (OAuth
+  // 2.0 implicit grant), NOT a service account. This is a genuinely
+  // different Google Cloud credential type from what was blocked
+  // before: an OAuth Client ID is a public identifier (safe to embed
+  // in frontend code), not a downloadable key file, and isn't subject
+  // to the same org policy that blocks service-account key creation.
+  // Scope used is drive.file -- the narrowest Drive scope, which only
+  // grants access to files this app itself creates, never the user's
+  // whole Drive.
+  //
+  // One-click design: the target folder is fixed (VITE_DRIVE_FOLDER_ID),
+  // not typed in each session, and the first "Save to Drive" click of a
+  // session silently authorizes (if needed) as part of that same click
+  // -- no separate "Connect" step to click through first.
+  // ============================================================
+  const [driveAccessToken, setDriveAccessToken] = useState("");
+  const driveTokenClientRef = useRef(null);
+
+  useEffect(() => {
+    if (window.google?.accounts?.oauth2 || !import.meta.env.VITE_GOOGLE_CLIENT_ID) return;
+    const script = document.createElement("script");
+    script.src = "https://accounts.google.com/gsi/client";
+    script.async = true;
+    document.body.appendChild(script);
+  }, []);
+
+  // Returns a valid access token, requesting one via the Google sign-in
+  // popup only if we don't already have one this session.
+  const ensureDriveToken = () => {
+    if (driveAccessToken) return Promise.resolve(driveAccessToken);
+    const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+    if (!clientId) return Promise.reject(new Error("Drive isn't configured yet -- VITE_GOOGLE_CLIENT_ID needs to be set."));
+    if (!window.google?.accounts?.oauth2) return Promise.reject(new Error("Still loading Google's sign-in library -- try again in a moment."));
+
+    return new Promise((resolve, reject) => {
+      if (!driveTokenClientRef.current) {
+        driveTokenClientRef.current = window.google.accounts.oauth2.initTokenClient({
+          client_id: clientId,
+          scope: "https://www.googleapis.com/auth/drive.file",
+          callback: (resp) => {
+            if (resp.access_token) {
+              setDriveAccessToken(resp.access_token);
+              resolve(resp.access_token);
+            } else {
+              reject(new Error("Drive authorization was cancelled or failed."));
+            }
+          },
+        });
+      }
+      driveTokenClientRef.current.requestAccessToken();
+    });
+  };
+
+  // Uploads one file to the fixed Drive folder via a direct multipart
+  // request -- no server involved, the browser talks to Drive's API
+  // directly using the passed-in access token (not the state variable,
+  // since a just-obtained token may not have flowed through a re-render
+  // yet when this is called immediately after ensureDriveToken()).
+  async function uploadFileToDrive(filename, blob, mimeType, token) {
+    const folderId = import.meta.env.VITE_DRIVE_FOLDER_ID;
+    if (!folderId) throw new Error("Drive folder isn't configured yet -- VITE_DRIVE_FOLDER_ID needs to be set.");
+
+    const metadata = { name: filename, parents: [folderId] };
+    const boundary = "jwycalc" + Math.random().toString(36).slice(2);
+    const fileBase64 = await blobToBase64(blob);
+
+    const body =
+      `--${boundary}\r\n` +
+      `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
+      `${JSON.stringify(metadata)}\r\n` +
+      `--${boundary}\r\n` +
+      `Content-Type: ${mimeType}\r\n` +
+      `Content-Transfer-Encoding: base64\r\n\r\n` +
+      `${fileBase64}\r\n` +
+      `--${boundary}--`;
+
+    const res = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": `multipart/related; boundary=${boundary}`,
+      },
+      body,
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Drive upload failed (${res.status}): ${errText.slice(0, 200)}`);
+    }
+    return res.json();
+  }
+
+  // The one-click save -- current quote's PDF straight to the fixed
+  // Drive folder. PDF only -- Drive is the human-facing archive for
+  // staff, who don't need or understand the JSON snapshot. The actual
+  // repopulation fallback (used by search/reload) is Sync to DB, which
+  // keeps saving both PDF and JSON to the technical database,
+  // unaffected by this.
+  const doSaveToDrive = async () => {
+    const token = await ensureDriveToken();
+    const filenameBase = quoteFilenameBase();
+    const pdfBlob = await generatePdfBlob("full");
+    await uploadFileToDrive(`${filenameBase}.pdf`, pdfBlob, "application/pdf", token);
+    return { filenameBase };
+  };
+
   const doPreview = async (variant) => {
     setPdfGenerating(variant + "-preview");
     try {
@@ -1199,17 +1331,11 @@ function JwyCalculatorApp() {
     try {
       const filenameBase = quoteFilenameBase();
       const pdfBlob = await generatePdfBlob(variant);
-      const jsonBlob = buildSnapshotJsonBlob();
 
-      const zip = new JSZip();
-      zip.file(`${filenameBase}.pdf`, pdfBlob);
-      zip.file(`${filenameBase}.json`, jsonBlob);
-      const zipBlob = await zip.generateAsync({ type: "blob" });
-
-      const url = URL.createObjectURL(zipBlob);
+      const url = URL.createObjectURL(pdfBlob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `${filenameBase}.zip`;
+      a.download = `${filenameBase}.pdf`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -1227,19 +1353,46 @@ function JwyCalculatorApp() {
     const jsonBlob = buildSnapshotJsonBlob();
     const pdfBase64 = await blobToBase64(pdfBlob);
     const jsonText = await jsonBlob.text();
-    const res = await fetch("/.netlify/functions/save-quote", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        filenameBase,
-        jobNo: jobInfo.jobNo,
-        itemNo: jobInfo.itemNo,
-        quoteStage,
-        pdfBase64,
-        jsonText,
-      }),
-    });
-    const data = await res.json();
+
+    // Hard timeout -- this is the actual fallback data source for
+    // repopulating old quotes now that Print no longer bundles a JSON
+    // copy, so it must never be able to hang forever with the UI stuck
+    // on "Saving...". 30s is generous for a PDF+JSON upload even on a
+    // slow connection, but guarantees a definite outcome either way.
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+    let res;
+    try {
+      res = await fetch("/.netlify/functions/save-quote", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          filenameBase,
+          jobNo: jobInfo.jobNo,
+          itemNo: jobInfo.itemNo,
+          quoteStage,
+          pdfBase64,
+          jsonText,
+        }),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      if (err.name === "AbortError") {
+        throw new Error("Saving timed out after 30s -- check your connection and try again.");
+      }
+      throw new Error(`Couldn't reach the save function: ${err.message || err}`);
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
+    let data;
+    try {
+      data = await res.json();
+    } catch {
+      throw new Error(`Save function returned an unexpected response (status ${res.status})`);
+    }
+
     if (!res.ok) throw new Error(data.error || "Couldn't save to the database");
     return data;
   };
@@ -1326,6 +1479,7 @@ function JwyCalculatorApp() {
           onEmail={doEmail}
           onSyncToDb={doSyncToDb}
           onExportGati={doExportGati}
+          onSaveToDrive={doSaveToDrive}
           quoteStage={quoteStage}
           setQuoteStage={setQuoteStage}
           pdfGenerating={pdfGenerating}
@@ -1833,8 +1987,9 @@ function RatesStatusCard({
   manualRates,
   setManualRates,
 }) {
-  const allLive = Object.values(tableSources).every((s) => s === "live");
-  const anyLive = Object.values(tableSources).some((s) => s === "live");
+  const isLiveValue = (s) => s === "live" || s === "live-api";
+  const allLive = Object.values(tableSources).every(isLiveValue);
+  const anyLive = Object.values(tableSources).some(isLiveValue);
   const errorList = Object.entries(rateErrors || {}).filter(([, v]) => v);
 
   const updateManualMetal = (code, field, value) => {
@@ -1871,7 +2026,15 @@ function RatesStatusCard({
       </div>
       <div style={styles.tableSourceRow}>
         {Object.entries(tableSources).map(([k, v]) => (
-          <span key={k} style={{ ...styles.sourcePill, ...(v === "live" ? styles.sourcePillLive : {}) }}>
+          <span
+            key={k}
+            style={{
+              ...styles.sourcePill,
+              ...(isLiveValue(v) ? styles.sourcePillLive : {}),
+              ...(v === "live-api-cache" ? { background: "#F5E3D0", color: "#8A5A20" } : {}),
+            }}
+            title={v === "live-api" ? "Live metals API" : v === "live-api-cache" ? "Live API's last cached value (live fetch currently failing)" : v === "live" ? "Google Sheet" : "Bundled sample data"}
+          >
             {k}
           </span>
         ))}
@@ -1884,7 +2047,7 @@ function RatesStatusCard({
               {k}: {v === "not configured" ? "no sheet URL set in config.js, using bundled sample data" : v}
             </div>
           ))}
-          {tableSources.metalRates !== "live" && (
+          {tableSources.metalRates === "sample" && (
             <div style={{ marginTop: 6 }}>
               Metal rates aren't live right now — use "Enter rates manually" below so quotes keep using real
               numbers instead of the bundled sample data.
@@ -2110,15 +2273,31 @@ function CloudQuoteSearch({ loadFromCloud }) {
   );
 }
 
-function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, onPreview, onEmail, onSyncToDb, onExportGati, quoteStage, setQuoteStage, pdfGenerating }) {
+function QuotesToolbar({
+  savedQuotes,
+  onSave,
+  onLoad,
+  onDelete,
+  onPrint,
+  onPreview,
+  onEmail,
+  onSyncToDb,
+  onExportGati,
+  onSaveToDrive,
+  quoteStage,
+  setQuoteStage,
+  pdfGenerating,
+}) {
   const [selected, setSelected] = useState("");
   const [emailTo, setEmailTo] = useState("");
   const [emailVariant, setEmailVariant] = useState("full");
   const [emailStatus, setEmailStatus] = useState("");
   const [syncStatus, setSyncStatus] = useState("");
   const [gatiExportStatus, setGatiExportStatus] = useState("");
+  const [driveSaveStatus, setDriveSaveStatus] = useState("");
   const [emailOpen, setEmailOpen] = useState(false);
   const [printVariant, setPrintVariant] = useState("full");
+  const [localOpen, setLocalOpen] = useState(false); // "Local quotes" is de-emphasized/legacy now that Sync to DB + search covers the same need -- collapsed by default
 
   const sendEmail = async () => {
     if (!emailTo.trim()) return;
@@ -2156,12 +2335,26 @@ function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, onPrevi
     }
   };
 
+  // One click, start to finish -- authorizes with Drive first if this
+  // session hasn't yet, then uploads immediately, no separate "Connect"
+  // step for the user to click through.
+  const saveToDrive = async () => {
+    setDriveSaveStatus("saving");
+    try {
+      await onSaveToDrive();
+      setDriveSaveStatus("✓ Saved to Drive");
+      setTimeout(() => setDriveSaveStatus(""), 4000);
+    } catch (err) {
+      setDriveSaveStatus((err && err.message) || "Couldn't save to Drive");
+    }
+  };
+
   const Divider = () => <div style={styles.toolbarDivider} />;
 
   return (
     <div style={styles.card}>
-      <SectionLabel eyebrow="04" title="Quotes" />
-      <div style={styles.toolbarRow}>
+      <div style={{ ...styles.toolbarRow, marginBottom: 8 }}>
+        <SectionLabel eyebrow="04" title="Quotes" noMargin />
         <div style={styles.toolbarGroup}>
           <span style={styles.toolbarGroupLabel}>Stage</span>
           <input
@@ -2169,158 +2362,167 @@ function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, onPrevi
             value={quoteStage}
             onChange={(e) => setQuoteStage(e.target.value)}
             placeholder="Q1"
-            title="Which round of quoting this is -- Q1, Q2, Revised, etc."
+            title="Which round of quoting this is -- Q1, Q2, Revised, etc. Used in filenames and every save action below."
           />
         </div>
 
         <Divider />
 
-        <div style={styles.toolbarGroup}>
-          <span style={styles.toolbarGroupLabel}>This device</span>
-          <button style={styles.smallBtn} onClick={onSave} type="button">
-            Save
-          </button>
-          <select
-            style={{ ...styles.inputSm, minWidth: 150, maxWidth: 150 }}
-            value={selected}
-            onChange={(e) => setSelected(e.target.value)}
+        <select
+          style={{ ...styles.inputSm, width: 100 }}
+          value={printVariant}
+          onChange={(e) => setPrintVariant(e.target.value)}
+        >
+          <option value="full">Full price</option>
+          <option value="priceOnly">Price only</option>
+          <option value="noPrice">No price</option>
+        </select>
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 4, opacity: pdfGenerating ? 0.6 : 1 }}>
+          <button
+            style={styles.toggleBtnActive}
+            onClick={() => onPrint(printVariant)}
+            type="button"
+            disabled={!!pdfGenerating}
           >
-            <option value="">Saved quotes…</option>
-            {savedQuotes.map((q) => (
-              <option key={q.id} value={q.id}>
-                {q.label}
-              </option>
-            ))}
-          </select>
-          <button style={styles.smallBtn} type="button" disabled={!selected} onClick={() => selected && onLoad(Number(selected))}>
-            Load
+            {pdfGenerating === printVariant ? "Generating…" : "Download"}
           </button>
           <button
-            style={{ ...styles.smallBtn, ...styles.smallBtnDanger }}
+            title="Preview without downloading"
+            style={{ ...styles.toggleBtnActive, padding: "7px 9px" }}
+            onClick={() => onPreview(printVariant)}
             type="button"
-            disabled={!selected}
-            onClick={() => {
-              if (selected) {
-                onDelete(Number(selected));
-                setSelected("");
-              }
-            }}
+            disabled={!!pdfGenerating}
           >
-            Delete
+            {pdfGenerating === printVariant + "-preview" ? "…" : "👁"}
           </button>
         </div>
+      </div>
 
-        <Divider />
+      <div style={styles.toolbarRow}>
+        <button
+          style={{ ...styles.smallBtn, ...styles.smallBtnAccent }}
+          type="button"
+          disabled={syncStatus === "syncing"}
+          onClick={syncToDb}
+        >
+          {syncStatus === "syncing" ? "Saving…" : "Sync to DB"}
+        </button>
+        {syncStatus === "synced" && <span style={styles.statusOk}>✓</span>}
+        {syncStatus && syncStatus !== "syncing" && syncStatus !== "synced" && (
+          <span style={styles.statusWarn} title={syncStatus}>
+            {syncStatus.length > 24 ? syncStatus.slice(0, 24) + "…" : syncStatus}
+          </span>
+        )}
 
-        <div style={styles.toolbarGroup}>
-          <span style={styles.toolbarGroupLabel}>Print</span>
-          <select
-            style={{ ...styles.inputSm, width: 108 }}
-            value={printVariant}
-            onChange={(e) => setPrintVariant(e.target.value)}
-          >
-            <option value="full">Full price</option>
-            <option value="priceOnly">Price only</option>
-            <option value="noPrice">No price</option>
-          </select>
-          <div style={{ display: "inline-flex", alignItems: "center", gap: 4, opacity: pdfGenerating ? 0.6 : 1 }}>
+        <button
+          style={{ ...styles.smallBtn, ...styles.smallBtnAccent }}
+          type="button"
+          disabled={driveSaveStatus === "saving"}
+          onClick={saveToDrive}
+        >
+          {driveSaveStatus === "saving" ? "Saving…" : "Save to Drive"}
+        </button>
+        {driveSaveStatus && driveSaveStatus !== "saving" && (
+          <span style={driveSaveStatus.startsWith("✓") ? styles.statusOk : styles.statusWarn} title={driveSaveStatus}>
+            {driveSaveStatus.startsWith("✓") ? "✓" : driveSaveStatus.slice(0, 24) + "…"}
+          </span>
+        )}
+
+        <button
+          style={{ ...styles.smallBtn, ...styles.smallBtnAccent }}
+          type="button"
+          disabled={gatiExportStatus === "exporting"}
+          onClick={exportGati}
+        >
+          {gatiExportStatus === "exporting" ? "Building…" : "Export to GATI"}
+        </button>
+        {gatiExportStatus && gatiExportStatus !== "exporting" && (
+          <span style={gatiExportStatus.startsWith("Downloaded") ? styles.statusOk : styles.statusWarn} title={gatiExportStatus}>
+            {gatiExportStatus.startsWith("Downloaded -- no") ? "✓" : gatiExportStatus.slice(0, 24) + "…"}
+          </span>
+        )}
+
+        {!emailOpen ? (
+          <button style={styles.smallBtn} type="button" onClick={() => setEmailOpen(true)}>
+            ✉ Email
+          </button>
+        ) : (
+          <>
+            <input
+              type="email"
+              autoFocus
+              style={{ ...styles.inputSm, width: 140 }}
+              placeholder="Recipient email"
+              value={emailTo}
+              onChange={(e) => setEmailTo(e.target.value)}
+            />
+            <select style={{ ...styles.inputSm, width: 92 }} value={emailVariant} onChange={(e) => setEmailVariant(e.target.value)}>
+              <option value="full">Full price</option>
+              <option value="priceOnly">Price only</option>
+              <option value="noPrice">No price</option>
+            </select>
             <button
-              style={styles.toggleBtnActive}
-              onClick={() => onPrint(printVariant)}
+              style={{ ...styles.smallBtn, ...styles.smallBtnAccent }}
               type="button"
-              disabled={!!pdfGenerating}
+              disabled={!emailTo.trim() || emailStatus === "sending"}
+              onClick={sendEmail}
             >
-              {pdfGenerating === printVariant ? "Generating…" : "Download"}
+              {emailStatus === "sending" ? "Sending…" : "Send"}
             </button>
             <button
-              title="Preview without downloading"
-              style={{ ...styles.toggleBtnActive, padding: "7px 9px" }}
-              onClick={() => onPreview(printVariant)}
+              style={{ ...styles.smallBtn, background: "none" }}
               type="button"
-              disabled={!!pdfGenerating}
+              onClick={() => {
+                setEmailOpen(false);
+                setEmailStatus("");
+              }}
             >
-              {pdfGenerating === printVariant + "-preview" ? "…" : "👁"}
+              ×
             </button>
-          </div>
-        </div>
+            {emailStatus === "sent" && <span style={styles.statusOk}>✓</span>}
+            {emailStatus && emailStatus !== "sending" && emailStatus !== "sent" && (
+              <span style={styles.statusWarn}>{emailStatus}</span>
+            )}
+          </>
+        )}
 
-        <Divider />
-
-        <div style={styles.toolbarGroup}>
-          <span style={styles.toolbarGroupLabel}>Cloud</span>
-          <button
-            style={{ ...styles.smallBtn, ...styles.smallBtnAccent }}
-            type="button"
-            disabled={syncStatus === "syncing"}
-            onClick={syncToDb}
-          >
-            {syncStatus === "syncing" ? "Saving…" : "Sync to DB"}
+        <div style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <button style={styles.smallBtn} type="button" onClick={() => setLocalOpen((v) => !v)}>
+            {localOpen ? "Hide local quotes" : "Local quotes"}
           </button>
-          {syncStatus === "synced" && <span style={styles.statusOk}>✓ Saved</span>}
-          {syncStatus && syncStatus !== "syncing" && syncStatus !== "synced" && (
-            <span style={styles.statusWarn} title={syncStatus}>
-              {syncStatus.length > 40 ? syncStatus.slice(0, 40) + "…" : syncStatus}
-            </span>
-          )}
-          <button
-            style={{ ...styles.smallBtn, ...styles.smallBtnAccent }}
-            type="button"
-            disabled={gatiExportStatus === "exporting"}
-            onClick={exportGati}
-          >
-            {gatiExportStatus === "exporting" ? "Building…" : "Export to GATI"}
-          </button>
-          {gatiExportStatus && gatiExportStatus !== "exporting" && (
-            <span style={gatiExportStatus.startsWith("Downloaded") ? styles.statusOk : styles.statusWarn} title={gatiExportStatus}>
-              {gatiExportStatus.length > 50 ? gatiExportStatus.slice(0, 50) + "…" : gatiExportStatus}
-            </span>
-          )}
-        </div>
-
-        <Divider />
-
-        <div style={{ ...styles.toolbarGroup, marginLeft: "auto" }}>
-          {!emailOpen ? (
-            <button style={styles.smallBtn} type="button" onClick={() => setEmailOpen(true)}>
-              ✉ Email quote
-            </button>
-          ) : (
+          {localOpen && (
             <>
-              <input
-                type="email"
-                autoFocus
-                style={{ ...styles.inputSm, width: 150 }}
-                placeholder="Recipient email"
-                value={emailTo}
-                onChange={(e) => setEmailTo(e.target.value)}
-              />
-              <select style={{ ...styles.inputSm, width: 96 }} value={emailVariant} onChange={(e) => setEmailVariant(e.target.value)}>
-                <option value="full">Full price</option>
-                <option value="priceOnly">Price only</option>
-                <option value="noPrice">No price</option>
-              </select>
-              <button
-                style={{ ...styles.smallBtn, ...styles.smallBtnAccent }}
-                type="button"
-                disabled={!emailTo.trim() || emailStatus === "sending"}
-                onClick={sendEmail}
+              <button style={styles.smallBtn} onClick={onSave} type="button">
+                Save
+              </button>
+              <select
+                style={{ ...styles.inputSm, minWidth: 130, maxWidth: 130 }}
+                value={selected}
+                onChange={(e) => setSelected(e.target.value)}
               >
-                {emailStatus === "sending" ? "Sending…" : "Send"}
+                <option value="">Saved quotes…</option>
+                {savedQuotes.map((q) => (
+                  <option key={q.id} value={q.id}>
+                    {q.label}
+                  </option>
+                ))}
+              </select>
+              <button style={styles.smallBtn} type="button" disabled={!selected} onClick={() => selected && onLoad(Number(selected))}>
+                Load
               </button>
               <button
-                style={{ ...styles.smallBtn, background: "none" }}
+                style={{ ...styles.smallBtn, ...styles.smallBtnDanger }}
                 type="button"
+                disabled={!selected}
                 onClick={() => {
-                  setEmailOpen(false);
-                  setEmailStatus("");
+                  if (selected) {
+                    onDelete(Number(selected));
+                    setSelected("");
+                  }
                 }}
               >
-                ×
+                Delete
               </button>
-              {emailStatus === "sent" && <span style={styles.statusOk}>✓ Sent</span>}
-              {emailStatus && emailStatus !== "sending" && emailStatus !== "sent" && (
-                <span style={styles.statusWarn}>{emailStatus}</span>
-              )}
             </>
           )}
         </div>
@@ -2328,6 +2530,7 @@ function QuotesToolbar({ savedQuotes, onSave, onLoad, onDelete, onPrint, onPrevi
     </div>
   );
 }
+
 
 function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow }) {
   return (
