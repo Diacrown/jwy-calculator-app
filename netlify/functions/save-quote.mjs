@@ -51,8 +51,11 @@ export default async (req) => {
 
     const store = getStore("quotes");
     const pdfBytes = Uint8Array.from(atob(pdfBase64), (c) => c.charCodeAt(0));
-    await store.set(`${filenameBase}.pdf`, pdfBytes, { metadata: { type: "pdf" } });
-    await store.set(`${filenameBase}.json`, jsonText, { metadata: { type: "json" } });
+    // One folder per quote (named after filenameBase), containing both
+    // its PDF and JSON together -- much clearer to browse than a flat
+    // list of many PDFs and JSONs interleaved.
+    await store.set(`${filenameBase}/quote.pdf`, pdfBytes, { metadata: { type: "pdf" } });
+    await store.set(`${filenameBase}/quote.json`, jsonText, { metadata: { type: "json" } });
 
     await sql`
       INSERT INTO quotes (job_no, item_no, quote_stage, filename_base, created_at)

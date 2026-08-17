@@ -17,7 +17,11 @@ export default async (req) => {
 
   try {
     const store = getStore("quotes");
-    const jsonText = await store.get(`${filenameBase}.json`);
+    // New per-quote folder structure first; fall back to the old flat
+    // naming for anything saved before this change, so existing quotes
+    // don't silently become unreachable.
+    let jsonText = await store.get(`${filenameBase}/quote.json`);
+    if (jsonText === null) jsonText = await store.get(`${filenameBase}.json`);
     if (jsonText === null) {
       return new Response(JSON.stringify({ error: "Quote not found" }), {
         status: 404,
