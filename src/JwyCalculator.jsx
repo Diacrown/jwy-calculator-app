@@ -7,6 +7,12 @@ import * as XLSX from "xlsx";
 import { QuotePdfDocument } from "./pdfDocument.jsx";
 import { mapQuoteToGatiRows } from "./gatiExport.js";
 
+// Local Quotes (this-device save/load/delete via localStorage) is
+// stripped from the UI per request, since Sync to DB + cloud search
+// cover the same need. Kept fully working underneath, purely as a
+// fallback -- flip this to true to bring the UI straight back.
+const SHOW_LOCAL_QUOTES = false;
+
 const SAMPLE_METAL_RATES = {
   AU: { label: "Gold", pmRateOz: 4026.45, spotOz: 3984.96, spotSurcharge: 1.05, wastage: 1.1, asOf: "Mon 29 Jun 2026 PM" },
   PT: { label: "Platinum", pmRateOz: 1588.0, spotOz: 1566.5, spotSurcharge: 1.05, wastage: 1.22, asOf: "Mon 29 Jun 2026" },
@@ -2353,23 +2359,20 @@ function QuotesToolbar({
 
   return (
     <div style={styles.card}>
-      <div style={{ ...styles.toolbarRow, marginBottom: 8 }}>
+      <div style={styles.toolbarRow}>
         <SectionLabel eyebrow="04" title="Quotes" noMargin />
-        <div style={styles.toolbarGroup}>
-          <span style={styles.toolbarGroupLabel}>Stage</span>
-          <input
-            style={{ ...styles.inputSm, width: 52, textAlign: "center", fontWeight: 600 }}
-            value={quoteStage}
-            onChange={(e) => setQuoteStage(e.target.value)}
-            placeholder="Q1"
-            title="Which round of quoting this is -- Q1, Q2, Revised, etc. Used in filenames and every save action below."
-          />
-        </div>
+        <input
+          style={{ ...styles.inputSm, width: 44, textAlign: "center", fontWeight: 600 }}
+          value={quoteStage}
+          onChange={(e) => setQuoteStage(e.target.value)}
+          placeholder="Q1"
+          title="Quote stage (Q1, Q2, Revised, etc.) -- used in filenames and every save action below."
+        />
 
         <Divider />
 
         <select
-          style={{ ...styles.inputSm, width: 100 }}
+          style={{ ...styles.inputSm, width: 88 }}
           value={printVariant}
           onChange={(e) => setPrintVariant(e.target.value)}
         >
@@ -2396,11 +2399,11 @@ function QuotesToolbar({
             {pdfGenerating === printVariant + "-preview" ? "…" : "👁"}
           </button>
         </div>
-      </div>
 
-      <div style={styles.toolbarRow}>
+        <Divider />
+
         <button
-          style={{ ...styles.smallBtn, ...styles.smallBtnAccent }}
+          style={{ ...styles.smallBtn, ...styles.smallBtnAccent, padding: "4px 7px" }}
           type="button"
           disabled={syncStatus === "syncing"}
           onClick={syncToDb}
@@ -2415,7 +2418,7 @@ function QuotesToolbar({
         )}
 
         <button
-          style={{ ...styles.smallBtn, ...styles.smallBtnAccent }}
+          style={{ ...styles.smallBtn, ...styles.smallBtnAccent, padding: "4px 7px" }}
           type="button"
           disabled={driveSaveStatus === "saving"}
           onClick={saveToDrive}
@@ -2429,7 +2432,7 @@ function QuotesToolbar({
         )}
 
         <button
-          style={{ ...styles.smallBtn, ...styles.smallBtnAccent }}
+          style={{ ...styles.smallBtn, ...styles.smallBtnAccent, padding: "4px 7px" }}
           type="button"
           disabled={gatiExportStatus === "exporting"}
           onClick={exportGati}
@@ -2443,7 +2446,7 @@ function QuotesToolbar({
         )}
 
         {!emailOpen ? (
-          <button style={styles.smallBtn} type="button" onClick={() => setEmailOpen(true)}>
+          <button style={{ ...styles.smallBtn, padding: "4px 7px" }} type="button" onClick={() => setEmailOpen(true)}>
             ✉ Email
           </button>
         ) : (
@@ -2462,7 +2465,7 @@ function QuotesToolbar({
               <option value="noPrice">No price</option>
             </select>
             <button
-              style={{ ...styles.smallBtn, ...styles.smallBtnAccent }}
+              style={{ ...styles.smallBtn, ...styles.smallBtnAccent, padding: "4px 7px" }}
               type="button"
               disabled={!emailTo.trim() || emailStatus === "sending"}
               onClick={sendEmail}
@@ -2486,46 +2489,52 @@ function QuotesToolbar({
           </>
         )}
 
-        <div style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6 }}>
-          <button style={styles.smallBtn} type="button" onClick={() => setLocalOpen((v) => !v)}>
-            {localOpen ? "Hide local quotes" : "Local quotes"}
-          </button>
-          {localOpen && (
-            <>
-              <button style={styles.smallBtn} onClick={onSave} type="button">
-                Save
-              </button>
-              <select
-                style={{ ...styles.inputSm, minWidth: 130, maxWidth: 130 }}
-                value={selected}
-                onChange={(e) => setSelected(e.target.value)}
-              >
-                <option value="">Saved quotes…</option>
-                {savedQuotes.map((q) => (
-                  <option key={q.id} value={q.id}>
-                    {q.label}
-                  </option>
-                ))}
-              </select>
-              <button style={styles.smallBtn} type="button" disabled={!selected} onClick={() => selected && onLoad(Number(selected))}>
-                Load
-              </button>
-              <button
-                style={{ ...styles.smallBtn, ...styles.smallBtnDanger }}
-                type="button"
-                disabled={!selected}
-                onClick={() => {
-                  if (selected) {
-                    onDelete(Number(selected));
-                    setSelected("");
-                  }
-                }}
-              >
-                Delete
-              </button>
-            </>
-          )}
-        </div>
+        {/* Local quotes (this-device save/load/delete) -- stripped from
+            the UI per request, but left fully intact below as a fallback.
+            Flip SHOW_LOCAL_QUOTES to true to bring it straight back,
+            no rebuild needed. */}
+        {SHOW_LOCAL_QUOTES && (
+          <div style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6 }}>
+            <button style={styles.smallBtn} type="button" onClick={() => setLocalOpen((v) => !v)}>
+              {localOpen ? "Hide local quotes" : "Local quotes"}
+            </button>
+            {localOpen && (
+              <>
+                <button style={styles.smallBtn} onClick={onSave} type="button">
+                  Save
+                </button>
+                <select
+                  style={{ ...styles.inputSm, minWidth: 130, maxWidth: 130 }}
+                  value={selected}
+                  onChange={(e) => setSelected(e.target.value)}
+                >
+                  <option value="">Saved quotes…</option>
+                  {savedQuotes.map((q) => (
+                    <option key={q.id} value={q.id}>
+                      {q.label}
+                    </option>
+                  ))}
+                </select>
+                <button style={styles.smallBtn} type="button" disabled={!selected} onClick={() => selected && onLoad(Number(selected))}>
+                  Load
+                </button>
+                <button
+                  style={{ ...styles.smallBtn, ...styles.smallBtnDanger }}
+                  type="button"
+                  disabled={!selected}
+                  onClick={() => {
+                    if (selected) {
+                      onDelete(Number(selected));
+                      setSelected("");
+                    }
+                  }}
+                >
+                  Delete
+                </button>
+              </>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -3045,8 +3054,8 @@ const styles = {
     display: "flex",
     alignItems: "center",
     flexWrap: "wrap",
-    rowGap: 8,
-    columnGap: 10,
+    rowGap: 6,
+    columnGap: 6,
   },
   toolbarGroup: {
     display: "flex",
