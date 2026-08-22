@@ -535,6 +535,13 @@ const fmtLocal = (n, currencyCode, dp = 2) => (CURRENCY_SYMBOLS[currencyCode] ||
 
 const roundUp5 = (n) => (isFinite(n) ? Math.ceil(n / 5) * 5 : 0);
 
+// Rounds a metal gram weight UP to the nearest 0.05 -- e.g. 5.53 -> 5.55,
+// 6.56 -> 6.60. Used specifically when importing from the CAD Order
+// Form, not for manual entry elsewhere. The extra Math.round(...*100)/100
+// pass cleans up floating-point artifacts (Math.ceil(5.53/0.05)*0.05
+// alone can come out as 5.5500000000000007).
+const roundUpMetalWt = (n) => (isFinite(n) ? Math.round(Math.ceil(n / 0.05) * 0.05 * 100) / 100 : n);
+
 function emptyRow() {
   return { mode: "natural", stoneTypeSel: "Mined", shapeSel: "", sizeCode: "", quality: "TW SI1", lgdGrade: "Non-cert", lgdShape: "RND", pcs: "", customShape: "", customWt: "", customRate: "", manualRate: "", proposedQuality: "" };
 }
@@ -736,13 +743,13 @@ function JwyCalculatorApp() {
       if (liveData.alloys.some((a) => a.short === metals.primary.short)) {
         setPrimaryAlloyShort(metals.primary.short);
       }
-      setPrimaryGramWt(metals.primary.wt);
+      setPrimaryGramWt(roundUpMetalWt(metals.primary.wt));
     }
     if (metals.secondary) {
       if (liveData.alloys.some((a) => a.short === metals.secondary.short)) {
         setSecondaryAlloyShort(metals.secondary.short);
       }
-      setSecondaryGramWt(metals.secondary.wt);
+      setSecondaryGramWt(roundUpMetalWt(metals.secondary.wt));
     }
 
     const newRows = stones.map((s) => ({
