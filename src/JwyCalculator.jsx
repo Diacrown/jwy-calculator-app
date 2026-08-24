@@ -1182,9 +1182,11 @@ function JwyCalculatorApp() {
   }, []);
 
   // Returns a valid access token, requesting one via the Google sign-in
-  // popup only if we don't already have one this session.
-  const ensureDriveToken = () => {
-    if (driveAccessToken) return Promise.resolve(driveAccessToken);
+  // popup only if we don't already have one this session -- unless
+  // forceNew is set, which always gets a fresh one (used when the
+  // previous token has expired, per a 401 from Drive).
+  const ensureDriveToken = (forceNew = false) => {
+    if (driveAccessToken && !forceNew) return Promise.resolve(driveAccessToken);
     const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
     if (!clientId) return Promise.reject(new Error("Drive isn't configured yet -- VITE_GOOGLE_CLIENT_ID needs to be set."));
     if (!window.google?.accounts?.oauth2) return Promise.reject(new Error("Still loading Google's sign-in library -- try again in a moment."));
@@ -1204,6 +1206,10 @@ function JwyCalculatorApp() {
           },
         });
       }
+      // prompt override removed -- the real fix is bypassing the stale
+      // cached token above (forceNew skips the early-return), not this
+      // call itself. Google's library already avoids re-showing full
+      // consent once it's been granted once in this browser.
       driveTokenClientRef.current.requestAccessToken();
     });
   };
@@ -1241,7 +1247,9 @@ function JwyCalculatorApp() {
     });
     if (!res.ok) {
       const errText = await res.text();
-      throw new Error(`Drive upload failed (${res.status}): ${errText.slice(0, 200)}`);
+      const err = new Error(`Drive upload failed (${res.status}): ${errText.slice(0, 200)}`);
+      err.isAuthError = res.status === 401; // expired/invalid token specifically
+      throw err;
     }
     return res.json();
   }
@@ -1252,11 +1260,24 @@ function JwyCalculatorApp() {
   // repopulation fallback (used by search/reload) is Sync to DB, which
   // keeps saving both PDF and JSON to the technical database,
   // unaffected by this.
+  //
+  // Recovers automatically from an expired token (a 401 partway
+  // through a session, since these tokens last about an hour) --
+  // clears the stale token, re-authenticates, and retries once, so
+  // nobody needs to manually refresh the page and sign in again.
   const doSaveToDrive = async () => {
-    const token = await ensureDriveToken();
     const filenameBase = quoteFilenameBase();
     const pdfBlob = await generatePdfBlob("full");
-    await uploadFileToDrive(`${filenameBase}.pdf`, pdfBlob, "application/pdf", token);
+
+    let token = await ensureDriveToken();
+    try {
+      await uploadFileToDrive(`${filenameBase}.pdf`, pdfBlob, "application/pdf", token);
+    } catch (err) {
+      if (!err.isAuthError) throw err;
+      setDriveAccessToken(""); // discard the stale token
+      token = await ensureDriveToken(true); // force a fresh one
+      await uploadFileToDrive(`${filenameBase}.pdf`, pdfBlob, "application/pdf", token); // retry once
+    }
     return { filenameBase };
   };
 
