@@ -595,6 +595,8 @@ function JwyCalculatorApp() {
   const [quoteStage, setQuoteStage] = useState("Q1");
   const [printDate, setPrintDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [manualPriceOverride, setManualPriceOverride] = useState("");
+  const [additionalChargeName, setAdditionalChargeName] = useState("");
+  const [additionalChargeAmount, setAdditionalChargeAmount] = useState("");
   const [primaryAlloyShort, setPrimaryAlloyShort] = useState("");
   const [primaryGramWt, setPrimaryGramWt] = useState("");
   const [secondaryAlloyShort, setSecondaryAlloyShort] = useState("");
@@ -839,6 +841,8 @@ function JwyCalculatorApp() {
     setClientRefImages([]);
     setTurntableLink("");
     setManualPriceOverride("");
+    setAdditionalChargeName("");
+    setAdditionalChargeAmount("");
   };
 
   const persistQuotes = (list) => {
@@ -861,6 +865,8 @@ function JwyCalculatorApp() {
     secondaryGramWt,
     rows,
     manualPriceOverride,
+    additionalChargeName,
+    additionalChargeAmount,
     cadImages,
     clientRefImages,
     turntableLink,
@@ -890,6 +896,8 @@ function JwyCalculatorApp() {
     setSecondaryGramWt(q.secondaryGramWt);
     setRows(q.rows.map((r) => ({ ...emptyRow(), ...r })));
     setManualPriceOverride(q.manualPriceOverride || "");
+    setAdditionalChargeName(q.additionalChargeName || "");
+    setAdditionalChargeAmount(q.additionalChargeAmount || "");
     setCadImages(q.cadImages || []);
     setClientRefImages(q.clientRefImages || []);
     setTurntableLink(q.turntableLink || "");
@@ -1073,7 +1081,15 @@ function JwyCalculatorApp() {
 
   const overrideNum = parseFloat(manualPriceOverride);
   const hasOverride = manualPriceOverride !== "" && isFinite(overrideNum) && overrideNum > 0;
-  const effectiveTotalLocal = hasOverride ? overrideNum : totalWithDutyLocal;
+  // Additional charge is entered in USD (matching every other cost
+  // input) and applied on top of whichever total is actually being
+  // used -- calculated or manually overridden -- so a real extra cost
+  // like a rush fee never silently vanishes just because an override
+  // price is also set.
+  const additionalChargeUSD = parseFloat(additionalChargeAmount) || 0;
+  const hasAdditionalCharge = additionalChargeUSD > 0;
+  const additionalChargeLocal = additionalChargeUSD * fxRate;
+  const effectiveTotalLocal = (hasOverride ? overrideNum : totalWithDutyLocal) + additionalChargeLocal;
   const breakupPct = (val) => (grossTotalUSD > 0 ? (val / grossTotalUSD) * 100 : 0);
 
   const [pdfGenerating, setPdfGenerating] = useState(null);
@@ -1105,6 +1121,9 @@ function JwyCalculatorApp() {
         turntableLink={turntableLink}
         quoteStage={quoteStage}
         hasOverride={hasOverride}
+        additionalChargeName={additionalChargeName}
+        hasAdditionalCharge={hasAdditionalCharge}
+        additionalChargeLocal={additionalChargeLocal}
         effectiveTotalLocal={effectiveTotalLocal}
         logoBlack="/logoblack.PNG"
         printDate={printDate}
@@ -1535,6 +1554,11 @@ function JwyCalculatorApp() {
           manualPriceOverride={manualPriceOverride}
           setManualPriceOverride={setManualPriceOverride}
           hasOverride={hasOverride}
+          additionalChargeName={additionalChargeName}
+          setAdditionalChargeName={setAdditionalChargeName}
+          additionalChargeAmount={additionalChargeAmount}
+          setAdditionalChargeAmount={setAdditionalChargeAmount}
+          hasAdditionalCharge={hasAdditionalCharge}
           effectiveTotalLocal={effectiveTotalLocal}
         />
 
@@ -2844,6 +2868,11 @@ function BreakupSummary({
   manualPriceOverride,
   setManualPriceOverride,
   hasOverride,
+  additionalChargeName,
+  setAdditionalChargeName,
+  additionalChargeAmount,
+  setAdditionalChargeAmount,
+  hasAdditionalCharge,
   effectiveTotalLocal,
 }) {
   const items = [
@@ -2868,7 +2897,7 @@ function BreakupSummary({
       </div>
       <div style={styles.divider} />
 
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
         <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 600 }}>
           Override final price ({locInfo.currency})
         </span>
@@ -2887,6 +2916,37 @@ function BreakupSummary({
             style={{ ...styles.smallBtn, background: "none" }}
           >
             Clear override
+          </button>
+        )}
+
+        <div style={{ width: 1, alignSelf: "stretch", background: ROSE_TINT_STRONG, margin: "0 4px" }} />
+
+        <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 600 }}>Additional charges</span>
+        <input
+          type="text"
+          placeholder="e.g. Rush fee"
+          value={additionalChargeName}
+          onChange={(e) => setAdditionalChargeName(e.target.value)}
+          style={{ ...styles.inputSm, width: 130 }}
+        />
+        <input
+          type="number"
+          step="1"
+          placeholder="0.00 USD"
+          value={additionalChargeAmount}
+          onChange={(e) => setAdditionalChargeAmount(e.target.value)}
+          style={{ ...styles.inputSm, width: 100 }}
+        />
+        {hasAdditionalCharge && (
+          <button
+            type="button"
+            onClick={() => {
+              setAdditionalChargeName("");
+              setAdditionalChargeAmount("");
+            }}
+            style={{ ...styles.smallBtn, background: "none" }}
+          >
+            Clear
           </button>
         )}
       </div>
@@ -2910,7 +2970,14 @@ function BreakupSummary({
             )}
           </div>
           <div style={styles.bigValue}>{fmtLocal(effectiveTotalLocal, locInfo.currency)}</div>
-          <div style={styles.fxNote}>fx rate {fmt(fxRate, 3)}</div>
+          <div style={styles.fxNote}>
+            fx rate {fmt(fxRate, 3)}
+            {hasAdditionalCharge && (
+              <span style={{ marginLeft: 8 }}>
+                · includes {additionalChargeName || "additional charge"}: {fmtLocal(additionalChargeAmount * fxRate, locInfo.currency)}
+              </span>
+            )}
+          </div>
         </div>
       </div>
     </div>
