@@ -1073,7 +1073,16 @@ function JwyCalculatorApp() {
   }, [totalGramWt, liveData.laborPerGm, liveData.laborMinFlat]);
 
   const cadFee = Math.round(liveData.cadFees[jobInfo.cadType] ?? 0);
-  const grossTotalUSD = casting + labor + cadFee + totals.diamondTotal + totals.settingTotal;
+  // Additional charge is entered in USD (matching every other cost
+  // input) and now folded directly into Gross Total -- it flows through
+  // the same duty % and fx-rate conversion as Casting/Labor/CAD/
+  // Diamonds/Setting, rather than being added separately after
+  // conversion. This also means: like every other cost component, it's
+  // absorbed into a manual override if one is set, rather than being
+  // separately re-added on top of it.
+  const additionalChargeUSD = parseFloat(additionalChargeAmount) || 0;
+  const hasAdditionalCharge = additionalChargeUSD > 0;
+  const grossTotalUSD = casting + labor + cadFee + totals.diamondTotal + totals.settingTotal + additionalChargeUSD;
   const locInfo = locationList.find((l) => l.code === location) || locationList[0];
   const fxRate = locInfo.currency === "USD" ? 1 : (currencyRates[locInfo.currency] || 1) * liveData.currencyMarkup;
   const totalWithDutyUSD = roundUp5(grossTotalUSD * (1 + locInfo.duty));
@@ -1081,15 +1090,7 @@ function JwyCalculatorApp() {
 
   const overrideNum = parseFloat(manualPriceOverride);
   const hasOverride = manualPriceOverride !== "" && isFinite(overrideNum) && overrideNum > 0;
-  // Additional charge is entered in USD (matching every other cost
-  // input) and applied on top of whichever total is actually being
-  // used -- calculated or manually overridden -- so a real extra cost
-  // like a rush fee never silently vanishes just because an override
-  // price is also set.
-  const additionalChargeUSD = parseFloat(additionalChargeAmount) || 0;
-  const hasAdditionalCharge = additionalChargeUSD > 0;
-  const additionalChargeLocal = additionalChargeUSD * fxRate;
-  const effectiveTotalLocal = (hasOverride ? overrideNum : totalWithDutyLocal) + additionalChargeLocal;
+  const effectiveTotalLocal = hasOverride ? overrideNum : totalWithDutyLocal;
   const breakupPct = (val) => (grossTotalUSD > 0 ? (val / grossTotalUSD) * 100 : 0);
 
   const [pdfGenerating, setPdfGenerating] = useState(null);
@@ -1123,7 +1124,7 @@ function JwyCalculatorApp() {
         hasOverride={hasOverride}
         additionalChargeName={additionalChargeName}
         hasAdditionalCharge={hasAdditionalCharge}
-        additionalChargeLocal={additionalChargeLocal}
+        additionalChargeUSD={additionalChargeUSD}
         effectiveTotalLocal={effectiveTotalLocal}
         logoBlack="/logoblack.PNG"
         printDate={printDate}
@@ -1559,6 +1560,7 @@ function JwyCalculatorApp() {
           additionalChargeAmount={additionalChargeAmount}
           setAdditionalChargeAmount={setAdditionalChargeAmount}
           hasAdditionalCharge={hasAdditionalCharge}
+          additionalChargeUSD={additionalChargeUSD}
           effectiveTotalLocal={effectiveTotalLocal}
         />
 
@@ -2873,6 +2875,7 @@ function BreakupSummary({
   additionalChargeAmount,
   setAdditionalChargeAmount,
   hasAdditionalCharge,
+  additionalChargeUSD,
   effectiveTotalLocal,
 }) {
   const items = [
@@ -2881,6 +2884,7 @@ function BreakupSummary({
     { label: `CAD · ${cadType}`, value: cadFee },
     { label: "Diamonds", value: diamondTotal },
     { label: "Setting", value: settingTotal },
+    ...(hasAdditionalCharge ? [{ label: additionalChargeName || "Additional charge", value: additionalChargeUSD }] : []),
   ];
   return (
     <div style={styles.card}>
@@ -2970,14 +2974,7 @@ function BreakupSummary({
             )}
           </div>
           <div style={styles.bigValue}>{fmtLocal(effectiveTotalLocal, locInfo.currency)}</div>
-          <div style={styles.fxNote}>
-            fx rate {fmt(fxRate, 3)}
-            {hasAdditionalCharge && (
-              <span style={{ marginLeft: 8 }}>
-                · includes {additionalChargeName || "additional charge"}: {fmtLocal(additionalChargeAmount * fxRate, locInfo.currency)}
-              </span>
-            )}
-          </div>
+          <div style={styles.fxNote}>fx rate {fmt(fxRate, 3)}</div>
         </div>
       </div>
     </div>
@@ -3286,7 +3283,7 @@ const styles = {
     fontWeight: 500,
   },
   toggleBtnActive: { background: ROSE, color: "#fff", borderColor: ROSE },
-  breakupGrid: { display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 6 },
+  breakupGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 6 },
   metricCard: {
     position: "relative",
     background: ROSE_TINT,
