@@ -4,8 +4,24 @@ import { POLL_INTERVAL_MS } from "./config.js";
 import { parseOrderFormJson } from "./pdfParser.js";
 import { pdf } from "@react-pdf/renderer";
 import * as XLSX from "xlsx";
+import ExcelJS from "exceljs";
 import { QuotePdfDocument } from "./pdfDocument.jsx";
 import { mapQuoteToGatiRows } from "./gatiExport.js";
+import {
+  mapQuoteToJobTrackerRow,
+  JOB_TRACKER_COLUMNS,
+  JOB_TRACKER_IMAGE_COLUMNS,
+  JOB_TRACKER_MANUAL_FIELDS,
+  EMPTY_JOB_TRACKER_MANUAL_FIELDS,
+  pickJobTrackerImages,
+  dataUrlImageExtension,
+} from "./jobTrackerExport.js";
+
+// Local Quotes (this-device save/load/delete via localStorage) is
+// stripped from the UI per request, since Sync to DB + cloud search
+// cover the same need. Kept fully working underneath, purely as a
+// fallback -- flip this to true to bring the UI straight back.
+const SHOW_LOCAL_QUOTES = false;
 
 const SAMPLE_METAL_RATES = {
   AU: { label: "Gold", pmRateOz: 4026.45, spotOz: 3984.96, spotSurcharge: 1.05, wastage: 1.1, asOf: "Mon 29 Jun 2026 PM" },
@@ -529,8 +545,15 @@ const fmtLocal = (n, currencyCode, dp = 2) => (CURRENCY_SYMBOLS[currencyCode] ||
 
 const roundUp5 = (n) => (isFinite(n) ? Math.ceil(n / 5) * 5 : 0);
 
+// Rounds a metal gram weight UP to the nearest 0.05 -- e.g. 5.53 -> 5.55,
+// 6.56 -> 6.60. Used specifically when importing from the CAD Order
+// Form, not for manual entry elsewhere. The extra Math.round(...*100)/100
+// pass cleans up floating-point artifacts (Math.ceil(5.53/0.05)*0.05
+// alone can come out as 5.5500000000000007).
+const roundUpMetalWt = (n) => (isFinite(n) ? Math.round(Math.ceil(n / 0.05) * 0.05 * 100) / 100 : n);
+
 function emptyRow() {
-  return { mode: "natural", stoneTypeSel: "Mined", shapeSel: "", sizeCode: "", quality: "TW SI1", lgdGrade: "Non-cert", lgdShape: "RND", pcs: "", customShape: "", customWt: "", customRate: "", manualRate: "", proposedQuality: "" };
+  return { mode: "natural", stoneTypeSel: "Mined", shapeSel: "", sizeCode: "", quality: "TW SI1", lgdGrade: "Non-cert", lgdShape: "RND", pcs: "", customShape: "", customWt: "", customRate: "", manualRate: "", proposedQuality: "", setting: "", source: "" };
 }
 
 
@@ -577,11 +600,15 @@ function JwyCalculatorApp() {
     remarks: "",
     itemType: "",
     subCategory: "",
+    rhodium: "",
   });
   const [location, setLocation] = useState("WSSY");
   const [quoteStage, setQuoteStage] = useState("Q1");
   const [printDate, setPrintDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [manualPriceOverride, setManualPriceOverride] = useState("");
+  const [additionalChargeName, setAdditionalChargeName] = useState("");
+  const [additionalChargeAmount, setAdditionalChargeAmount] = useState("");
+  const [jobTrackerFields, setJobTrackerFields] = useState(EMPTY_JOB_TRACKER_MANUAL_FIELDS);
   const [primaryAlloyShort, setPrimaryAlloyShort] = useState("");
   const [primaryGramWt, setPrimaryGramWt] = useState("");
   const [secondaryAlloyShort, setSecondaryAlloyShort] = useState("");
@@ -632,8 +659,10 @@ function JwyCalculatorApp() {
     setRateLoading(true);
     try {
       const { data, errors } = await fetchLiveSheetData();
+      const sheetHasMetalRates = data.metalRates && Object.keys(data.metalRates).length > 0;
+
       setLiveData((prev) => ({
-        metalRates: data.metalRates && Object.keys(data.metalRates).length ? data.metalRates : prev.metalRates,
+        metalRates: sheetHasMetalRates ? data.metalRates : prev.metalRates,
         alloys: data.alloys && data.alloys.length ? data.alloys : prev.alloys,
         currencyRates:
           data.currencyRates && Object.keys(data.currencyRates.rates || {}).length
@@ -649,7 +678,7 @@ function JwyCalculatorApp() {
         labGrownPrices: data.labGrownPrices && data.labGrownPrices.length ? data.labGrownPrices : prev.labGrownPrices,
       }));
       setTableSources({
-        metalRates: data.metalRates ? "live" : "sample",
+        metalRates: sheetHasMetalRates ? "live" : "sample",
         alloys: data.alloys ? "live" : "sample",
         currencyRates: data.currencyRates ? "live" : "sample",
         locations: data.locations ? "live" : "sample",
@@ -660,37 +689,42 @@ function JwyCalculatorApp() {
       });
       setRateErrors(errors);
       setLastSync(new Date());
+
+      // Live metals API is a genuine FALLBACK, not a second source
+      // competing with the Sheet -- only called when the Sheet itself
+      // failed to provide metal rates at all. When the Sheet is
+      // healthy (the normal case), this is never even invoked, which
+      // also means far fewer calls to it overall. The output already
+      // matches the Sheet's own structure exactly ({label, pmRateOz,
+      // spotOz, spotSurcharge, wastage, asOf} per metal), so whichever
+      // source ends up populating metalRates, the rest of the pricing
+      // engine reads it identically either way -- no separate handling
+      // needed downstream.
+      if (!sheetHasMetalRates) {
+        try {
+          const res = await fetch("/.netlify/functions/metal-rates");
+          if (res.ok) {
+            const payload = await res.json();
+            if (payload.rates && Object.keys(payload.rates).length) {
+              setLiveData((prev) => ({ ...prev, metalRates: payload.rates }));
+              setTableSources((prev) => ({
+                ...prev,
+                metalRates: payload.source === "cache" ? "live-api-cache" : "live-api",
+              }));
+            }
+          }
+          // A non-ok response (key not configured, API down, etc.) is
+          // not worth surfacing as an error -- metalRates just stays on
+          // the bundled sample data, same as if this fallback didn't
+          // exist at all.
+        } catch {
+          // Network failure reaching the function -- same, no disruption.
+        }
+      }
     } catch (e) {
       setRateErrors({ all: e.message || String(e) });
     } finally {
       setRateLoading(false);
-    }
-
-    // Live metals API layer -- independent of the Google Sheet fetch
-    // above, deliberately not nested inside its try/catch. If this
-    // fails for ANY reason (not deployed yet, network issue, API down),
-    // metalRates simply stays whatever the Sheet fetch (or the previous
-    // successful call to this same function) already set -- the app
-    // behaves exactly as it does today. Only overrides metalRates
-    // specifically; every other live-synced table is untouched.
-    try {
-      const res = await fetch("/.netlify/functions/metal-rates");
-      if (res.ok) {
-        const payload = await res.json();
-        if (payload.rates && Object.keys(payload.rates).length) {
-          setLiveData((prev) => ({ ...prev, metalRates: payload.rates }));
-          setTableSources((prev) => ({
-            ...prev,
-            metalRates: payload.source === "cache" ? "live-api-cache" : "live-api",
-          }));
-        }
-      }
-      // A non-ok response (function not deployed, key not configured
-      // yet, etc.) is not an error worth surfacing -- metalRates just
-      // stays on whatever the Sheet already provided.
-    } catch {
-      // Network failure reaching the function -- same: leave metalRates
-      // exactly as-is, no disruption.
     }
   }, []);
 
@@ -720,6 +754,7 @@ function JwyCalculatorApp() {
       remarks: ji.clientNotes || prev.remarks,
       itemType: ji.itemType || prev.itemType,
       subCategory: ji.subCategory || prev.subCategory,
+      rhodium: ji.rhodium || prev.rhodium,
     }));
     if (ji.itemNo) {
       const mappedLoc = ITEM_LETTER_TO_LOCATION[ji.itemNo.trim().charAt(0).toUpperCase()];
@@ -730,13 +765,13 @@ function JwyCalculatorApp() {
       if (liveData.alloys.some((a) => a.short === metals.primary.short)) {
         setPrimaryAlloyShort(metals.primary.short);
       }
-      setPrimaryGramWt(metals.primary.wt);
+      setPrimaryGramWt(roundUpMetalWt(metals.primary.wt));
     }
     if (metals.secondary) {
       if (liveData.alloys.some((a) => a.short === metals.secondary.short)) {
         setSecondaryAlloyShort(metals.secondary.short);
       }
-      setSecondaryGramWt(metals.secondary.wt);
+      setSecondaryGramWt(roundUpMetalWt(metals.secondary.wt));
     }
 
     const newRows = stones.map((s) => ({
@@ -752,6 +787,8 @@ function JwyCalculatorApp() {
       customWt: s.customWt ? String(s.customWt) : "",
       customRate: "",
       manualRate: "",
+      setting: s.setting || "",
+      source: s.source || "",
     }));
     setRows(newRows.length ? newRows : Array.from({ length: 5 }, emptyRow));
 
@@ -813,7 +850,7 @@ function JwyCalculatorApp() {
   };
 
   const clearAll = () => {
-    setJobInfo({ designer: "", jobNo: "", itemNo: "", itemSize: "", customer: "", cadType: "Medium", remarks: "", itemType: "", subCategory: "" });
+    setJobInfo({ designer: "", jobNo: "", itemNo: "", itemSize: "", customer: "", cadType: "Medium", remarks: "", itemType: "", subCategory: "", rhodium: "" });
     setPrimaryAlloyShort("");
     setPrimaryGramWt("");
     setSecondaryAlloyShort("");
@@ -826,6 +863,9 @@ function JwyCalculatorApp() {
     setClientRefImages([]);
     setTurntableLink("");
     setManualPriceOverride("");
+    setAdditionalChargeName("");
+    setAdditionalChargeAmount("");
+    setJobTrackerFields(EMPTY_JOB_TRACKER_MANUAL_FIELDS);
   };
 
   const persistQuotes = (list) => {
@@ -848,6 +888,9 @@ function JwyCalculatorApp() {
     secondaryGramWt,
     rows,
     manualPriceOverride,
+    additionalChargeName,
+    additionalChargeAmount,
+    jobTrackerFields,
     cadImages,
     clientRefImages,
     turntableLink,
@@ -877,6 +920,9 @@ function JwyCalculatorApp() {
     setSecondaryGramWt(q.secondaryGramWt);
     setRows(q.rows.map((r) => ({ ...emptyRow(), ...r })));
     setManualPriceOverride(q.manualPriceOverride || "");
+    setAdditionalChargeName(q.additionalChargeName || "");
+    setAdditionalChargeAmount(q.additionalChargeAmount || "");
+    setJobTrackerFields({ ...EMPTY_JOB_TRACKER_MANUAL_FIELDS, ...q.jobTrackerFields });
     setCadImages(q.cadImages || []);
     setClientRefImages(q.clientRefImages || []);
     setTurntableLink(q.turntableLink || "");
@@ -1052,7 +1098,16 @@ function JwyCalculatorApp() {
   }, [totalGramWt, liveData.laborPerGm, liveData.laborMinFlat]);
 
   const cadFee = Math.round(liveData.cadFees[jobInfo.cadType] ?? 0);
-  const grossTotalUSD = casting + labor + cadFee + totals.diamondTotal + totals.settingTotal;
+  // Additional charge is entered in USD (matching every other cost
+  // input) and now folded directly into Gross Total -- it flows through
+  // the same duty % and fx-rate conversion as Casting/Labor/CAD/
+  // Diamonds/Setting, rather than being added separately after
+  // conversion. This also means: like every other cost component, it's
+  // absorbed into a manual override if one is set, rather than being
+  // separately re-added on top of it.
+  const additionalChargeUSD = parseFloat(additionalChargeAmount) || 0;
+  const hasAdditionalCharge = additionalChargeUSD > 0;
+  const grossTotalUSD = casting + labor + cadFee + totals.diamondTotal + totals.settingTotal + additionalChargeUSD;
   const locInfo = locationList.find((l) => l.code === location) || locationList[0];
   const fxRate = locInfo.currency === "USD" ? 1 : (currencyRates[locInfo.currency] || 1) * liveData.currencyMarkup;
   const totalWithDutyUSD = roundUp5(grossTotalUSD * (1 + locInfo.duty));
@@ -1092,6 +1147,9 @@ function JwyCalculatorApp() {
         turntableLink={turntableLink}
         quoteStage={quoteStage}
         hasOverride={hasOverride}
+        additionalChargeName={additionalChargeName}
+        hasAdditionalCharge={hasAdditionalCharge}
+        additionalChargeUSD={additionalChargeUSD}
         effectiveTotalLocal={effectiveTotalLocal}
         logoBlack="/logoblack.PNG"
         printDate={printDate}
@@ -1141,6 +1199,68 @@ function JwyCalculatorApp() {
     return { flaggedCount };
   };
 
+  // Same idea as the GATI export above, one column set over for Job
+  // Tracker -- a single row per quote with whatever the Calculator
+  // actually knows, everything else left blank for the shop floor to
+  // fill in as the job moves through production. Uses ExcelJS (not
+  // the XLSX/SheetJS library GATI export uses above) specifically
+  // because the free SheetJS build can't embed real pictures into
+  // cells -- ExcelJS can, which Image1/Image2/Image3 need.
+  const doExportJobTracker = async () => {
+    const rowsWithCalcs = rows
+      .map((r, i) => ({ r, c: rowCalcs[i] }))
+      .filter(({ r, c }) => (r.sizeCode || r.customShape) && c.totalWt > 0);
+
+    if (rowsWithCalcs.length === 0) {
+      throw new Error("Add at least one stone row before exporting.");
+    }
+
+    const jtRow = mapQuoteToJobTrackerRow({ jobInfo, primaryAlloy, rowsWithCalcs, manualFields: jobTrackerFields });
+
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet("Job Tracker");
+    ws.columns = JOB_TRACKER_COLUMNS.map((col) => ({
+      header: col,
+      key: col,
+      width: JOB_TRACKER_IMAGE_COLUMNS.includes(col) ? 18 : 16,
+    }));
+    ws.addRow(jtRow);
+    ws.getRow(2).height = 96; // room for the embedded thumbnails below
+
+    // Up to 3 images -- CAD renders first, then client reference
+    // images filling any slots CAD didn't use -- embedded directly
+    // into the Image1/Image2/Image3 cells rather than left as text.
+    const imagesToEmbed = pickJobTrackerImages(cadImages, clientRefImages);
+    let embeddedCount = 0;
+    imagesToEmbed.forEach((dataUrl, idx) => {
+      const extension = dataUrlImageExtension(dataUrl);
+      if (!extension) return; // unrecognized format -- skip rather than corrupt the file
+      const colIndex = JOB_TRACKER_COLUMNS.indexOf(JOB_TRACKER_IMAGE_COLUMNS[idx]);
+      if (colIndex === -1) return;
+      const imageId = wb.addImage({ base64: dataUrl, extension });
+      ws.addImage(imageId, {
+        tl: { col: colIndex + 0.08, row: 1.08 },
+        ext: { width: 120, height: 120 },
+      });
+      embeddedCount++;
+    });
+
+    const buffer = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buffer], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${quoteFilenameBase()}_JobTracker.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+
+    return { embeddedCount, availableCount: cadImages.length + clientRefImages.length };
+  };
+
   // ============================================================
   // Google Drive integration -- uses Google Identity Services (OAuth
   // 2.0 implicit grant), NOT a service account. This is a genuinely
@@ -1169,9 +1289,11 @@ function JwyCalculatorApp() {
   }, []);
 
   // Returns a valid access token, requesting one via the Google sign-in
-  // popup only if we don't already have one this session.
-  const ensureDriveToken = () => {
-    if (driveAccessToken) return Promise.resolve(driveAccessToken);
+  // popup only if we don't already have one this session -- unless
+  // forceNew is set, which always gets a fresh one (used when the
+  // previous token has expired, per a 401 from Drive).
+  const ensureDriveToken = (forceNew = false) => {
+    if (driveAccessToken && !forceNew) return Promise.resolve(driveAccessToken);
     const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
     if (!clientId) return Promise.reject(new Error("Drive isn't configured yet -- VITE_GOOGLE_CLIENT_ID needs to be set."));
     if (!window.google?.accounts?.oauth2) return Promise.reject(new Error("Still loading Google's sign-in library -- try again in a moment."));
@@ -1191,6 +1313,10 @@ function JwyCalculatorApp() {
           },
         });
       }
+      // prompt override removed -- the real fix is bypassing the stale
+      // cached token above (forceNew skips the early-return), not this
+      // call itself. Google's library already avoids re-showing full
+      // consent once it's been granted once in this browser.
       driveTokenClientRef.current.requestAccessToken();
     });
   };
@@ -1228,7 +1354,9 @@ function JwyCalculatorApp() {
     });
     if (!res.ok) {
       const errText = await res.text();
-      throw new Error(`Drive upload failed (${res.status}): ${errText.slice(0, 200)}`);
+      const err = new Error(`Drive upload failed (${res.status}): ${errText.slice(0, 200)}`);
+      err.isAuthError = res.status === 401; // expired/invalid token specifically
+      throw err;
     }
     return res.json();
   }
@@ -1239,11 +1367,24 @@ function JwyCalculatorApp() {
   // repopulation fallback (used by search/reload) is Sync to DB, which
   // keeps saving both PDF and JSON to the technical database,
   // unaffected by this.
+  //
+  // Recovers automatically from an expired token (a 401 partway
+  // through a session, since these tokens last about an hour) --
+  // clears the stale token, re-authenticates, and retries once, so
+  // nobody needs to manually refresh the page and sign in again.
   const doSaveToDrive = async () => {
-    const token = await ensureDriveToken();
     const filenameBase = quoteFilenameBase();
     const pdfBlob = await generatePdfBlob("full");
-    await uploadFileToDrive(`${filenameBase}.pdf`, pdfBlob, "application/pdf", token);
+
+    let token = await ensureDriveToken();
+    try {
+      await uploadFileToDrive(`${filenameBase}.pdf`, pdfBlob, "application/pdf", token);
+    } catch (err) {
+      if (!err.isAuthError) throw err;
+      setDriveAccessToken(""); // discard the stale token
+      token = await ensureDriveToken(true); // force a fresh one
+      await uploadFileToDrive(`${filenameBase}.pdf`, pdfBlob, "application/pdf", token); // retry once
+    }
     return { filenameBase };
   };
 
@@ -1347,18 +1488,10 @@ function JwyCalculatorApp() {
     }
   };
 
-  const doSyncToDb = async () => {
-    const filenameBase = quoteFilenameBase();
-    const pdfBlob = await generatePdfBlob("full");
-    const jsonBlob = buildSnapshotJsonBlob();
-    const pdfBase64 = await blobToBase64(pdfBlob);
-    const jsonText = await jsonBlob.text();
-
-    // Hard timeout -- this is the actual fallback data source for
-    // repopulating old quotes now that Print no longer bundles a JSON
-    // copy, so it must never be able to hang forever with the UI stuck
-    // on "Saving...". 30s is generous for a PDF+JSON upload even on a
-    // slow connection, but guarantees a definite outcome either way.
+  // The actual network call to save-quote.mjs -- pulled out on its own
+  // so it can be reused for both the initial attempt and a confirmed
+  // overwrite retry, without duplicating the timeout/error handling.
+  const postSaveQuote = async ({ filenameBase, pdfBase64, jsonText, overwrite }) => {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 30000);
 
@@ -1374,6 +1507,7 @@ function JwyCalculatorApp() {
           quoteStage,
           pdfBase64,
           jsonText,
+          overwrite,
         }),
         signal: controller.signal,
       });
@@ -1393,8 +1527,39 @@ function JwyCalculatorApp() {
       throw new Error(`Save function returned an unexpected response (status ${res.status})`);
     }
 
-    if (!res.ok) throw new Error(data.error || "Couldn't save to the database");
-    return data;
+    return { res, data };
+  };
+
+  const doSyncToDb = async () => {
+    const filenameBase = quoteFilenameBase();
+    const pdfBlob = await generatePdfBlob("full");
+    const jsonBlob = buildSnapshotJsonBlob();
+    const pdfBase64 = await blobToBase64(pdfBlob);
+    const jsonText = await jsonBlob.text();
+
+    const { res, data } = await postSaveQuote({ filenameBase, pdfBase64, jsonText, overwrite: false });
+
+    if (res.ok) return data;
+
+    // Real conflict, not just a generic failure -- ask, with the actual
+    // existing record's details, rather than silently blocking or
+    // silently overwriting.
+    if (res.status === 409 && data.conflict) {
+      const savedWhen = data.existing?.createdAt ? new Date(data.existing.createdAt).toLocaleString() : "an earlier time";
+      const confirmed = confirm(
+        `A quote already exists for Job ${jobInfo.jobNo} / Item ${jobInfo.itemNo} / ${quoteStage}, saved ${savedWhen}.\n\nOverwrite it with this version?`
+      );
+      if (!confirmed) throw new Error("Save cancelled -- existing quote was not changed.");
+
+      const retry = await postSaveQuote({ filenameBase, pdfBase64, jsonText, overwrite: true });
+      if (!retry.res.ok) throw new Error(retry.data.error || "Couldn't overwrite the existing quote");
+      return retry.data;
+    }
+
+    // Any other failure (500, network hiccup surfaced as a non-ok
+    // response, etc.) -- must throw, not silently return as if it
+    // succeeded.
+    throw new Error(data.error || `Couldn't save to the database (status ${res.status})`);
   };
 
   return (
@@ -1479,6 +1644,7 @@ function JwyCalculatorApp() {
           onEmail={doEmail}
           onSyncToDb={doSyncToDb}
           onExportGati={doExportGati}
+          onExportJobTracker={doExportJobTracker}
           onSaveToDrive={doSaveToDrive}
           quoteStage={quoteStage}
           setQuoteStage={setQuoteStage}
@@ -1501,10 +1667,23 @@ function JwyCalculatorApp() {
           manualPriceOverride={manualPriceOverride}
           setManualPriceOverride={setManualPriceOverride}
           hasOverride={hasOverride}
+          additionalChargeName={additionalChargeName}
+          setAdditionalChargeName={setAdditionalChargeName}
+          additionalChargeAmount={additionalChargeAmount}
+          setAdditionalChargeAmount={setAdditionalChargeAmount}
+          hasAdditionalCharge={hasAdditionalCharge}
+          additionalChargeUSD={additionalChargeUSD}
           effectiveTotalLocal={effectiveTotalLocal}
         />
 
         <RemarksCard jobInfo={jobInfo} setJobInfo={setJobInfo} />
+
+        <JobTrackerFieldsCard
+          jobTrackerFields={jobTrackerFields}
+          setJobTrackerFields={setJobTrackerFields}
+          jobInfo={jobInfo}
+          setJobInfo={setJobInfo}
+        />
       </div>
     </div>
   );
@@ -2283,6 +2462,7 @@ function QuotesToolbar({
   onEmail,
   onSyncToDb,
   onExportGati,
+  onExportJobTracker,
   onSaveToDrive,
   quoteStage,
   setQuoteStage,
@@ -2294,6 +2474,7 @@ function QuotesToolbar({
   const [emailStatus, setEmailStatus] = useState("");
   const [syncStatus, setSyncStatus] = useState("");
   const [gatiExportStatus, setGatiExportStatus] = useState("");
+  const [jobTrackerExportStatus, setJobTrackerExportStatus] = useState("");
   const [driveSaveStatus, setDriveSaveStatus] = useState("");
   const [emailOpen, setEmailOpen] = useState(false);
   const [printVariant, setPrintVariant] = useState("full");
@@ -2335,6 +2516,21 @@ function QuotesToolbar({
     }
   };
 
+  const exportJobTracker = async () => {
+    setJobTrackerExportStatus("exporting");
+    try {
+      const { embeddedCount, availableCount } = await onExportJobTracker();
+      setJobTrackerExportStatus(
+        availableCount === 0
+          ? "Downloaded -- no images uploaded"
+          : `Downloaded -- ${embeddedCount}/${Math.min(availableCount, 3)} image(s) embedded`
+      );
+      setTimeout(() => setJobTrackerExportStatus(""), 6000);
+    } catch (err) {
+      setJobTrackerExportStatus((err && err.message) || "Couldn't build the Job Tracker file");
+    }
+  };
+
   // One click, start to finish -- authorizes with Drive first if this
   // session hasn't yet, then uploads immediately, no separate "Connect"
   // step for the user to click through.
@@ -2352,207 +2548,205 @@ function QuotesToolbar({
   const Divider = () => <div style={styles.toolbarDivider} />;
 
   return (
-    <>
-      <div style={{ ...styles.card, display: "flex", alignItems: "center", gap: 10 }}>
+    <div style={styles.card}>
+      <div style={styles.toolbarRow}>
         <SectionLabel eyebrow="04" title="Quotes" noMargin />
-        <div style={styles.toolbarGroup}>
-          <span style={styles.toolbarGroupLabel}>Stage</span>
-          <input
-            style={{ ...styles.inputSm, width: 52, textAlign: "center", fontWeight: 600 }}
-            value={quoteStage}
-            onChange={(e) => setQuoteStage(e.target.value)}
-            placeholder="Q1"
-            title="Which round of quoting this is -- Q1, Q2, Revised, etc. Used in filenames and every save action below."
-          />
-        </div>
-      </div>
+        <input
+          style={{ ...styles.inputSm, width: 44, textAlign: "center", fontWeight: 600 }}
+          value={quoteStage}
+          onChange={(e) => setQuoteStage(e.target.value)}
+          placeholder="Q1"
+          title="Quote stage (Q1, Q2, Revised, etc.) -- used in filenames and every save action below."
+        />
 
-      <div style={styles.card}>
-        <span style={styles.panelTitle}>Print &amp; Preview</span>
-        <div style={{ ...styles.toolbarRow, marginTop: 8 }}>
-          <select
-            style={{ ...styles.inputSm, width: 108 }}
-            value={printVariant}
-            onChange={(e) => setPrintVariant(e.target.value)}
+        <Divider />
+
+        <select
+          style={{ ...styles.inputSm, width: 88 }}
+          value={printVariant}
+          onChange={(e) => setPrintVariant(e.target.value)}
+        >
+          <option value="full">Full price</option>
+          <option value="priceOnly">Price only</option>
+          <option value="noPrice">No price</option>
+        </select>
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 4, opacity: pdfGenerating ? 0.6 : 1 }}>
+          <button
+            style={styles.toggleBtnActive}
+            onClick={() => onPrint(printVariant)}
+            type="button"
+            disabled={!!pdfGenerating}
           >
-            <option value="full">Full price</option>
-            <option value="priceOnly">Price only</option>
-            <option value="noPrice">No price</option>
-          </select>
-          <div style={{ display: "inline-flex", alignItems: "center", gap: 4, opacity: pdfGenerating ? 0.6 : 1 }}>
-            <button
-              style={styles.toggleBtnActive}
-              onClick={() => onPrint(printVariant)}
-              type="button"
-              disabled={!!pdfGenerating}
-            >
-              {pdfGenerating === printVariant ? "Generating…" : "Download"}
-            </button>
-            <button
-              title="Preview without downloading"
-              style={{ ...styles.toggleBtnActive, padding: "7px 9px" }}
-              onClick={() => onPreview(printVariant)}
-              type="button"
-              disabled={!!pdfGenerating}
-            >
-              {pdfGenerating === printVariant + "-preview" ? "…" : "👁"}
-            </button>
-          </div>
+            {pdfGenerating === printVariant ? "Generating…" : "Download"}
+          </button>
+          <button
+            title="Preview without downloading"
+            style={{ ...styles.toggleBtnActive, padding: "7px 9px" }}
+            onClick={() => onPreview(printVariant)}
+            type="button"
+            disabled={!!pdfGenerating}
+          >
+            {pdfGenerating === printVariant + "-preview" ? "…" : "👁"}
+          </button>
         </div>
-      </div>
 
-      <div style={styles.card}>
-        <span style={styles.panelTitle}>Save &amp; Share</span>
-        <div style={{ ...styles.toolbarRow, marginTop: 8 }}>
-          <div style={styles.toolbarGroup}>
+        <Divider />
+
+        <button
+          style={{ ...styles.smallBtn, ...styles.smallBtnAccent, padding: "4px 7px" }}
+          type="button"
+          disabled={syncStatus === "syncing"}
+          onClick={syncToDb}
+        >
+          {syncStatus === "syncing" ? "Saving…" : "Sync to DB"}
+        </button>
+        {syncStatus === "synced" && <span style={styles.statusOk}>✓</span>}
+        {syncStatus && syncStatus !== "syncing" && syncStatus !== "synced" && (
+          <span style={styles.statusWarn} title={syncStatus}>
+            {syncStatus.length > 24 ? syncStatus.slice(0, 24) + "…" : syncStatus}
+          </span>
+        )}
+
+        <button
+          style={{ ...styles.smallBtn, ...styles.smallBtnAccent, padding: "4px 7px" }}
+          type="button"
+          disabled={driveSaveStatus === "saving"}
+          onClick={saveToDrive}
+        >
+          {driveSaveStatus === "saving" ? "Saving…" : "Save to Drive"}
+        </button>
+        {driveSaveStatus && driveSaveStatus !== "saving" && (
+          <span style={driveSaveStatus.startsWith("✓") ? styles.statusOk : styles.statusWarn} title={driveSaveStatus}>
+            {driveSaveStatus.startsWith("✓") ? "✓" : driveSaveStatus.slice(0, 24) + "…"}
+          </span>
+        )}
+
+        <button
+          style={{ ...styles.smallBtn, ...styles.smallBtnAccent, padding: "4px 7px" }}
+          type="button"
+          disabled={gatiExportStatus === "exporting"}
+          onClick={exportGati}
+        >
+          {gatiExportStatus === "exporting" ? "Building…" : "Export to GATI"}
+        </button>
+        {gatiExportStatus && gatiExportStatus !== "exporting" && (
+          <span style={gatiExportStatus.startsWith("Downloaded") ? styles.statusOk : styles.statusWarn} title={gatiExportStatus}>
+            {gatiExportStatus.startsWith("Downloaded -- no") ? "✓" : gatiExportStatus.slice(0, 24) + "…"}
+          </span>
+        )}
+
+        <button
+          style={{ ...styles.smallBtn, ...styles.smallBtnAccent, padding: "4px 7px" }}
+          type="button"
+          disabled={jobTrackerExportStatus === "exporting"}
+          onClick={exportJobTracker}
+        >
+          {jobTrackerExportStatus === "exporting" ? "Building…" : "Export to Job Tracker"}
+        </button>
+        {jobTrackerExportStatus && jobTrackerExportStatus !== "exporting" && (
+          <span
+            style={jobTrackerExportStatus.startsWith("Downloaded") ? styles.statusOk : styles.statusWarn}
+            title={jobTrackerExportStatus}
+          >
+            {jobTrackerExportStatus.startsWith("Downloaded") ? "✓" : jobTrackerExportStatus.slice(0, 24) + "…"}
+          </span>
+        )}
+
+        {!emailOpen ? (
+          <button style={{ ...styles.smallBtn, padding: "4px 7px" }} type="button" onClick={() => setEmailOpen(true)}>
+            ✉ Email
+          </button>
+        ) : (
+          <>
+            <input
+              type="email"
+              autoFocus
+              style={{ ...styles.inputSm, width: 140 }}
+              placeholder="Recipient email"
+              value={emailTo}
+              onChange={(e) => setEmailTo(e.target.value)}
+            />
+            <select style={{ ...styles.inputSm, width: 92 }} value={emailVariant} onChange={(e) => setEmailVariant(e.target.value)}>
+              <option value="full">Full price</option>
+              <option value="priceOnly">Price only</option>
+              <option value="noPrice">No price</option>
+            </select>
             <button
-              style={{ ...styles.smallBtn, ...styles.smallBtnAccent }}
+              style={{ ...styles.smallBtn, ...styles.smallBtnAccent, padding: "4px 7px" }}
               type="button"
-              disabled={syncStatus === "syncing"}
-              onClick={syncToDb}
+              disabled={!emailTo.trim() || emailStatus === "sending"}
+              onClick={sendEmail}
             >
-              {syncStatus === "syncing" ? "Saving…" : "Sync to DB"}
+              {emailStatus === "sending" ? "Sending…" : "Send"}
             </button>
-            {syncStatus === "synced" && <span style={styles.statusOk}>✓ Saved</span>}
-            {syncStatus && syncStatus !== "syncing" && syncStatus !== "synced" && (
-              <span style={styles.statusWarn} title={syncStatus}>
-                {syncStatus.length > 40 ? syncStatus.slice(0, 40) + "…" : syncStatus}
-              </span>
-            )}
-          </div>
-
-          <Divider />
-
-          <div style={styles.toolbarGroup}>
             <button
-              style={{ ...styles.smallBtn, ...styles.smallBtnAccent }}
+              style={{ ...styles.smallBtn, background: "none" }}
               type="button"
-              disabled={driveSaveStatus === "saving"}
-              onClick={saveToDrive}
+              onClick={() => {
+                setEmailOpen(false);
+                setEmailStatus("");
+              }}
             >
-              {driveSaveStatus === "saving" ? "Saving…" : "Save to Drive"}
+              ×
             </button>
-            {driveSaveStatus && driveSaveStatus !== "saving" && (
-              <span style={driveSaveStatus.startsWith("✓") ? styles.statusOk : styles.statusWarn} title={driveSaveStatus}>
-                {driveSaveStatus.length > 40 ? driveSaveStatus.slice(0, 40) + "…" : driveSaveStatus}
-              </span>
+            {emailStatus === "sent" && <span style={styles.statusOk}>✓</span>}
+            {emailStatus && emailStatus !== "sending" && emailStatus !== "sent" && (
+              <span style={styles.statusWarn}>{emailStatus}</span>
             )}
-          </div>
+          </>
+        )}
 
-          <Divider />
-
-          <div style={styles.toolbarGroup}>
-            <button
-              style={{ ...styles.smallBtn, ...styles.smallBtnAccent }}
-              type="button"
-              disabled={gatiExportStatus === "exporting"}
-              onClick={exportGati}
-            >
-              {gatiExportStatus === "exporting" ? "Building…" : "Export to GATI"}
+        {/* Local quotes (this-device save/load/delete) -- stripped from
+            the UI per request, but left fully intact below as a fallback.
+            Flip SHOW_LOCAL_QUOTES to true to bring it straight back,
+            no rebuild needed. */}
+        {SHOW_LOCAL_QUOTES && (
+          <div style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6 }}>
+            <button style={styles.smallBtn} type="button" onClick={() => setLocalOpen((v) => !v)}>
+              {localOpen ? "Hide local quotes" : "Local quotes"}
             </button>
-            {gatiExportStatus && gatiExportStatus !== "exporting" && (
-              <span style={gatiExportStatus.startsWith("Downloaded") ? styles.statusOk : styles.statusWarn} title={gatiExportStatus}>
-                {gatiExportStatus.length > 50 ? gatiExportStatus.slice(0, 50) + "…" : gatiExportStatus}
-              </span>
-            )}
-          </div>
-
-          <Divider />
-
-          <div style={styles.toolbarGroup}>
-            {!emailOpen ? (
-              <button style={styles.smallBtn} type="button" onClick={() => setEmailOpen(true)}>
-                ✉ Email quote
-              </button>
-            ) : (
+            {localOpen && (
               <>
-                <input
-                  type="email"
-                  autoFocus
-                  style={{ ...styles.inputSm, width: 150 }}
-                  placeholder="Recipient email"
-                  value={emailTo}
-                  onChange={(e) => setEmailTo(e.target.value)}
-                />
-                <select style={{ ...styles.inputSm, width: 96 }} value={emailVariant} onChange={(e) => setEmailVariant(e.target.value)}>
-                  <option value="full">Full price</option>
-                  <option value="priceOnly">Price only</option>
-                  <option value="noPrice">No price</option>
-                </select>
-                <button
-                  style={{ ...styles.smallBtn, ...styles.smallBtnAccent }}
-                  type="button"
-                  disabled={!emailTo.trim() || emailStatus === "sending"}
-                  onClick={sendEmail}
+                <button style={styles.smallBtn} onClick={onSave} type="button">
+                  Save
+                </button>
+                <select
+                  style={{ ...styles.inputSm, minWidth: 130, maxWidth: 130 }}
+                  value={selected}
+                  onChange={(e) => setSelected(e.target.value)}
                 >
-                  {emailStatus === "sending" ? "Sending…" : "Send"}
+                  <option value="">Saved quotes…</option>
+                  {savedQuotes.map((q) => (
+                    <option key={q.id} value={q.id}>
+                      {q.label}
+                    </option>
+                  ))}
+                </select>
+                <button style={styles.smallBtn} type="button" disabled={!selected} onClick={() => selected && onLoad(Number(selected))}>
+                  Load
                 </button>
                 <button
-                  style={{ ...styles.smallBtn, background: "none" }}
+                  style={{ ...styles.smallBtn, ...styles.smallBtnDanger }}
                   type="button"
+                  disabled={!selected}
                   onClick={() => {
-                    setEmailOpen(false);
-                    setEmailStatus("");
+                    if (selected) {
+                      onDelete(Number(selected));
+                      setSelected("");
+                    }
                   }}
                 >
-                  ×
+                  Delete
                 </button>
-                {emailStatus === "sent" && <span style={styles.statusOk}>✓ Sent</span>}
-                {emailStatus && emailStatus !== "sending" && emailStatus !== "sent" && (
-                  <span style={styles.statusWarn}>{emailStatus}</span>
-                )}
               </>
             )}
           </div>
-        </div>
-      </div>
-
-      <div style={styles.card}>
-        <div style={styles.rowBetween}>
-          <span style={styles.panelTitle}>Local quotes (this device)</span>
-          <button style={styles.smallBtn} type="button" onClick={() => setLocalOpen((v) => !v)}>
-            {localOpen ? "Hide" : "Show"}
-          </button>
-        </div>
-        {localOpen && (
-          <div style={{ ...styles.toolbarRow, marginTop: 8 }}>
-            <button style={styles.smallBtn} onClick={onSave} type="button">
-              Save
-            </button>
-            <select
-              style={{ ...styles.inputSm, minWidth: 150, maxWidth: 150 }}
-              value={selected}
-              onChange={(e) => setSelected(e.target.value)}
-            >
-              <option value="">Saved quotes…</option>
-              {savedQuotes.map((q) => (
-                <option key={q.id} value={q.id}>
-                  {q.label}
-                </option>
-              ))}
-            </select>
-            <button style={styles.smallBtn} type="button" disabled={!selected} onClick={() => selected && onLoad(Number(selected))}>
-              Load
-            </button>
-            <button
-              style={{ ...styles.smallBtn, ...styles.smallBtnDanger }}
-              type="button"
-              disabled={!selected}
-              onClick={() => {
-                if (selected) {
-                  onDelete(Number(selected));
-                  setSelected("");
-                }
-              }}
-            >
-              Delete
-            </button>
-          </div>
         )}
       </div>
-    </>
+    </div>
   );
 }
+
 
 function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow }) {
   return (
@@ -2829,6 +3023,12 @@ function BreakupSummary({
   manualPriceOverride,
   setManualPriceOverride,
   hasOverride,
+  additionalChargeName,
+  setAdditionalChargeName,
+  additionalChargeAmount,
+  setAdditionalChargeAmount,
+  hasAdditionalCharge,
+  additionalChargeUSD,
   effectiveTotalLocal,
 }) {
   const items = [
@@ -2837,6 +3037,7 @@ function BreakupSummary({
     { label: `CAD · ${cadType}`, value: cadFee },
     { label: "Diamonds", value: diamondTotal },
     { label: "Setting", value: settingTotal },
+    ...(hasAdditionalCharge ? [{ label: additionalChargeName || "Additional charge", value: additionalChargeUSD }] : []),
   ];
   return (
     <div style={styles.card}>
@@ -2853,7 +3054,7 @@ function BreakupSummary({
       </div>
       <div style={styles.divider} />
 
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
         <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 600 }}>
           Override final price ({locInfo.currency})
         </span>
@@ -2872,6 +3073,37 @@ function BreakupSummary({
             style={{ ...styles.smallBtn, background: "none" }}
           >
             Clear override
+          </button>
+        )}
+
+        <div style={{ width: 1, alignSelf: "stretch", background: ROSE_TINT_STRONG, margin: "0 4px" }} />
+
+        <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 600 }}>Additional charges</span>
+        <input
+          type="text"
+          placeholder="e.g. Rush fee"
+          value={additionalChargeName}
+          onChange={(e) => setAdditionalChargeName(e.target.value)}
+          style={{ ...styles.inputSm, width: 130 }}
+        />
+        <input
+          type="number"
+          step="1"
+          placeholder="0.00 USD"
+          value={additionalChargeAmount}
+          onChange={(e) => setAdditionalChargeAmount(e.target.value)}
+          style={{ ...styles.inputSm, width: 100 }}
+        />
+        {hasAdditionalCharge && (
+          <button
+            type="button"
+            onClick={() => {
+              setAdditionalChargeName("");
+              setAdditionalChargeAmount("");
+            }}
+            style={{ ...styles.smallBtn, background: "none" }}
+          >
+            Clear
           </button>
         )}
       </div>
@@ -2912,6 +3144,84 @@ function RemarksCard({ jobInfo, setJobInfo }) {
         value={jobInfo.remarks}
         onChange={(e) => setJobInfo({ ...jobInfo, remarks: e.target.value })}
       />
+    </div>
+  );
+}
+
+// Manual entry for the Job Tracker export columns the Calculator has no
+// source for at all -- no quote data, no CAD Order Form field (see
+// JOB_TRACKER_PENDING_ITEMS in jobTrackerExport.js). Collapsed by
+// default since most people quoting a job don't need it open; it only
+// matters right before an "Export to Job Tracker" click.
+function JobTrackerFieldsCard({ jobTrackerFields, setJobTrackerFields, jobInfo, setJobInfo }) {
+  const [open, setOpen] = useState(false);
+  const filledCount = Object.values(jobTrackerFields).filter(Boolean).length + (jobInfo.rhodium ? 1 : 0);
+  const setField = (key, value) => setJobTrackerFields((prev) => ({ ...prev, [key]: value }));
+  const groups = [...new Set(JOB_TRACKER_MANUAL_FIELDS.map((f) => f.group))];
+
+  return (
+    <div style={styles.card}>
+      <div
+        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer" }}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <SectionLabel eyebrow="07" title="Job Tracker details" noMargin />
+        <span style={{ fontSize: 12, color: MUTED }}>
+          {filledCount > 0 ? `${filledCount} filled` : "optional"} {open ? "▾" : "▸"}
+        </span>
+      </div>
+      {open && (
+        <div style={{ marginTop: 12 }}>
+          <p style={{ fontSize: 12, color: MUTED, marginTop: 0, marginBottom: 12 }}>
+            None of these come from the quote or a CAD Order Form import -- fill in whatever's already known and it
+            flows straight into "Export to Job Tracker" instead of a blank cell.
+          </p>
+
+          <div style={{ marginBottom: 14, maxWidth: 200 }}>
+            <Field label="Rhodium">
+              <select
+                style={{ ...styles.inputSm, width: "100%" }}
+                value={jobInfo.rhodium || ""}
+                onChange={(e) => setJobInfo({ ...jobInfo, rhodium: e.target.value })}
+              >
+                <option value="">— not set —</option>
+                <option value="Yes">Yes</option>
+                <option value="No">No</option>
+                <option value="N/A">N/A</option>
+              </select>
+            </Field>
+          </div>
+
+          {groups.map((group) => (
+            <div key={group} style={{ marginBottom: 14 }}>
+              <div
+                style={{
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: MUTED,
+                  textTransform: "uppercase",
+                  letterSpacing: 0.4,
+                  marginBottom: 6,
+                }}
+              >
+                {group}
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8 }}>
+                {JOB_TRACKER_MANUAL_FIELDS.filter((f) => f.group === group).map((f) => (
+                  <Field key={f.key} label={f.label}>
+                    <input
+                      style={{ ...styles.inputSm, width: "100%" }}
+                      value={jobTrackerFields[f.key] || ""}
+                      onChange={(e) => setField(f.key, e.target.value)}
+                      placeholder={f.label}
+                    />
+                  </Field>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -3067,8 +3377,8 @@ const styles = {
     display: "flex",
     alignItems: "center",
     flexWrap: "wrap",
-    rowGap: 8,
-    columnGap: 10,
+    rowGap: 6,
+    columnGap: 6,
   },
   toolbarGroup: {
     display: "flex",
@@ -3204,7 +3514,7 @@ const styles = {
     fontWeight: 500,
   },
   toggleBtnActive: { background: ROSE, color: "#fff", borderColor: ROSE },
-  breakupGrid: { display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 6 },
+  breakupGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 6 },
   metricCard: {
     position: "relative",
     background: ROSE_TINT,
