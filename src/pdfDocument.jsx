@@ -190,6 +190,9 @@ export function QuotePdfDocument({
   turntableLink,
   quoteStage,
   hasOverride,
+  additionalChargeName,
+  hasAdditionalCharge,
+  additionalChargeUSD,
   effectiveTotalLocal,
   logoBlack,
   printDate,
@@ -352,6 +355,14 @@ export function QuotePdfDocument({
                 <Text style={s.totalsValue}>{fmtC(totals.settingTotal)}</Text>
               </View>
             </View>
+            {hasAdditionalCharge && (
+              <View style={s.totalsRow}>
+                <View style={s.totalsLine}>
+                  <Text style={s.totalsLabel}>{additionalChargeName || "Additional charge"}</Text>
+                  <Text style={s.totalsValue}>{fmtC(additionalChargeUSD)}</Text>
+                </View>
+              </View>
+            )}
             <View style={s.totalsRow}>
               <View style={s.totalsLine}>
                 <Text style={s.totalsLabel}>With {(locInfo.duty * 100).toFixed(0)}% duty (USD)</Text>
@@ -381,6 +392,11 @@ export function QuotePdfDocument({
           <View style={s.bigPriceBlock} wrap={false}>
             <Text style={s.bigPriceLabel}>Total ({locInfo.currency})</Text>
             <Text style={s.bigPriceValue}>{fmtL(effectiveTotalLocal, locInfo.currency)}</Text>
+            {hasAdditionalCharge && (
+              <Text style={{ fontSize: 8, color: MUTED, marginTop: 4 }}>
+                Includes {additionalChargeName || "an additional charge"}
+              </Text>
+            )}
           </View>
         ) : null}
         {/* variant === "noPrice" -- no price block rendered at all */}
