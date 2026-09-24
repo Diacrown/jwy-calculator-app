@@ -74,15 +74,23 @@ function bridgeStone(stone, diaSize) {
   const stoneTypeRaw = (stone.Stone || "").trim();
   const stoneTypeUpper = stoneTypeRaw.toUpperCase();
   const avgWt = num(stone.AvgWt);
-  // The form signals "this row was manually entered, not picked from the
-  // size dropdown" two different ways depending on context: Mode="custom"
-  // at the row level, or SizeIdx="custom" specifically on the size field
-  // (seen on center stones the designer types a carat weight for directly,
-  // e.g. a 1ct+ center stone that's nowhere near melee/catalog range).
-  // Either one means: don't try to catalog-match this row.
-  const isExplicitCustom =
-    (stone.Mode || "").toLowerCase() === "custom" ||
-    (stone.SizeIdx || "").toLowerCase() === "custom";
+  // Mode="custom" at the row level is the form's unconditional "don't
+  // even try to catalog-match this" signal -- always respected, no
+  // exceptions (e.g. a genuine free-text stone type like CZ/Zircon).
+  //
+  // SizeIdx="custom" is a weaker signal: it just means the designer
+  // typed a weight into the size field instead of picking from the
+  // form's size dropdown (common for a large center stone that's
+  // nowhere near melee/catalog range). It does NOT by itself mean the
+  // row should skip catalog matching -- the typed weight can still
+  // happen to land exactly on a real catalog size (e.g. a shank melee
+  // stone typed as "0.017" instead of picked as "1.6mm", which is the
+  // same size). So SizeIdx="custom" lets matching be attempted as
+  // normal, and only falls back to a true custom row via each branch's
+  // own no-close-match handling below -- same outcome a real oversized
+  // center stone already gets today, just reached honestly instead of
+  // skipped straight to.
+  const modeIsCustom = (stone.Mode || "").toLowerCase() === "custom";
   const isPureMined = stoneTypeUpper === "MINED";
   // The CAD form's Stone dropdown wording has changed over time -- older
   // exports use the abbreviation "LGD", newer ones spell out "Lab grown".
@@ -116,7 +124,7 @@ function bridgeStone(stone, diaSize) {
     return best;
   };
 
-  if (!isExplicitCustom && isPureMined && isRound) {
+  if (!modeIsCustom && isPureMined && isRound) {
     const best = nearestByShape("Round");
     return {
       diamondMode: "natural",
@@ -130,7 +138,7 @@ function bridgeStone(stone, diaSize) {
     };
   }
 
-  if (!isExplicitCustom && isPureLGD) {
+  if (!modeIsCustom && isPureLGD) {
     if (isRound) {
       const best = nearestByShape("Round");
       if (best) {
@@ -188,7 +196,7 @@ function bridgeStone(stone, diaSize) {
     };
   }
 
-  if (!isExplicitCustom && isPureMined) {
+  if (!modeIsCustom && isPureMined) {
     // Mined but fancy-shaped: no DiaSSP price for fancy naturals. Try to
     // match the shape+weight against the full catalog anyway, so the row
     // gets a real Select Size entry (dims, canonical weight) with an
@@ -222,7 +230,7 @@ function bridgeStone(stone, diaSize) {
   // preserved as natural vs lgd based on the card's own Stone field, so
   // an imported custom LGD stone doesn't default to the wrong toggle.
   let flag;
-  if (isExplicitCustom) {
+  if (modeIsCustom) {
     flag = "custom row from form — enter $/ct manually";
   } else if (!stoneTypeRaw) {
     flag = "no stone type specified — enter $/ct manually";
@@ -355,4 +363,3 @@ export function parseOrderFormJson(input, { alloys = [], diaSize = [] } = {}) {
   }
   return { ok: true, data: mapFormDataToCalculator(data, { alloys, diaSize }) };
 }
-
