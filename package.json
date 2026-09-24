@@ -12,6 +12,7 @@
     "@netlify/blobs": "^10.7.9",
     "@netlify/neon": "^0.1.2",
     "@react-pdf/renderer": "^3.4.4",
+    "exceljs": "^4.4.0",
     "jszip": "^3.10.1",
     "nodemailer": "^9.0.3",
     "react": "^18.3.1",
