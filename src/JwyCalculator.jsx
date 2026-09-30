@@ -1334,7 +1334,7 @@ function JwyCalculatorApp() {
     <div style="color: #D8B7C2; font-size: 11px;">Fine Jewelry Manufacturing</div>
   </div>
   <div style="padding: 28px 24px;">
-    <p style="font-size: 14px; line-height: 1.6;">Dear ${greetingName},</p>
+    <p style="font-size: 14px; line-height: 1.6;">Dear ${escapeHtml(greetingName)},</p>
     <p style="font-size: 14px; line-height: 1.6;">
       Thank you for the opportunity to quote your piece. Please find your quotation attached as a PDF.
     </p>
@@ -1342,7 +1342,7 @@ function JwyCalculatorApp() {
       refLine
         ? `<div style="background: #FBEEF2; border-radius: 6px; padding: 14px 16px; margin: 20px 0; font-size: 13px;">
       <div style="color: #6E2F42; font-weight: 700; text-transform: uppercase; font-size: 10px; letter-spacing: 0.5px; margin-bottom: 6px;">Job Reference</div>
-      <div>${refLine}</div>
+      <div>${escapeHtml(refLine)}</div>
     </div>`
         : ""
     }
@@ -1899,6 +1899,16 @@ function fileToDataUrl(file, maxDim = 1600, quality = 0.82) {
     };
     reader.readAsDataURL(file);
   });
+}
+
+// Escapes text for safe interpolation into the email HTML body.
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function blobToBase64(blob) {
