@@ -1,1 +1,7 @@
-const GATE_PASSWORD = "Admin@1234";
+/*
+  X-Robots-Tag: noindex, nofollow
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+
+/.netlify/functions/*
+  Cache-Control: no-store
