@@ -12,6 +12,16 @@ import { getStore } from "@netlify/blobs";
 // specific error rather than silently creating a duplicate or
 // overwriting the existing record -- the user is expected to bump the
 // Quote Stage (Q1 -> Q2) before saving again.
+// filenameBase becomes part of a blob key, so sanity-check it. Slashes and
+// spaces are deliberately allowed (existing saved quotes may use them).
+function filenameBaseProblem(v) {
+  if (typeof v !== "string") return "filenameBase must be a string";
+  if (v.length < 1 || v.length > 200) return "filenameBase must be between 1 and 200 characters";
+  if (/\p{Cc}/u.test(v)) return "filenameBase must not contain control characters";
+  if (v.split(/[\\/]/).includes("..")) return "filenameBase must not contain a '..' path segment";
+  return null;
+}
+
 export default async (req) => {
   if (req.method !== "POST") {
     return new Response("Method not allowed", { status: 405 });
@@ -23,6 +33,14 @@ export default async (req) => {
 
     if (!filenameBase || !pdfBase64 || !jsonText) {
       return new Response(JSON.stringify({ error: "Missing required fields" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    const nameProblem = filenameBaseProblem(filenameBase);
+    if (nameProblem) {
+      return new Response(JSON.stringify({ error: nameProblem }), {
         status: 400,
         headers: { "Content-Type": "application/json" },
       });
