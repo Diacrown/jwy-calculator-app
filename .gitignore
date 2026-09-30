@@ -4,3 +4,6 @@ dist
 *.local
 .vercel
 npm-debug.log*
+.env
+.env.*
+.netlify
