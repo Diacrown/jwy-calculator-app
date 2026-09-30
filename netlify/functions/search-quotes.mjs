@@ -15,7 +15,11 @@ export default async (req) => {
 
   try {
     const sql = neon();
-    const pattern = `%${q}%`;
+    // Escape LIKE wildcards (and the escape character itself) so the user's
+    // text is matched literally. Postgres ILIKE uses backslash as its
+    // default escape character, so no ESCAPE clause is needed.
+    const escaped = q.replace(/[\\%_]/g, "\\$&");
+    const pattern = `%${escaped}%`;
     const rows = await sql`
       SELECT id, job_no, item_no, quote_stage, filename_base, created_at
       FROM quotes
