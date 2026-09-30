@@ -84,6 +84,7 @@ export default async () => {
     });
   } catch (err) {
     // Live fetch failed -- fall back to last known good.
+    console.error("metal-rates: live fetch failed:", err);
     try {
       const cached = await store.get("latest", { type: "json" });
       if (cached) {
@@ -91,14 +92,14 @@ export default async () => {
           JSON.stringify({
             ...cached,
             source: "cache",
-            warning: `Live fetch failed (${err.message}) -- serving last cached rates from ${cached.fetchedAt}`,
+            warning: `Live fetch failed -- serving last cached rates from ${cached.fetchedAt}`,
           }),
           { status: 200, headers: { "Content-Type": "application/json" } }
         );
       }
     } catch {}
     return new Response(
-      JSON.stringify({ error: `Live fetch failed and no cached data exists: ${err.message}` }),
+      JSON.stringify({ error: "Something went wrong. Please try again." }),
       { status: 500, headers: { "Content-Type": "application/json" } }
     );
   }

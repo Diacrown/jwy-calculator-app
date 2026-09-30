@@ -32,7 +32,8 @@ export default async (req) => {
       headers: { "Content-Type": "application/json" },
     });
   } catch (err) {
-    return new Response(JSON.stringify({ error: err.message || String(err) }), {
+    console.error("search-quotes failed:", err);
+    return new Response(JSON.stringify({ error: "Something went wrong. Please try again." }), {
       status: 500,
       headers: { "Content-Type": "application/json" },
     });

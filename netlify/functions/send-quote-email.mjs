@@ -50,7 +50,8 @@ export default async (req) => {
     });
 
     if (error) {
-      return new Response(JSON.stringify({ error: error.message || String(error) }), {
+      console.error("send-quote-email: Resend returned an error:", error);
+      return new Response(JSON.stringify({ error: "Something went wrong. Please try again." }), {
         status: 500,
         headers: { "Content-Type": "application/json" },
       });
@@ -61,7 +62,8 @@ export default async (req) => {
       headers: { "Content-Type": "application/json" },
     });
   } catch (err) {
-    return new Response(JSON.stringify({ error: err.message || String(err) }), {
+    console.error("send-quote-email failed:", err);
+    return new Response(JSON.stringify({ error: "Something went wrong. Please try again." }), {
       status: 500,
       headers: { "Content-Type": "application/json" },
     });
