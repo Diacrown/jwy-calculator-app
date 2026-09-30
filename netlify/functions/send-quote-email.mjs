@@ -50,8 +50,9 @@ export default async (req) => {
     });
 
     if (error) {
+      // Resend's own reason (bad recipient, unverified domain, ...) is what staff need to see; it holds nothing sensitive.
       console.error("send-quote-email: Resend returned an error:", error);
-      return new Response(JSON.stringify({ error: "Something went wrong. Please try again." }), {
+      return new Response(JSON.stringify({ error: error.message || String(error) }), {
         status: 500,
         headers: { "Content-Type": "application/json" },
       });
@@ -63,7 +64,7 @@ export default async (req) => {
     });
   } catch (err) {
     console.error("send-quote-email failed:", err);
-    return new Response(JSON.stringify({ error: "Something went wrong. Please try again." }), {
+    return new Response(JSON.stringify({ error: "Server error, try again." }), {
       status: 500,
       headers: { "Content-Type": "application/json" },
     });

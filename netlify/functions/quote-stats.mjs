@@ -31,7 +31,7 @@ export default async () => {
     );
   } catch (err) {
     console.error("quote-stats failed:", err);
-    return new Response(JSON.stringify({ error: "Something went wrong. Please try again." }), {
+    return new Response(JSON.stringify({ error: "Server error, try again." }), {
       status: 500,
       headers: { "Content-Type": "application/json" },
     });

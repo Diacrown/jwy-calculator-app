@@ -99,7 +99,7 @@ export default async () => {
       }
     } catch {}
     return new Response(
-      JSON.stringify({ error: "Something went wrong. Please try again." }),
+      JSON.stringify({ error: "Server error, try again." }),
       { status: 500, headers: { "Content-Type": "application/json" } }
     );
   }
