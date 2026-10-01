@@ -68,21 +68,49 @@ function num(v, d = 0) {
 // pricing data for them yet, with the real stone type preserved in the
 // flag so it's clear what it actually is. Rows the form itself marked
 // Mode: "custom" are always treated as custom, no exceptions.
+// Exact-match only -- never a substring check. "Round" is a real, distinct
+// shape in its own right, but plenty of legitimate CAD-form shape values
+// merely CONTAIN the word "round" without being round at all -- "Round
+// Baguette" (a real, commonly used trade name for a baguette with rounded
+// corners) is the one that actually bit us: shapeRaw.includes("round")
+// used to return true for it, which forced the row into the Round-only
+// branch below and silently snapped it to the nearest ROUND catalog entry
+// by weight, discarding the real Baguette shape entirely (e.g. a 0.07ct
+// Baguette importing as a 0.07ct Round). The fix is to take the shape
+// value exactly as the CAD Order Form sent it -- hardcoded against a
+// finite list of known "this literally means Round" spellings -- rather
+// than inferring it from a substring match. Add another literal spelling
+// here if the form ever sends a new one; never widen this back to .includes().
+const ROUND_SHAPE_VALUES = new Set([
+  "round", "rnd", "rd", "round brilliant", "brilliant round", "brilliant",
+]);
+function isExactlyRoundShape(shapeRaw) {
+  return ROUND_SHAPE_VALUES.has((shapeRaw || "").toLowerCase().trim());
+}
+
 function bridgeStone(stone, diaSize) {
   const shapeRaw = (stone.Shape || "").toLowerCase();
-  const isRound = shapeRaw.includes("round") || shapeRaw === "rnd";
+  const isRound = isExactlyRoundShape(shapeRaw);
   const stoneTypeRaw = (stone.Stone || "").trim();
   const stoneTypeUpper = stoneTypeRaw.toUpperCase();
   const avgWt = num(stone.AvgWt);
-  // The form signals "this row was manually entered, not picked from the
-  // size dropdown" two different ways depending on context: Mode="custom"
-  // at the row level, or SizeIdx="custom" specifically on the size field
-  // (seen on center stones the designer types a carat weight for directly,
-  // e.g. a 1ct+ center stone that's nowhere near melee/catalog range).
-  // Either one means: don't try to catalog-match this row.
-  const isExplicitCustom =
-    (stone.Mode || "").toLowerCase() === "custom" ||
-    (stone.SizeIdx || "").toLowerCase() === "custom";
+  // Mode="custom" at the row level is the form's unconditional "don't
+  // even try to catalog-match this" signal -- always respected, no
+  // exceptions (e.g. a genuine free-text stone type like CZ/Zircon).
+  //
+  // SizeIdx="custom" is a weaker signal: it just means the designer
+  // typed a weight into the size field instead of picking from the
+  // form's size dropdown (common for a large center stone that's
+  // nowhere near melee/catalog range). It does NOT by itself mean the
+  // row should skip catalog matching -- the typed weight can still
+  // happen to land exactly on a real catalog size (e.g. a shank melee
+  // stone typed as "0.017" instead of picked as "1.6mm", which is the
+  // same size). So SizeIdx="custom" lets matching be attempted as
+  // normal, and only falls back to a true custom row via each branch's
+  // own no-close-match handling below -- same outcome a real oversized
+  // center stone already gets today, just reached honestly instead of
+  // skipped straight to.
+  const modeIsCustom = (stone.Mode || "").toLowerCase() === "custom";
   const isPureMined = stoneTypeUpper === "MINED";
   // The CAD form's Stone dropdown wording has changed over time -- older
   // exports use the abbreviation "LGD", newer ones spell out "Lab grown".
@@ -116,7 +144,7 @@ function bridgeStone(stone, diaSize) {
     return best;
   };
 
-  if (!isExplicitCustom && isPureMined && isRound) {
+  if (!modeIsCustom && isPureMined && isRound) {
     const best = nearestByShape("Round");
     return {
       diamondMode: "natural",
@@ -130,7 +158,7 @@ function bridgeStone(stone, diaSize) {
     };
   }
 
-  if (!isExplicitCustom && isPureLGD) {
+  if (!modeIsCustom && isPureLGD) {
     if (isRound) {
       const best = nearestByShape("Round");
       if (best) {
@@ -188,7 +216,7 @@ function bridgeStone(stone, diaSize) {
     };
   }
 
-  if (!isExplicitCustom && isPureMined) {
+  if (!modeIsCustom && isPureMined) {
     // Mined but fancy-shaped: no DiaSSP price for fancy naturals. Try to
     // match the shape+weight against the full catalog anyway, so the row
     // gets a real Select Size entry (dims, canonical weight) with an
@@ -222,7 +250,7 @@ function bridgeStone(stone, diaSize) {
   // preserved as natural vs lgd based on the card's own Stone field, so
   // an imported custom LGD stone doesn't default to the wrong toggle.
   let flag;
-  if (isExplicitCustom) {
+  if (modeIsCustom) {
     flag = "custom row from form — enter $/ct manually";
   } else if (!stoneTypeRaw) {
     flag = "no stone type specified — enter $/ct manually";
