@@ -6,6 +6,16 @@ import { pdf } from "@react-pdf/renderer";
 import * as XLSX from "xlsx";
 import { QuotePdfDocument } from "./pdfDocument.jsx";
 import { mapQuoteToGatiRows } from "./gatiExport.js";
+import {
+  mapQuoteToJobTrackerRow,
+  JOB_TRACKER_COLUMNS,
+  JOB_TRACKER_IMAGE_COLUMNS,
+  JOB_TRACKER_MANUAL_FIELDS,
+  JOB_TRACKER_DROPDOWN_OPTIONS,
+  EMPTY_JOB_TRACKER_MANUAL_FIELDS,
+  pickJobTrackerImages,
+  dataUrlImageExtension,
+} from "./jobTrackerExport.js";
 
 // Local Quotes (this-device save/load/delete via localStorage) is
 // stripped from the UI per request, since Sync to DB + cloud search
@@ -543,7 +553,7 @@ const roundUp5 = (n) => (isFinite(n) ? Math.ceil(n / 5) * 5 : 0);
 const roundUpMetalWt = (n) => (isFinite(n) ? Math.round(Math.ceil(n / 0.05) * 0.05 * 100) / 100 : n);
 
 function emptyRow() {
-  return { mode: "natural", stoneTypeSel: "Mined", shapeSel: "", sizeCode: "", quality: "TW SI1", lgdGrade: "Non-cert", lgdShape: "RND", pcs: "", customShape: "", customWt: "", customRate: "", manualRate: "", proposedQuality: "" };
+  return { mode: "natural", stoneTypeSel: "Mined", shapeSel: "", sizeCode: "", quality: "TW SI1", lgdGrade: "Non-cert", lgdShape: "RND", pcs: "", customShape: "", customSizeText: "", customWt: "", customRate: "", manualRate: "", proposedQuality: "", setting: "", source: "" };
 }
 
 
@@ -590,6 +600,7 @@ function JwyCalculatorApp() {
     remarks: "",
     itemType: "",
     subCategory: "",
+    rhodium: "",
   });
   const [location, setLocation] = useState("WSSY");
   const [quoteStage, setQuoteStage] = useState("Q1");
@@ -597,6 +608,7 @@ function JwyCalculatorApp() {
   const [manualPriceOverride, setManualPriceOverride] = useState("");
   const [additionalChargeName, setAdditionalChargeName] = useState("");
   const [additionalChargeAmount, setAdditionalChargeAmount] = useState("");
+  const [jobTrackerFields, setJobTrackerFields] = useState(EMPTY_JOB_TRACKER_MANUAL_FIELDS);
   const [primaryAlloyShort, setPrimaryAlloyShort] = useState("");
   const [primaryGramWt, setPrimaryGramWt] = useState("");
   const [secondaryAlloyShort, setSecondaryAlloyShort] = useState("");
@@ -647,8 +659,10 @@ function JwyCalculatorApp() {
     setRateLoading(true);
     try {
       const { data, errors } = await fetchLiveSheetData();
+      const sheetHasMetalRates = data.metalRates && Object.keys(data.metalRates).length > 0;
+
       setLiveData((prev) => ({
-        metalRates: data.metalRates && Object.keys(data.metalRates).length ? data.metalRates : prev.metalRates,
+        metalRates: sheetHasMetalRates ? data.metalRates : prev.metalRates,
         alloys: data.alloys && data.alloys.length ? data.alloys : prev.alloys,
         currencyRates:
           data.currencyRates && Object.keys(data.currencyRates.rates || {}).length
@@ -664,7 +678,7 @@ function JwyCalculatorApp() {
         labGrownPrices: data.labGrownPrices && data.labGrownPrices.length ? data.labGrownPrices : prev.labGrownPrices,
       }));
       setTableSources({
-        metalRates: data.metalRates ? "live" : "sample",
+        metalRates: sheetHasMetalRates ? "live" : "sample",
         alloys: data.alloys ? "live" : "sample",
         currencyRates: data.currencyRates ? "live" : "sample",
         locations: data.locations ? "live" : "sample",
@@ -675,37 +689,42 @@ function JwyCalculatorApp() {
       });
       setRateErrors(errors);
       setLastSync(new Date());
+
+      // Live metals API is a genuine FALLBACK, not a second source
+      // competing with the Sheet -- only called when the Sheet itself
+      // failed to provide metal rates at all. When the Sheet is
+      // healthy (the normal case), this is never even invoked, which
+      // also means far fewer calls to it overall. The output already
+      // matches the Sheet's own structure exactly ({label, pmRateOz,
+      // spotOz, spotSurcharge, wastage, asOf} per metal), so whichever
+      // source ends up populating metalRates, the rest of the pricing
+      // engine reads it identically either way -- no separate handling
+      // needed downstream.
+      if (!sheetHasMetalRates) {
+        try {
+          const res = await fetch("/.netlify/functions/metal-rates");
+          if (res.ok) {
+            const payload = await res.json();
+            if (payload.rates && Object.keys(payload.rates).length) {
+              setLiveData((prev) => ({ ...prev, metalRates: payload.rates }));
+              setTableSources((prev) => ({
+                ...prev,
+                metalRates: payload.source === "cache" ? "live-api-cache" : "live-api",
+              }));
+            }
+          }
+          // A non-ok response (key not configured, API down, etc.) is
+          // not worth surfacing as an error -- metalRates just stays on
+          // the bundled sample data, same as if this fallback didn't
+          // exist at all.
+        } catch {
+          // Network failure reaching the function -- same, no disruption.
+        }
+      }
     } catch (e) {
       setRateErrors({ all: e.message || String(e) });
     } finally {
       setRateLoading(false);
-    }
-
-    // Live metals API layer -- independent of the Google Sheet fetch
-    // above, deliberately not nested inside its try/catch. If this
-    // fails for ANY reason (not deployed yet, network issue, API down),
-    // metalRates simply stays whatever the Sheet fetch (or the previous
-    // successful call to this same function) already set -- the app
-    // behaves exactly as it does today. Only overrides metalRates
-    // specifically; every other live-synced table is untouched.
-    try {
-      const res = await fetch("/.netlify/functions/metal-rates");
-      if (res.ok) {
-        const payload = await res.json();
-        if (payload.rates && Object.keys(payload.rates).length) {
-          setLiveData((prev) => ({ ...prev, metalRates: payload.rates }));
-          setTableSources((prev) => ({
-            ...prev,
-            metalRates: payload.source === "cache" ? "live-api-cache" : "live-api",
-          }));
-        }
-      }
-      // A non-ok response (function not deployed, key not configured
-      // yet, etc.) is not an error worth surfacing -- metalRates just
-      // stays on whatever the Sheet already provided.
-    } catch {
-      // Network failure reaching the function -- same: leave metalRates
-      // exactly as-is, no disruption.
     }
   }, []);
 
@@ -735,6 +754,7 @@ function JwyCalculatorApp() {
       remarks: ji.clientNotes || prev.remarks,
       itemType: ji.itemType || prev.itemType,
       subCategory: ji.subCategory || prev.subCategory,
+      rhodium: ji.rhodium || prev.rhodium,
     }));
     if (ji.itemNo) {
       const mappedLoc = ITEM_LETTER_TO_LOCATION[ji.itemNo.trim().charAt(0).toUpperCase()];
@@ -764,9 +784,12 @@ function JwyCalculatorApp() {
       lgdShape: s.lgdShape || "RND",
       pcs: s.qty ? String(s.qty) : "",
       customShape: s.customShape || "",
+      customSizeText: s.customSizeText || "",
       customWt: s.customWt ? String(s.customWt) : "",
       customRate: "",
       manualRate: "",
+      setting: s.setting || "",
+      source: s.source || "",
     }));
     setRows(newRows.length ? newRows : Array.from({ length: 5 }, emptyRow));
 
@@ -828,7 +851,7 @@ function JwyCalculatorApp() {
   };
 
   const clearAll = () => {
-    setJobInfo({ designer: "", jobNo: "", itemNo: "", itemSize: "", customer: "", cadType: "Medium", remarks: "", itemType: "", subCategory: "" });
+    setJobInfo({ designer: "", jobNo: "", itemNo: "", itemSize: "", customer: "", cadType: "Medium", remarks: "", itemType: "", subCategory: "", rhodium: "" });
     setPrimaryAlloyShort("");
     setPrimaryGramWt("");
     setSecondaryAlloyShort("");
@@ -843,6 +866,7 @@ function JwyCalculatorApp() {
     setManualPriceOverride("");
     setAdditionalChargeName("");
     setAdditionalChargeAmount("");
+    setJobTrackerFields(EMPTY_JOB_TRACKER_MANUAL_FIELDS);
   };
 
   const persistQuotes = (list) => {
@@ -867,6 +891,7 @@ function JwyCalculatorApp() {
     manualPriceOverride,
     additionalChargeName,
     additionalChargeAmount,
+    jobTrackerFields,
     cadImages,
     clientRefImages,
     turntableLink,
@@ -898,6 +923,7 @@ function JwyCalculatorApp() {
     setManualPriceOverride(q.manualPriceOverride || "");
     setAdditionalChargeName(q.additionalChargeName || "");
     setAdditionalChargeAmount(q.additionalChargeAmount || "");
+    setJobTrackerFields({ ...EMPTY_JOB_TRACKER_MANUAL_FIELDS, ...q.jobTrackerFields });
     setCadImages(q.cadImages || []);
     setClientRefImages(q.clientRefImages || []);
     setTurntableLink(q.turntableLink || "");
@@ -981,7 +1007,7 @@ function JwyCalculatorApp() {
         const hasRealShape = row.shapeSel && row.shapeSel !== CUSTOM_CODE;
         return {
           shape: hasRealShape ? row.shapeSel : row.customShape || "Custom",
-          size: hasRealShape ? row.customShape || "custom size" : "manual entry",
+          size: hasRealShape ? row.customShape || "custom size" : row.customSizeText || "manual entry",
           wtPerPc,
           totalWt,
           perCt,
@@ -1172,6 +1198,68 @@ function JwyCalculatorApp() {
     XLSX.writeFile(wb, `${filenameBase}_GATI.xlsx`);
 
     return { flaggedCount };
+  };
+
+  // Same idea as the GATI export above, one column set over for Main
+  // File -- a single row per quote with whatever the Calculator
+  // actually knows, everything else left blank for the shop floor to
+  // fill in as the job moves through production. Back on the XLSX/
+  // SheetJS library GATI export uses (not ExcelJS) now that images are
+  // hosted URLs typed into cells rather than embedded pictures -- no
+  // more need for the image-embedding-capable library.
+  const doExportJobTracker = async () => {
+    const rowsWithCalcs = rows
+      .map((r, i) => ({ r, c: rowCalcs[i] }))
+      .filter(({ r, c }) => (r.sizeCode || r.customShape) && c.totalWt > 0);
+
+    if (rowsWithCalcs.length === 0) {
+      throw new Error("Add at least one stone row before exporting.");
+    }
+
+    const filenameBase = quoteFilenameBase();
+
+    const jtRow = mapQuoteToJobTrackerRow({
+      jobInfo,
+      primaryAlloy,
+      rowsWithCalcs,
+      manualFields: jobTrackerFields,
+      sspDefaultUsd: totalWithDutyUSD,
+    });
+
+    // Up to 3 images -- CAD renders first, then client reference images
+    // filling any slots CAD didn't use -- each uploaded to blob storage
+    // and swapped for a hosted URL in the corresponding Image1/2/3
+    // cell, ready to copy-paste into Main File. A single image failing
+    // to upload (network hiccup, function cold-start error, etc.) just
+    // leaves that one cell blank rather than failing the whole export.
+    const imagesToUpload = pickJobTrackerImages(cadImages, clientRefImages);
+    let uploadedCount = 0;
+    for (let idx = 0; idx < imagesToUpload.length; idx++) {
+      const dataUrl = imagesToUpload[idx];
+      const extension = dataUrlImageExtension(dataUrl);
+      const column = JOB_TRACKER_IMAGE_COLUMNS[idx];
+      if (!extension || !column) continue; // unrecognized format or no slot left -- skip
+      try {
+        const res = await fetch("/.netlify/functions/job-tracker-image", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ filenameBase, slot: column, dataUrl }),
+        });
+        if (!res.ok) continue;
+        const { url } = await res.json();
+        jtRow[column] = `${window.location.origin}${url}`;
+        uploadedCount++;
+      } catch {
+        // Leave this image's cell blank rather than failing the export.
+      }
+    }
+
+    const ws = XLSX.utils.json_to_sheet([jtRow], { header: JOB_TRACKER_COLUMNS });
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Main File");
+    XLSX.writeFile(wb, `${filenameBase}_MainFile.xlsx`);
+
+    return { uploadedCount, availableCount: imagesToUpload.length };
   };
 
   // ============================================================
@@ -1401,18 +1489,10 @@ function JwyCalculatorApp() {
     }
   };
 
-  const doSyncToDb = async () => {
-    const filenameBase = quoteFilenameBase();
-    const pdfBlob = await generatePdfBlob("full");
-    const jsonBlob = buildSnapshotJsonBlob();
-    const pdfBase64 = await blobToBase64(pdfBlob);
-    const jsonText = await jsonBlob.text();
-
-    // Hard timeout -- this is the actual fallback data source for
-    // repopulating old quotes now that Print no longer bundles a JSON
-    // copy, so it must never be able to hang forever with the UI stuck
-    // on "Saving...". 30s is generous for a PDF+JSON upload even on a
-    // slow connection, but guarantees a definite outcome either way.
+  // The actual network call to save-quote.mjs -- pulled out on its own
+  // so it can be reused for both the initial attempt and a confirmed
+  // overwrite retry, without duplicating the timeout/error handling.
+  const postSaveQuote = async ({ filenameBase, pdfBase64, jsonText, overwrite }) => {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 30000);
 
@@ -1428,6 +1508,7 @@ function JwyCalculatorApp() {
           quoteStage,
           pdfBase64,
           jsonText,
+          overwrite,
         }),
         signal: controller.signal,
       });
@@ -1447,8 +1528,39 @@ function JwyCalculatorApp() {
       throw new Error(`Save function returned an unexpected response (status ${res.status})`);
     }
 
-    if (!res.ok) throw new Error(data.error || "Couldn't save to the database");
-    return data;
+    return { res, data };
+  };
+
+  const doSyncToDb = async () => {
+    const filenameBase = quoteFilenameBase();
+    const pdfBlob = await generatePdfBlob("full");
+    const jsonBlob = buildSnapshotJsonBlob();
+    const pdfBase64 = await blobToBase64(pdfBlob);
+    const jsonText = await jsonBlob.text();
+
+    const { res, data } = await postSaveQuote({ filenameBase, pdfBase64, jsonText, overwrite: false });
+
+    if (res.ok) return data;
+
+    // Real conflict, not just a generic failure -- ask, with the actual
+    // existing record's details, rather than silently blocking or
+    // silently overwriting.
+    if (res.status === 409 && data.conflict) {
+      const savedWhen = data.existing?.createdAt ? new Date(data.existing.createdAt).toLocaleString() : "an earlier time";
+      const confirmed = confirm(
+        `A quote already exists for Job ${jobInfo.jobNo} / Item ${jobInfo.itemNo} / ${quoteStage}, saved ${savedWhen}.\n\nOverwrite it with this version?`
+      );
+      if (!confirmed) throw new Error("Save cancelled -- existing quote was not changed.");
+
+      const retry = await postSaveQuote({ filenameBase, pdfBase64, jsonText, overwrite: true });
+      if (!retry.res.ok) throw new Error(retry.data.error || "Couldn't overwrite the existing quote");
+      return retry.data;
+    }
+
+    // Any other failure (500, network hiccup surfaced as a non-ok
+    // response, etc.) -- must throw, not silently return as if it
+    // succeeded.
+    throw new Error(data.error || `Couldn't save to the database (status ${res.status})`);
   };
 
   return (
@@ -1565,6 +1677,15 @@ function JwyCalculatorApp() {
         />
 
         <RemarksCard jobInfo={jobInfo} setJobInfo={setJobInfo} />
+
+        <JobTrackerFieldsCard
+          jobTrackerFields={jobTrackerFields}
+          setJobTrackerFields={setJobTrackerFields}
+          jobInfo={jobInfo}
+          setJobInfo={setJobInfo}
+          totalWithDutyUSD={totalWithDutyUSD}
+          onExportJobTracker={doExportJobTracker}
+        />
       </div>
     </div>
   );
@@ -2655,7 +2776,7 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow })
                         if (val === CUSTOM_CODE) {
                           updateRow(i, { shapeSel: CUSTOM_CODE, sizeCode: CUSTOM_CODE });
                         } else {
-                          updateRow(i, { shapeSel: val, sizeCode: "", customShape: "", customWt: "", customRate: "" });
+                          updateRow(i, { shapeSel: val, sizeCode: "", customShape: "", customSizeText: "", customWt: "", customRate: "" });
                         }
                       }}
                     >
@@ -2680,7 +2801,7 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow })
                     ) : row.shapeSel === CUSTOM_CODE ? (
                       <input
                         style={{ ...styles.inputSm, width: 90 }}
-                        placeholder="Describe shape/size"
+                        placeholder="Describe shape"
                         value={row.customShape}
                         onChange={(e) => updateRow(i, { customShape: e.target.value })}
                       />
@@ -2714,7 +2835,18 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow })
                       </select>
                     )}
                   </td>
-                  <td style={{ ...styles.td, fontSize: 12, color: "var(--muted)" }}>{calc.size}</td>
+                  <td style={{ ...styles.td, fontSize: 12, color: "var(--muted)" }}>
+                    {row.shapeSel === CUSTOM_CODE ? (
+                      <input
+                        style={{ ...styles.inputSm, width: 90 }}
+                        placeholder="Describe size"
+                        value={row.customSizeText}
+                        onChange={(e) => updateRow(i, { customSizeText: e.target.value })}
+                      />
+                    ) : (
+                      calc.size
+                    )}
+                  </td>
                   <td style={styles.td}>
                     {row.stoneTypeSel && row.stoneTypeSel !== "Mined" && row.stoneTypeSel !== "Lab grown" ? (
                       <span style={{ fontSize: 11, color: "var(--muted)", fontStyle: "italic" }}>manual $/ct</span>
@@ -2991,6 +3123,217 @@ function RemarksCard({ jobInfo, setJobInfo }) {
         value={jobInfo.remarks}
         onChange={(e) => setJobInfo({ ...jobInfo, remarks: e.target.value })}
       />
+    </div>
+  );
+}
+
+// Manual entry for the Job Tracker export columns the Calculator has no
+// source for at all -- no quote data, no CAD Order Form field (see
+// JOB_TRACKER_PENDING_ITEMS in jobTrackerExport.js). Collapsed by
+// default since most people quoting a job don't need it open; it only
+// matters right before an "Export to Main File" click. The export
+// button lives here (and only here -- it used to also sit in the
+// Quotes toolbar) since everything it needs is right above it.
+const OTHER_OPTION = "__OTHER__";
+
+// A dropdown that falls back to a free-text box the moment its options
+// don't cover what's needed -- used for the Vendor/Stamp Metal/Stamp
+// Location/Finding1/Finding2/Tag Color fields, whose real option lists
+// are still provisional (see JOB_TRACKER_DROPDOWN_OPTIONS in
+// jobTrackerExport.js).
+function DropdownOrOtherField({ value, options, onChange, placeholder }) {
+  const isKnown = !value || options.includes(value);
+  const [forceOther, setForceOther] = useState(!isKnown);
+  if (!isKnown && !forceOther) setForceOther(true);
+
+  if (forceOther) {
+    return (
+      <div style={{ display: "flex", gap: 4 }}>
+        <input
+          style={{ ...styles.inputSm, width: "100%" }}
+          value={value || ""}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+        />
+        {options.length > 0 && (
+          <button
+            type="button"
+            title="Back to dropdown"
+            style={{ ...styles.smallBtn, padding: "0 8px" }}
+            onClick={() => {
+              setForceOther(false);
+              onChange("");
+            }}
+          >
+            ▾
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <select
+      style={{ ...styles.inputSm, width: "100%" }}
+      value={value || ""}
+      onChange={(e) => {
+        if (e.target.value === OTHER_OPTION) {
+          setForceOther(true);
+          onChange("");
+        } else {
+          onChange(e.target.value);
+        }
+      }}
+    >
+      <option value="">— select —</option>
+      {options.map((opt) => (
+        <option key={opt} value={opt}>
+          {opt}
+        </option>
+      ))}
+      <option value={OTHER_OPTION}>Other (type manually)…</option>
+    </select>
+  );
+}
+
+function JobTrackerFieldsCard({
+  jobTrackerFields,
+  setJobTrackerFields,
+  jobInfo,
+  setJobInfo,
+  totalWithDutyUSD,
+  onExportJobTracker,
+}) {
+  const [open, setOpen] = useState(false);
+  const [exportStatus, setExportStatus] = useState("");
+  const filledCount = Object.values(jobTrackerFields).filter(Boolean).length + (jobInfo.rhodium ? 1 : 0);
+  const setField = (key, value) => setJobTrackerFields((prev) => ({ ...prev, [key]: value }));
+  const groups = [...new Set(JOB_TRACKER_MANUAL_FIELDS.map((f) => f.group))];
+
+  const doExport = async (e) => {
+    e.stopPropagation(); // don't also toggle the collapse when clicking the button
+    setExportStatus("exporting");
+    try {
+      const { uploadedCount, availableCount } = await onExportJobTracker();
+      setExportStatus(
+        availableCount === 0 ? "Downloaded -- no images uploaded" : `Downloaded -- ${uploadedCount}/${availableCount} image URL(s) added`
+      );
+      setTimeout(() => setExportStatus(""), 6000);
+    } catch (err) {
+      setExportStatus((err && err.message) || "Couldn't build the Main File export");
+    }
+  };
+
+  return (
+    <div style={styles.card}>
+      <div
+        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", flexWrap: "wrap", gap: 8 }}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <SectionLabel eyebrow="07" title="Job Tracker details" noMargin />
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 12, color: MUTED }}>{filledCount > 0 ? `${filledCount} filled` : "optional"}</span>
+          <button
+            style={{ ...styles.smallBtn, ...styles.smallBtnAccent, padding: "4px 7px" }}
+            type="button"
+            disabled={exportStatus === "exporting"}
+            onClick={doExport}
+          >
+            {exportStatus === "exporting" ? "Building…" : "Export to Main File"}
+          </button>
+          {exportStatus && exportStatus !== "exporting" && (
+            <span style={exportStatus.startsWith("Downloaded") ? styles.statusOk : styles.statusWarn} title={exportStatus}>
+              {exportStatus.startsWith("Downloaded") ? "✓" : exportStatus.slice(0, 24) + "…"}
+            </span>
+          )}
+          <span style={{ fontSize: 12, color: MUTED }}>{open ? "▾" : "▸"}</span>
+        </div>
+      </div>
+      {open && (
+        <div style={{ marginTop: 12 }}>
+          <p style={{ fontSize: 12, color: MUTED, marginTop: 0, marginBottom: 12 }}>
+            None of these come from the quote or a CAD Order Form import -- fill in whatever's already known and it
+            flows straight into "Export to Main File" instead of a blank cell.
+          </p>
+
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 14, marginBottom: 14 }}>
+            <div style={{ maxWidth: 200 }}>
+              <Field label="Rhodium">
+                <select
+                  style={{ ...styles.inputSm, width: "100%" }}
+                  value={jobInfo.rhodium || ""}
+                  onChange={(e) => setJobInfo({ ...jobInfo, rhodium: e.target.value })}
+                >
+                  <option value="">— not set —</option>
+                  <option value="Yes">Yes</option>
+                  <option value="No">No</option>
+                  <option value="N/A">N/A</option>
+                </select>
+              </Field>
+            </div>
+
+            <div style={{ maxWidth: 200 }}>
+              <Field label="SSP">
+                <input
+                  style={{ ...styles.inputSm, width: "100%" }}
+                  value={jobTrackerFields.ssp || ""}
+                  onChange={(e) => setField("ssp", e.target.value)}
+                  placeholder={totalWithDutyUSD ? `calculated: ${fmtCurrency(totalWithDutyUSD)}` : "SSP"}
+                />
+                <span style={{ fontSize: 10, color: MUTED }}>
+                  Auto-fills from "With duty · USD" unless typed over here -- still the plain number, not yet the
+                  JADELIGHTXZ-coded value Main File expects.
+                </span>
+              </Field>
+            </div>
+          </div>
+
+          {groups.map((group) => (
+            <div key={group} style={{ marginBottom: 14 }}>
+              <div
+                style={{
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: MUTED,
+                  textTransform: "uppercase",
+                  letterSpacing: 0.4,
+                  marginBottom: 6,
+                }}
+              >
+                {group}
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8 }}>
+                {JOB_TRACKER_MANUAL_FIELDS.filter((f) => f.group === group).map((f) => (
+                  <Field key={f.key} label={f.label}>
+                    {f.type === "date" ? (
+                      <input
+                        type="date"
+                        style={{ ...styles.inputSm, width: "100%" }}
+                        value={jobTrackerFields[f.key] || ""}
+                        onChange={(e) => setField(f.key, e.target.value)}
+                      />
+                    ) : f.type === "select" ? (
+                      <DropdownOrOtherField
+                        value={jobTrackerFields[f.key]}
+                        options={JOB_TRACKER_DROPDOWN_OPTIONS[f.key] || []}
+                        onChange={(val) => setField(f.key, val)}
+                        placeholder={f.label}
+                      />
+                    ) : (
+                      <input
+                        style={{ ...styles.inputSm, width: "100%" }}
+                        value={jobTrackerFields[f.key] || ""}
+                        onChange={(e) => setField(f.key, e.target.value)}
+                        placeholder={f.label}
+                      />
+                    )}
+                  </Field>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
