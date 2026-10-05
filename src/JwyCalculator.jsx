@@ -8,10 +8,11 @@ import { QuotePdfDocument } from "./pdfDocument.jsx";
 import { mapQuoteToGatiRows } from "./gatiExport.js";
 import {
   mapQuoteToJobTrackerRow,
-  JOB_TRACKER_COLUMNS,
+  jobTrackerRowToAoa,
   JOB_TRACKER_IMAGE_COLUMNS,
   JOB_TRACKER_MANUAL_FIELDS,
   JOB_TRACKER_DROPDOWN_OPTIONS,
+  stampLogoUrl,
   EMPTY_JOB_TRACKER_MANUAL_FIELDS,
   pickJobTrackerImages,
   dataUrlImageExtension,
@@ -1232,7 +1233,11 @@ function JwyCalculatorApp() {
     // cell, ready to copy-paste into Main File. A single image failing
     // to upload (network hiccup, function cold-start error, etc.) just
     // leaves that one cell blank rather than failing the whole export.
-    const imagesToUpload = pickJobTrackerImages(cadImages, clientRefImages);
+    // If the chosen Stamp Logo has a link on file, the mapper has already
+    // put it in Image3 -- so only 2 job images are uploaded (slots 1-2)
+    // and that cell is left alone.
+    const logoLinked = !!jtRow.Image3;
+    const imagesToUpload = pickJobTrackerImages(cadImages, clientRefImages, logoLinked ? 2 : 3);
     let uploadedCount = 0;
     for (let idx = 0; idx < imagesToUpload.length; idx++) {
       const dataUrl = imagesToUpload[idx];
@@ -1254,12 +1259,16 @@ function JwyCalculatorApp() {
       }
     }
 
-    const ws = XLSX.utils.json_to_sheet([jtRow], { header: JOB_TRACKER_COLUMNS });
+    // Built from an array-of-arrays (header row + data row) rather than
+    // json_to_sheet: the Main File column list repeats "Office Ship
+    // Date", and an object-keyed sheet can't hold two columns with the
+    // same header.
+    const ws = XLSX.utils.aoa_to_sheet(jobTrackerRowToAoa(jtRow));
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Main File");
     XLSX.writeFile(wb, `${filenameBase}_MainFile.xlsx`);
 
-    return { uploadedCount, availableCount: imagesToUpload.length };
+    return { uploadedCount, availableCount: imagesToUpload.length, logoLinked };
   };
 
   // ============================================================
@@ -3137,10 +3146,9 @@ function RemarksCard({ jobInfo, setJobInfo }) {
 const OTHER_OPTION = "__OTHER__";
 
 // A dropdown that falls back to a free-text box the moment its options
-// don't cover what's needed -- used for the Vendor/Stamp Metal/Stamp
-// Location/Finding1/Finding2/Tag Color fields, whose real option lists
-// are still provisional (see JOB_TRACKER_DROPDOWN_OPTIONS in
-// jobTrackerExport.js).
+// don't cover what's needed -- used for the Vendor/Stamp Logo/Stamp
+// Metal/Stamp Location/Finding1/Finding2/Tag Color fields (option lists
+// live in JOB_TRACKER_DROPDOWN_OPTIONS in jobTrackerExport.js).
 function DropdownOrOtherField({ value, options, onChange, placeholder }) {
   const isKnown = !value || options.includes(value);
   const [forceOther, setForceOther] = useState(!isKnown);
@@ -3214,10 +3222,9 @@ function JobTrackerFieldsCard({
     e.stopPropagation(); // don't also toggle the collapse when clicking the button
     setExportStatus("exporting");
     try {
-      const { uploadedCount, availableCount } = await onExportJobTracker();
-      setExportStatus(
-        availableCount === 0 ? "Downloaded -- no images uploaded" : `Downloaded -- ${uploadedCount}/${availableCount} image URL(s) added`
-      );
+      const { uploadedCount, availableCount, logoLinked } = await onExportJobTracker();
+      const imgPart = availableCount === 0 ? "no images uploaded" : `${uploadedCount}/${availableCount} image URL(s) added`;
+      setExportStatus(`Downloaded -- ${imgPart}${logoLinked ? " + stamp logo link in Image3" : ""}`);
       setTimeout(() => setExportStatus(""), 6000);
     } catch (err) {
       setExportStatus((err && err.message) || "Couldn't build the Main File export");
@@ -3326,6 +3333,9 @@ function JobTrackerFieldsCard({
                         onChange={(e) => setField(f.key, e.target.value)}
                         placeholder={f.label}
                       />
+                    )}
+                    {f.key === "stampLogo" && stampLogoUrl(jobTrackerFields.stampLogo) && (
+                      <span style={{ fontSize: 10, color: MUTED }}>Logo link will be placed in Image3.</span>
                     )}
                   </Field>
                 ))}
