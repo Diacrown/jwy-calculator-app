@@ -61,8 +61,11 @@ export function jobTrackerRowToAoa(row) {
 // your real Main WS rows use (verified against real rows -- e.g.
 // "14KT | YG | Standard" and "18KT | WG | Palladium"):
 //   MetalType  -- "14KT" (karat, no color/variant suffix)
-//   MetalColor -- "WG" / "YG" / "RG" / "PT" / "AG" (short code, not
-//                 a full name -- the sheet uses codes, not "White Gold")
+//   MetalColor -- the sheet's designated colour code, worked out from
+//                 the PRIMARY and SECONDARY alloy together -- see
+//                 resolveMetalColor() below (e.g. YG, WY, YR, YP, 950,
+//                 925+18YG). MetalType / AlloyType below still describe
+//                 the primary alloy only.
 //   AlloyType  -- the white-gold casting variant: "Standard" (Nickel
 //                 Safe -- the default) or "Palladium" (the "-PD" alloys).
 //                 Only ever set for gold; Platinum/Silver/Wax/Brass have
@@ -84,6 +87,80 @@ function splitMetal(alloy) {
     else alloyType = "Standard";
   }
   return { metalType, metalColor, alloyType };
+}
+
+// ============================================================
+// METAL COLOR -- the sheet's designated MetalColor codes:
+//   one gold ........ WG / YG / RG
+//   two golds ....... WY YW WR RW YR RY  (PRIMARY colour first, then
+//                     SECONDARY -- e.g. primary Yellow + secondary Rose = "YR")
+//   gold + platinum . YP / RP            (either order -- the sheet has no PY / PR)
+//   platinum ........ 950                (PT950)
+//   silver .......... 925                (AG925)
+//   silver + gold ... 925+18YG           (AG925 with 18KT Yellow Gold, either order)
+// Two golds of the SAME colour (e.g. 14KT YG + 18KT YG) collapse to the single
+// code (YG). 22KT / 24KT gold carry no colour letter in their short name but
+// are yellow gold, so they count as Y.
+//
+// Codes on the sheet's list that this CAN'T produce from two alloy slots:
+//   YWR (three golds) and 925+SS (silver + stainless steel) -- there's no
+//   third alloy slot / no steel alloy in the Calculator -- type those into
+//   Main File by hand.
+// Any combination NOT on the sheet's list (e.g. White Gold + Platinum,
+// PT900, AG935) comes through flagged "RECHECK:..." rather than guessed, the
+// same way the Nickel Free alloy type is.
+//
+// The secondary alloy only counts when one is actually chosen (not Wax) AND
+// has a gram weight above 0 -- see mapQuoteToJobTrackerRow.
+// ============================================================
+function goldLetter(alloy) {
+  if (!alloy || alloy.metal !== "AU") return "";
+  const short = alloy.short || "";
+  const code = ["WG", "YG", "RG"].find((c) => short.includes(c));
+  if (code) return code[0];
+  if (/^(22|24)KT$/i.test(short.trim())) return "Y";
+  return "";
+}
+
+// null = nothing usable in this slot (empty / Wax)
+function describeMetal(alloy) {
+  if (!alloy || !alloy.short || alloy.metal === "WX") return null;
+  const short = alloy.short.trim();
+  if (alloy.metal === "AU") return { kind: "gold", letter: goldLetter(alloy), short };
+  if (alloy.metal === "PT") return { kind: "pt", short };
+  if (alloy.metal === "AG") return { kind: "ag", short };
+  return { kind: "other", short };
+}
+
+const metalRecheck = (a, b) =>
+  `RECHECK:No MetalColor code on the Main File list for ${[a, b].filter(Boolean).join(" + ")} -- type it in by hand`;
+
+export function resolveMetalColor(primaryAlloy, secondaryAlloy) {
+  const p = describeMetal(primaryAlloy);
+  const s = describeMetal(secondaryAlloy);
+  if (!p) return "";
+  if (p.kind === "other" || (s && s.kind === "other")) return metalRecheck(p.short, s && s.short);
+
+  if (!s) {
+    if (p.kind === "gold") return p.letter ? `${p.letter}G` : metalRecheck(p.short);
+    if (p.kind === "pt") return p.short === "PT950" ? "950" : metalRecheck(p.short);
+    return p.short === "AG925" ? "925" : metalRecheck(p.short);
+  }
+
+  // two metals
+  if (p.kind === "gold" && s.kind === "gold") {
+    if (!p.letter || !s.letter) return metalRecheck(p.short, s.short);
+    return p.letter === s.letter ? `${p.letter}G` : `${p.letter}${s.letter}`;
+  }
+  const [a, b] = [p, s].sort((x, y) => x.kind.localeCompare(y.kind)); // ag < gold < pt
+  if (a.kind === "gold" && b.kind === "pt") {
+    if (b.short === "PT950" && (a.letter === "Y" || a.letter === "R")) return `${a.letter}P`;
+    return metalRecheck(p.short, s.short);
+  }
+  if (a.kind === "ag" && b.kind === "gold") {
+    return a.short === "AG925" && b.short === "18KT YG" ? "925+18YG" : metalRecheck(p.short, s.short);
+  }
+  return metalRecheck(p.short, s.short);
 }
 
 // ============================================================
@@ -331,10 +408,13 @@ export const EMPTY_JOB_TRACKER_MANUAL_FIELDS = {
  * duty · USD") figure, used to auto-fill SSP when nothing's typed in.
  */
 export function mapQuoteToJobTrackerRow(quote) {
-  const { jobInfo, primaryAlloy, rowsWithCalcs, manualFields, sspDefaultUsd } = quote;
+  const { jobInfo, primaryAlloy, secondaryAlloy, secondaryGramWt, rowsWithCalcs, manualFields, sspDefaultUsd } = quote;
   const row = blankRow();
 
-  const { metalType, metalColor, alloyType } = splitMetal(primaryAlloy);
+  const { metalType, alloyType } = splitMetal(primaryAlloy);
+  // Secondary alloy counts only when chosen and actually weighed in.
+  const secondaryUsed = secondaryAlloy && (parseFloat(secondaryGramWt) || 0) > 0 ? secondaryAlloy : null;
+  const metalColor = resolveMetalColor(primaryAlloy, secondaryUsed);
   const stoneDetails = rowsWithCalcs.map(({ r, c }) => describeStoneRow(r, c)).join("; ");
   const stoneType = uniqueJoined(rowsWithCalcs.map(({ r }) => stoneTypeLabel(r)));
   const stoneSource = uniqueJoined(rowsWithCalcs.map(({ r }) => r.source));
@@ -385,6 +465,7 @@ export const JOB_TRACKER_PENDING_ITEMS = [
   "Image3 -- holds the Stamp Logo link when the chosen logo has one (then only the first 2 job images are uploaded); logos with no link yet leave Image3 to the job's own 3rd image. Links are the Google Drive share links as supplied (not direct image URLs).",
   "StoneSource / SettingType -- only filled when the quote came from a CAD Order Form import (its Source/Set fields per stone); a quote built by hand in the Calculator has nowhere for these to come from, so they're blank for those",
   "Rhodium -- filled from the CAD Order Form's own Rhodium field when the quote was imported from one, or from the manual Rhodium dropdown in the Calculator if set there; otherwise falls back to an inferred default (WG -> Yes, YG/RG -> No) based on every real row seen so far -- double-check it on jobs that are an exception to that pattern",
+  "MetalColor -- worked out from the primary + secondary alloy using the sheet's own codes (WG/YG/RG, WY YW WR RW YR RY, YP, RP, 950, 925, 925+18YG). YWR (three golds) and 925+SS (silver + steel) can't come from two alloy slots, and combos not on the list (e.g. White Gold + Platinum, PT900, AG935) come through flagged RECHECK: -- type those into Main File by hand.",
   "AlloyType 'Nickel Free' (the -NF alloys) -- not yet confirmed against a real Main WS row (only Standard/Palladium have been seen), so it's flagged with RECHECK: rather than guessed",
 ];
 
