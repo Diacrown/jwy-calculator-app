@@ -24,7 +24,6 @@ import {
   downloadBlob,
   qualityGrade,
 } from "./stoneScheduleExport.js";
-import { buildCalcWorkbook } from "./calcWorkbookExport.js";
 
 // "Proposed Quality" dropdown values (customer-facing diamond quality
 // shown on the Price Only print). Wording kept exactly as supplied.
@@ -1240,6 +1239,8 @@ function JwyCalculatorApp() {
     const jtRow = mapQuoteToJobTrackerRow({
       jobInfo,
       primaryAlloy,
+      secondaryAlloy: secondaryAlloyShort ? secondaryAlloy : null,
+      secondaryGramWt,
       rowsWithCalcs,
       manualFields: jobTrackerFields,
       sspDefaultUsd: totalWithDutyUSD,
@@ -1310,105 +1311,6 @@ function JwyCalculatorApp() {
     return { lineCount: lines.length };
   };
 
-  // Plain-words description of where a stone line's $/ct came from, for
-  // the "Rate basis" column of the calculation workbook. Mirrors the
-  // lookups in rowCalcs above (text only -- it doesn't affect any price).
-  const describeRateBasis = (r) => {
-    if (r.sizeCode === CUSTOM_CODE) return "Custom row: $/ct typed by hand";
-    const sizeEntry = DIA_SIZE.find((d) => d.key === r.sizeCode);
-    if (!sizeEntry) return "";
-    const type = r.stoneTypeSel || "Mined";
-    if (type !== "Mined" && type !== "Lab grown") return `${type}: $/ct entered by hand`;
-    if ((r.mode || "natural") === "natural") {
-      if (!sizeEntry.group) return "Natural: no price group for this size, $/ct entered by hand";
-      const grid = (liveData.naturalPrices || SAMPLE_NATURAL_PRICES)[sizeEntry.group];
-      return grid?.[r.quality]
-        ? `Natural grid: group ${sizeEntry.group} × ${r.quality}`
-        : `Natural: no grid price for ${sizeEntry.group} × ${r.quality}, $/ct entered by hand`;
-    }
-    const bands = liveData.labGrownPrices || SAMPLE_LGD_BANDS;
-    const band = bands.find(
-      (b) => (b.shape === r.lgdShape || b.shape === "RND & FANCY") && sizeEntry.wt >= b.minCt && sizeEntry.wt <= b.maxCt
-    );
-    return band
-      ? `Lab-grown band: ${band.shape} ${band.minCt}–${band.maxCt} ct × ${r.lgdGrade}`
-      : "Lab-grown: no price band for this size ($0)";
-  };
-
-  // "Download calculation sheet": every number behind the quote, split by
-  // use, with live formulas -- see calcWorkbookExport.js. ExcelJS is
-  // loaded only when this is clicked (keeps the main bundle lean).
-  const doExportCalcSheet = async () => {
-    const lines = rows
-      .map((r, i) => ({ r, c: rowCalcs[i], pos: i + 1 }))
-      .filter(({ r, c }) => (r.sizeCode || r.customShape) && c.totalWt > 0);
-    if (lines.length === 0) {
-      throw new Error("Add at least one stone row before downloading the calculation sheet.");
-    }
-    const ExcelJS = (await import("exceljs")).default;
-    const stones = lines.map(({ r, c, pos }) => {
-      const entry = r.sizeCode && r.sizeCode !== CUSTOM_CODE ? DIA_SIZE.find((d) => d.key === r.sizeCode) : null;
-      return {
-        pos,
-        itemType: r.itemType || "",
-        lab: r.lab || "",
-        stoneType: r.stoneTypeSel || "Mined",
-        shape: c.shape || r.customShape || "",
-        size: c.size && c.size !== "manual entry" ? c.size : "",
-        code: entry ? entry.code : "",
-        quality: qualityGrade(r),
-        proposedQuality: r.proposedQuality || "",
-        basis: describeRateBasis(r),
-        wtPerPc: c.wtPerPc,
-        pcs: parseFloat(r.pcs) || 0,
-        perCt: c.perCt,
-      };
-    });
-    const buf = await buildCalcWorkbook(ExcelJS, {
-      exportedAt: new Date(),
-      dropdowns: { itemTypes: STONE_ITEM_TYPES, labs: STONE_LABS, stoneTypes: STONE_TYPE_OPTIONS, proposedQualities: PROPOSED_DIA_QUALITIES },
-      header: {
-        jobNo: jobInfo.jobNo, itemNo: jobInfo.itemNo, styleCode: jobInfo.styleCode, customer: jobInfo.customer,
-        designer: jobInfo.designer, itemType: jobInfo.itemType, cadType: jobInfo.cadType, stage: quoteStage,
-        printDate,
-      },
-      sources: tableSources,
-      manualRatesOn,
-      metalRates,
-      alloys: alloyList,
-      primary: { short: primaryAlloy.short, gramWt: parseFloat(primaryGramWt) || 0 },
-      secondary: { short: secondaryAlloy.short, gramWt: parseFloat(secondaryGramWt) || 0 },
-      currencyRates,
-      currencyMarkup: liveData.currencyMarkup,
-      locations: locationList,
-      location: locInfo.code,
-      laborPerGm: liveData.laborPerGm,
-      laborMinFlat: liveData.laborMinFlat,
-      cadFees: liveData.cadFees,
-      cadType: jobInfo.cadType,
-      additional: { name: additionalChargeName, amount: additionalChargeUSD },
-      settingTiers: settingTiersLive,
-      stones,
-      manualOverride: hasOverride ? overrideNum : null,
-      app: {
-        casting, labor, cadFee,
-        diamondTotal: totals.diamondTotal,
-        settingTotal: totals.settingTotal,
-        additionalChargeUSD,
-        grossTotalUSD,
-        totalWithDutyUSD,
-        fxRate,
-        totalWithDutyLocal,
-        effectiveTotalLocal,
-      },
-    });
-    downloadBlob(
-      new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
-      `${quoteFilenameBase()}_CalculationCheck.xlsx`
-    );
-  };
-
-  // ============================================================
   // Google Drive integration -- uses Google Identity Services (OAuth
   // 2.0 implicit grant), NOT a service account. This is a genuinely
   // different Google Cloud credential type from what was blocked
@@ -1820,7 +1722,6 @@ function JwyCalculatorApp() {
           hasAdditionalCharge={hasAdditionalCharge}
           additionalChargeUSD={additionalChargeUSD}
           effectiveTotalLocal={effectiveTotalLocal}
-          onDownloadCalcSheet={doExportCalcSheet}
         />
 
         <RemarksCard jobInfo={jobInfo} setJobInfo={setJobInfo} />
@@ -3217,19 +3118,7 @@ function BreakupSummary({
   hasAdditionalCharge,
   additionalChargeUSD,
   effectiveTotalLocal,
-  onDownloadCalcSheet,
 }) {
-  const [calcSheetStatus, setCalcSheetStatus] = useState("");
-  const downloadCalcSheet = async () => {
-    setCalcSheetStatus("building");
-    try {
-      await onDownloadCalcSheet();
-      setCalcSheetStatus("Downloaded");
-      setTimeout(() => setCalcSheetStatus(""), 6000);
-    } catch (err) {
-      setCalcSheetStatus((err && err.message) || "Couldn't build the calculation sheet");
-    }
-  };
   const items = [
     { label: "Casting", value: casting },
     { label: "Labor", value: labor },
@@ -3240,23 +3129,7 @@ function BreakupSummary({
   ];
   return (
     <div style={styles.card}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
-        <SectionLabel eyebrow="05" title="Quote breakdown" noMargin />
-        <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-          {calcSheetStatus && calcSheetStatus !== "building" && (
-            <span style={calcSheetStatus === "Downloaded" ? styles.statusOk : styles.statusWarn}>{calcSheetStatus}</span>
-          )}
-          <button
-            style={{ ...styles.smallBtn, ...styles.smallBtnAccent, padding: "4px 7px" }}
-            type="button"
-            disabled={calcSheetStatus === "building"}
-            onClick={downloadCalcSheet}
-            title="Excel workbook with every number behind this quote, split by use, with live formulas to check or change the calculation"
-          >
-            {calcSheetStatus === "building" ? "Building…" : "Download calculation sheet"}
-          </button>
-        </div>
-      </div>
+      <SectionLabel eyebrow="05" title="Quote breakdown" />
       <div style={styles.breakupGrid}>
         {items.map((it) => (
           <div key={it.label} style={styles.metricCard}>
