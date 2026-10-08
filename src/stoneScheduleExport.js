@@ -116,8 +116,24 @@ async function addDropdownValidations(xlsxBytes) {
   });
   const block = `<dataValidations count="${items.length}">${items.join("")}</dataValidations>`;
 
-  if (xml.includes("<pageMargins")) xml = xml.replace("<pageMargins", `${block}<pageMargins`);
-  else xml = xml.replace("</worksheet>", `${block}</worksheet>`);
+  // Excel is strict about element order inside <worksheet>: dataValidations
+  // must come after sheetData/autoFilter/mergeCells/conditionalFormatting and
+  // BEFORE hyperlinks, printOptions, pageMargins, pageSetup, headerFooter,
+  // ignoredErrors (which SheetJS writes right after sheetData), drawing, etc.
+  // Insert it ahead of whichever of those appears first; a wrong position makes
+  // Excel report "unreadable content" and repair the sheet.
+  const LATER_ELEMENTS = [
+    "hyperlinks", "printOptions", "pageMargins", "pageSetup", "headerFooter", "rowBreaks", "colBreaks",
+    "customProperties", "cellWatches", "ignoredErrors", "smartTags", "drawing", "legacyDrawing",
+    "legacyDrawingHF", "picture", "oleObjects", "controls", "webPublishItems", "tableParts", "extLst",
+  ];
+  let insertAt = -1;
+  for (const tag of LATER_ELEMENTS) {
+    const m = new RegExp(`<${tag}[\\s>/]`).exec(xml);
+    if (m && (insertAt === -1 || m.index < insertAt)) insertAt = m.index;
+  }
+  if (insertAt === -1) insertAt = xml.lastIndexOf("</worksheet>");
+  xml = xml.slice(0, insertAt) + block + xml.slice(insertAt);
 
   zip.file(sheetPath, xml);
   return zip.generateAsync({ type: "uint8array", compression: "DEFLATE" });
