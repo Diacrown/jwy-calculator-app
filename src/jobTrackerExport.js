@@ -190,6 +190,25 @@ function resolveRhodium(jobInfo, metalColor) {
 // sheet's "LGD" abbreviation (confirmed on a real row), remapped here.
 // ============================================================
 const STONE_TYPE_SHEET_LABELS = { "Lab grown": "LGD" };
+
+// ============================================================
+// PLAIN ITEMS -- jewellery with no stones at all (just metal). A stone
+// row whose Type is "Plain" marks the whole piece as plain. These are the
+// values the stone columns take for such an item.
+//
+// PROVISIONAL: the Excel showing exactly what Main File expects for a
+// plain item has not been received yet, so this is a best guess
+// (StoneType "Plain", all other stone columns left empty). Once the
+// sheet is available, change ONLY the values below -- nothing else needs
+// touching.
+// ============================================================
+export const PLAIN_STONE_FIELDS = {
+  StoneType: "Plain",
+  StoneDetails: "",
+  StoneSource: "",
+  SettingType: "",
+};
+const isPlainRow = (r) => r && r.stoneTypeSel === "Plain";
 function stoneTypeLabel(r) {
   const raw = r.stoneTypeSel || (r.mode === "lgd" ? "Lab grown" : "Mined");
   return STONE_TYPE_SHEET_LABELS[raw] || raw;
@@ -415,10 +434,14 @@ export function mapQuoteToJobTrackerRow(quote) {
   // Secondary alloy counts only when chosen and actually weighed in.
   const secondaryUsed = secondaryAlloy && (parseFloat(secondaryGramWt) || 0) > 0 ? secondaryAlloy : null;
   const metalColor = resolveMetalColor(primaryAlloy, secondaryUsed);
-  const stoneDetails = rowsWithCalcs.map(({ r, c }) => describeStoneRow(r, c)).join("; ");
-  const stoneType = uniqueJoined(rowsWithCalcs.map(({ r }) => stoneTypeLabel(r)));
-  const stoneSource = uniqueJoined(rowsWithCalcs.map(({ r }) => r.source));
-  const settingType = uniqueJoined(rowsWithCalcs.map(({ r }) => r.setting));
+  // Plain rows are ignored whenever the quote also has real stones; a quote
+  // that is Plain rows only is a metal-only item and takes PLAIN_STONE_FIELDS.
+  const realStoneRows = rowsWithCalcs.filter(({ r }) => !isPlainRow(r));
+  const isPlainItem = realStoneRows.length === 0 && rowsWithCalcs.some(({ r }) => isPlainRow(r));
+  const stoneDetails = isPlainItem ? PLAIN_STONE_FIELDS.StoneDetails : realStoneRows.map(({ r, c }) => describeStoneRow(r, c)).join("; ");
+  const stoneType = isPlainItem ? PLAIN_STONE_FIELDS.StoneType : uniqueJoined(realStoneRows.map(({ r }) => stoneTypeLabel(r)));
+  const stoneSource = isPlainItem ? PLAIN_STONE_FIELDS.StoneSource : uniqueJoined(realStoneRows.map(({ r }) => r.source));
+  const settingType = isPlainItem ? PLAIN_STONE_FIELDS.SettingType : uniqueJoined(realStoneRows.map(({ r }) => r.setting));
 
   Object.assign(row, {
     SSP: resolveSsp(manualFields, sspDefaultUsd),
@@ -466,6 +489,7 @@ export const JOB_TRACKER_PENDING_ITEMS = [
   "StoneSource / SettingType -- only filled when the quote came from a CAD Order Form import (its Source/Set fields per stone); a quote built by hand in the Calculator has nowhere for these to come from, so they're blank for those",
   "Rhodium -- filled from the CAD Order Form's own Rhodium field when the quote was imported from one, or from the manual Rhodium dropdown in the Calculator if set there; otherwise falls back to an inferred default (WG -> Yes, YG/RG -> No) based on every real row seen so far -- double-check it on jobs that are an exception to that pattern",
   "MetalColor -- worked out from the primary + secondary alloy using the sheet's own codes (WG/YG/RG, WY YW WR RW YR RY, YP, RP, 950, 925, 925+18YG). YWR (three golds) and 925+SS (silver + steel) can't come from two alloy slots, and combos not on the list (e.g. White Gold + Platinum, PT900, AG935) come through flagged RECHECK: -- type those into Main File by hand.",
+  "Plain items (Type = Plain, metal only) -- StoneType comes through as \"Plain\" and StoneDetails/StoneSource/SettingType are left empty. PROVISIONAL until the Main File sheet for plain items is checked; adjust PLAIN_STONE_FIELDS in jobTrackerExport.js.",
   "AlloyType 'Nickel Free' (the -NF alloys) -- not yet confirmed against a real Main WS row (only Standard/Palladium have been seen), so it's flagged with RECHECK: rather than guessed",
 ];
 
