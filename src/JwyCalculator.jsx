@@ -73,12 +73,22 @@ const SHAPE_ORDER = [
 ];
 
 const STONE_TYPE_OPTIONS = [
-  "Mined", "Lab grown", "CZ", "Mount", "Semi-Mount", "Cabochon", "Color",
+  "Mined", "Lab grown", "CZ", "Mount", "Semi-Mount", "Plain", "Cabochon", "Color",
   "Opal", "Alexandrite", "Ametrine", "Amethyst", "Aquamarine", "Citrine",
   "Emerald", "Garnet", "Hessonite Garnet", "Iolite", "Morganite", "Pearl",
   "Peridot", "Ruby", "Sapphire", "Spinel", "Tanzanite", "Topaz",
   "Tourmaline", "Zircon",
 ];
+
+// Sentinel for the "Custom entry…" choice in the stone Type dropdown --
+// the row then shows a text box and the typed name becomes the type.
+const CUSTOM_TYPE_OPTION = "__CUSTOM_TYPE__";
+// "Plain" = a metal-only piece with no stones. Priced as $0 stones.
+const PLAIN_TYPE = "Plain";
+
+// Size of the "Made with Love" logo window in the top banner (px).
+const LOGO_BOX_W = 104;
+const LOGO_BOX_H = 50;
 
 const ALLOYS = [
   { name: "Standard Injection Wax", short: "Wax", sg: 0.96, purity: 1.0, metal: "WX", castingGm: 1.0, surchargeGm: 1.0, minGms: 7.0 },
@@ -569,7 +579,7 @@ const roundUp5 = (n) => (isFinite(n) ? Math.ceil(n / 5) * 5 : 0);
 const roundUpMetalWt = (n) => (isFinite(n) ? Math.round(Math.ceil(n / 0.05) * 0.05 * 100) / 100 : n);
 
 function emptyRow() {
-  return { mode: "natural", stoneTypeSel: "Mined", shapeSel: "", sizeCode: "", quality: "TW SI1", lgdGrade: "Non-cert", lgdShape: "RND", pcs: "", customShape: "", customSizeText: "", customWt: "", customRate: "", manualRate: "", proposedQuality: "", setting: "", source: "", itemType: "", lab: "" };
+  return { mode: "natural", stoneTypeSel: "Mined", typeCustom: false, customType: "", shapeSel: "", sizeCode: "", quality: "TW SI1", lgdGrade: "Non-cert", lgdShape: "RND", pcs: "", customShape: "", customSizeText: "", customWt: "", customRate: "", manualRate: "", proposedQuality: "", setting: "", source: "", itemType: "", lab: "" };
 }
 
 
@@ -1016,6 +1026,10 @@ function JwyCalculatorApp() {
     return rows.map((row) => {
       const pcs = parseFloat(row.pcs) || 0;
       const isMount = row.stoneTypeSel === "Mount";
+      // Plain (metal only, no stones): nothing to price.
+      if (row.stoneTypeSel === PLAIN_TYPE) {
+        return { shape: "", size: "", wtPerPc: 0, totalWt: 0, perCt: 0, total: 0, settingTotal: 0, settingType: "PER PC", priceEditable: false };
+      }
       if (row.sizeCode === CUSTOM_CODE) {
         const wtPerPc = parseFloat(row.customWt) || 0;
         const perCt = parseFloat(row.customRate) || 0;
@@ -1042,7 +1056,7 @@ function JwyCalculatorApp() {
       const totalWt = sizeEntry.wt * pcs;
       const isNatural = (row.mode || "natural") === "natural";
       const stoneType = row.stoneTypeSel || "Mined";
-      const isOtherType = stoneType !== "Mined" && stoneType !== "Lab grown";
+      const isOtherType = row.typeCustom || (stoneType !== "Mined" && stoneType !== "Lab grown");
 
       let perCt = 0;
       let priceEditable = false;
@@ -1226,12 +1240,14 @@ function JwyCalculatorApp() {
   // hosted URLs typed into cells rather than embedded pictures -- no
   // more need for the image-embedding-capable library.
   const doExportJobTracker = async () => {
+    // A "Plain" row (metal-only piece, no stones) counts as a valid row here
+    // so plain jewellery can be exported; the mapper decides what it fills.
     const rowsWithCalcs = rows
       .map((r, i) => ({ r, c: rowCalcs[i] }))
-      .filter(({ r, c }) => (r.sizeCode || r.customShape) && c.totalWt > 0);
+      .filter(({ r, c }) => r.stoneTypeSel === PLAIN_TYPE || ((r.sizeCode || r.customShape) && c.totalWt > 0));
 
     if (rowsWithCalcs.length === 0) {
-      throw new Error("Add at least one stone row before exporting.");
+      throw new Error("Add at least one stone row (or choose Plain for a metal-only item) before exporting.");
     }
 
     const filenameBase = quoteFilenameBase();
@@ -1304,7 +1320,7 @@ function JwyCalculatorApp() {
       .filter(({ r, c }) => (r.sizeCode || r.customShape) && c.totalWt > 0);
 
     if (lines.length === 0) {
-      throw new Error("Add at least one stone row before downloading the stone schedule.");
+      throw new Error("Add at least one stone row before downloading the stone schedule (Plain items have no stones to list).");
     }
     const blob = await buildStoneScheduleXlsx(XLSX, jobInfo, lines);
     downloadBlob(blob, `${quoteFilenameBase()}_StoneSchedule.xlsx`);
@@ -1624,7 +1640,7 @@ function JwyCalculatorApp() {
         onClear={clearAll}
       />
 
-      <div style={styles.shell}>
+      <div className="jwy-shell" style={styles.shell}>
         <JobInfoCard
           jobInfo={jobInfo}
           setJobInfo={setJobInfo}
@@ -1662,7 +1678,7 @@ function JwyCalculatorApp() {
           setManualRates={setManualRates}
         />
 
-        <div style={styles.grid2}>
+        <div className="jwy-grid2" style={styles.grid2}>
           <MetalPanel
             title="Primary metal"
             alloyShort={primaryAlloyShort}
@@ -1749,6 +1765,48 @@ function GlobalStyles() {
       th, td { text-align: left; }
       ::-webkit-scrollbar { height: 8px; width: 8px; }
       ::-webkit-scrollbar-thumb { background: #E3C3CD; border-radius: 4px; }
+      img { max-width: 100%; }
+
+      /* ---- Phone / small-tablet layout (<= 720px). Desktop is untouched. ---- */
+      @media (max-width: 720px) {
+        .jwy-shell { padding: 10px 10px 24px !important; }
+        .jwy-topbar-inner { flex-direction: column !important; align-items: stretch !important; gap: 8px; padding: 8px 10px !important; }
+        .jwy-topbar-actions { display: grid !important; grid-template-columns: 1fr 1fr 1fr; gap: 6px !important; }
+        .jwy-topbar-actions > * { justify-content: center; text-align: center; padding: 8px 6px !important; font-size: 12px !important; line-height: 1.25; min-height: 40px; display: flex !important; align-items: center; flex-wrap: wrap; gap: 2px; }
+        .jwy-grid2 { grid-template-columns: 1fr !important; }
+        .jwy-grid2 > * { min-width: 0; }
+        select { max-width: 100% !important; }
+        /* form fields: two per row, wide ones (customer, links, alloy) full width */
+        .jwy-field { flex: 1 1 calc(50% - 6px) !important; min-width: 0 !important; }
+        .jwy-field-grow { flex-basis: 100% !important; }
+        .jwy-field input, .jwy-field select { width: 100% !important; max-width: 100% !important; }
+
+        /* comfortable touch targets; 16px stops iOS zooming in on focus */
+        input:not([type="checkbox"]):not([type="radio"]):not([type="file"]), select, textarea { font-size: 16px !important; min-height: 40px; }
+        button { min-height: 38px; }
+
+        /* stone schedule: one card per stone line instead of a 17-column table */
+        .jwy-stone, .jwy-stone tbody, .jwy-stone tfoot { display: block; width: 100%; }
+        .jwy-stone thead { display: none; }
+        .jwy-stone tr.jwy-stone-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; position: relative;
+          padding: 10px; margin-bottom: 10px; border: 1px solid #F3DCE3 !important; border-radius: 10px; background: #fff; }
+        .jwy-stone tr.jwy-stone-total { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; padding: 10px; border-radius: 10px; }
+        .jwy-stone td { display: block; padding: 0 !important; border: 0 !important; min-width: 0; text-align: left !important; }
+        .jwy-stone td:empty:not([data-label]) { display: none; }
+        .jwy-stone td.jwy-wide { grid-column: 1 / -1; }
+        .jwy-stone td.jwy-plain { grid-column: 1 / -1; }
+        .jwy-stone td[data-label]:not([data-label=""])::before { content: attr(data-label); display: block; margin-bottom: 2px;
+          font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; color: #8B7680; }
+        .jwy-stone td.jwy-pos { grid-column: 1 / -1; }
+        .jwy-stone td.jwy-rm { position: absolute; top: 6px; right: 6px; }
+        .jwy-stone td.jwy-rm button { font-size: 22px !important; line-height: 1; min-width: 40px; min-height: 40px; }
+        .jwy-stone td.jwy-rate { font-size: 11px !important; }
+        .jwy-stone td.jwy-spec:not(:has(input)) { display: none; }
+        .jwy-stone td select, .jwy-stone td input { width: 100% !important; max-width: none !important; min-width: 0 !important; text-align: left !important; }
+        .jwy-stone td > div { min-width: 0 !important; }
+        .jwy-stone td[data-label="Wt / pc"], .jwy-stone td[data-label="Total wt"], .jwy-stone td[data-label="$ total"],
+        .jwy-stone td[data-label="$ setting"], .jwy-stone td[data-label="$ / ct"] { font-variant-numeric: tabular-nums; font-size: 14px; }
+      }
     `}</style>
   );
 }
@@ -1756,17 +1814,17 @@ function GlobalStyles() {
 function TopBar({ jobInfo, pdfFileName, pdfStatus, pdfImport, onJsonUpload, onSavedQuoteUpload, onClear }) {
   return (
     <div style={styles.topBar}>
-      <div style={styles.topBarInner}>
-        <div style={styles.brandBlock}>
+      <div className="jwy-topbar-inner" style={styles.topBarInner}>
+        <div className="jwy-brand" style={styles.brandBlock}>
           <div style={styles.brandLogoBox}>
-            <img src="/logowhite.PNG" alt="Made with Love" style={{ height: 38, width: "auto", display: "block" }} />
+            <img src="/logowhite.PNG" alt="Made with Love" style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: "center", display: "block" }} />
           </div>
           <div>
             <div style={styles.brandTitle}>JWY Calculator</div>
             <div style={styles.brandSub}>Job {jobInfo.jobNo || "—"}</div>
           </div>
         </div>
-        <div style={styles.topBarActions}>
+        <div className="jwy-topbar-actions" style={styles.topBarActions}>
           <button style={styles.uploadBtn} onClick={onClear} type="button">
             Clear form
           </button>
@@ -2797,7 +2855,7 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
         </div>
       </div>
       <div style={{ overflowX: "auto" }}>
-        <table style={styles.table}>
+        <table className="jwy-stone" style={styles.table}>
           <thead>
             <tr style={styles.theadRow}>
               <th style={styles.th}>Pos</th>
@@ -2822,20 +2880,31 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
           <tbody>
             {rows.map((row, i) => {
               const calc = rowCalcs[i];
-              const active = !!row.sizeCode && (parseFloat(row.pcs) || 0) > 0;
+              const isPlain = row.stoneTypeSel === PLAIN_TYPE;
+              const active = isPlain || (!!row.sizeCode && (parseFloat(row.pcs) || 0) > 0);
               return (
-                <tr key={i} style={{ ...styles.tr, ...(active ? styles.trActive : {}) }}>
-                  <td style={styles.td}>
+                <tr key={i} className="jwy-stone-row" style={{ ...styles.tr, ...(active ? styles.trActive : {}) }}>
+                  <td className="jwy-pos" data-label="" style={styles.td}>
                     <span style={{ ...styles.posBadge, ...(active ? styles.posBadgeActive : {}) }}>{i + 1}</span>
                   </td>
-                  <td style={styles.td}>
+                  <td data-label="Type" style={styles.td}>
                     <select
                       style={{ ...styles.inputSm, width: 108 }}
-                      value={row.stoneTypeSel || "Mined"}
+                      value={row.typeCustom ? CUSTOM_TYPE_OPTION : row.stoneTypeSel || "Mined"}
                       onChange={(e) => {
                         const val = e.target.value;
-                        const newMode = val === "Lab grown" ? "lgd" : "natural";
-                        updateRow(i, { stoneTypeSel: val, mode: newMode });
+                        if (val === CUSTOM_TYPE_OPTION) {
+                          // Typed name becomes the type (priced by manual $/ct
+                          // like every other non-Mined/Lab grown type).
+                          updateRow(i, {
+                            typeCustom: true,
+                            stoneTypeSel: (row.customType || "").trim() || "Custom",
+                            mode: "natural",
+                          });
+                        } else {
+                          const newMode = val === "Lab grown" ? "lgd" : "natural";
+                          updateRow(i, { typeCustom: false, stoneTypeSel: val, mode: newMode });
+                        }
                       }}
                     >
                       {STONE_TYPE_OPTIONS.map((t) => (
@@ -2843,9 +2912,29 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                           {t}
                         </option>
                       ))}
+                      <option value={CUSTOM_TYPE_OPTION}>Custom entry…</option>
                     </select>
+                    {row.typeCustom && (
+                      <input
+                        style={{ ...styles.inputSm, width: 108, marginTop: 4 }}
+                        placeholder="Type stone name"
+                        value={row.customType || ""}
+                        onChange={(e) => updateRow(i, { customType: e.target.value, stoneTypeSel: e.target.value.trim() || "Custom" })}
+                      />
+                    )}
                   </td>
-                  <td style={styles.td}>
+                  {isPlain ? (
+                    <td
+                      className="jwy-plain"
+                      colSpan={14}
+                      data-label=""
+                      style={{ ...styles.td, fontSize: 12, color: "var(--muted)", fontStyle: "italic" }}
+                    >
+                      Plain item — metal only, no stones to price. Export to Main File marks it as Plain.
+                    </td>
+                  ) : (
+                    <>
+                  <td data-label="Item" style={styles.td}>
                     <select
                       style={{ ...styles.inputSm, width: 62 }}
                       value={row.itemType || ""}
@@ -2860,7 +2949,7 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                       ))}
                     </select>
                   </td>
-                  <td style={styles.td}>
+                  <td data-label="Lab" style={styles.td}>
                     <select
                       style={{ ...styles.inputSm, width: 82 }}
                       value={row.lab || ""}
@@ -2875,7 +2964,7 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                       ))}
                     </select>
                   </td>
-                  <td style={styles.td}>
+                  <td data-label="Shape" style={styles.td}>
                     <select
                       style={styles.inputSm}
                       value={row.shapeSel || ""}
@@ -2901,7 +2990,7 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                       <option value={CUSTOM_CODE}>Custom entry…</option>
                     </select>
                   </td>
-                  <td style={styles.td}>
+                  <td className="jwy-wide" data-label="Size" style={styles.td}>
                     {!row.shapeSel ? (
                       <select style={styles.inputSm} disabled>
                         <option>Select shape first</option>
@@ -2943,7 +3032,7 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                       </select>
                     )}
                   </td>
-                  <td style={{ ...styles.td, fontSize: 12, color: "var(--muted)" }}>
+                  <td className="jwy-spec jwy-wide" data-label="Spec" style={{ ...styles.td, fontSize: 12, color: "var(--muted)" }}>
                     {row.shapeSel === CUSTOM_CODE ? (
                       <input
                         style={{ ...styles.inputSm, width: 90 }}
@@ -2955,8 +3044,8 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                       calc.size
                     )}
                   </td>
-                  <td style={styles.td}>
-                    {row.stoneTypeSel && row.stoneTypeSel !== "Mined" && row.stoneTypeSel !== "Lab grown" ? (
+                  <td data-label="Quality" style={styles.td}>
+                    {row.typeCustom || (row.stoneTypeSel && row.stoneTypeSel !== "Mined" && row.stoneTypeSel !== "Lab grown") ? (
                       <span style={{ fontSize: 11, color: "var(--muted)", fontStyle: "italic" }}>manual $/ct</span>
                     ) : (row.mode || "natural") === "natural" ? (
                       <select
@@ -2995,7 +3084,7 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                       </div>
                     )}
                   </td>
-                  <td style={styles.td}>
+                  <td data-label="Proposed quality" style={styles.td}>
                     <div style={{ minWidth: 118 }} title="Shown to the customer on the Price Only print, instead of the internal quality grade">
                       <DropdownOrOtherField
                         value={row.proposedQuality || ""}
@@ -3005,7 +3094,7 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                       />
                     </div>
                   </td>
-                  <td style={styles.tdRight}>
+                  <td data-label="Wt / pc" style={styles.tdRight}>
                     {row.sizeCode === CUSTOM_CODE ? (
                       <input
                         style={{ ...styles.inputSm, width: 62, textAlign: "right" }}
@@ -3021,7 +3110,7 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                       ""
                     )}
                   </td>
-                  <td style={styles.td}>
+                  <td data-label="Pcs" style={styles.td}>
                     <input
                       style={{ ...styles.inputSm, width: 48, textAlign: "right" }}
                       type="number"
@@ -3031,8 +3120,8 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                       onChange={(e) => updateRow(i, { pcs: e.target.value })}
                     />
                   </td>
-                  <td style={styles.tdRight}>{fmt(calc.totalWt, 3)}</td>
-                  <td style={styles.tdRight}>
+                  <td data-label="Total wt" style={styles.tdRight}>{fmt(calc.totalWt, 3)}</td>
+                  <td data-label="$ / ct" style={styles.tdRight}>
                     {row.sizeCode === CUSTOM_CODE ? (
                       <input
                         style={{ ...styles.inputSm, width: 66, textAlign: "right" }}
@@ -3055,10 +3144,12 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                       fmtCurrency(calc.perCt)
                     )}
                   </td>
-                  <td style={styles.tdRight}>{fmtCurrency(calc.total)}</td>
-                  <td style={styles.tdRight}>{fmtCurrency(calc.settingTotal)}</td>
-                  <td style={{ ...styles.td, fontSize: 11, color: "var(--muted)" }}>{calc.settingType}</td>
-                  <td style={styles.td}>
+                  <td data-label="$ total" style={styles.tdRight}>{fmtCurrency(calc.total)}</td>
+                  <td data-label="$ setting" style={styles.tdRight}>{fmtCurrency(calc.settingTotal)}</td>
+                  <td className="jwy-wide jwy-rate" data-label="Rate" style={{ ...styles.td, fontSize: 11, color: "var(--muted)" }}>{calc.settingType}</td>
+                    </>
+                  )}
+                  <td className="jwy-rm" data-label="" style={styles.td}>
                     <button
                       type="button"
                       onClick={() => onRemoveRow(i)}
@@ -3073,15 +3164,15 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
             })}
           </tbody>
           <tfoot>
-            <tr style={styles.totalRow}>
-              <td style={styles.td} colSpan={10}>
+            <tr className="jwy-stone-total" style={styles.totalRow}>
+              <td className="jwy-wide" style={styles.td} colSpan={10}>
                 Totals
               </td>
-              <td style={styles.tdRight}>{fmt(totals.totalPcs, 0)}</td>
-              <td style={styles.tdRight}>{fmt(totals.totalWt, 3)}</td>
+              <td data-label="Pcs" style={styles.tdRight}>{fmt(totals.totalPcs, 0)}</td>
+              <td data-label="Total wt" style={styles.tdRight}>{fmt(totals.totalWt, 3)}</td>
               <td></td>
-              <td style={styles.tdRight}>{fmtCurrency(totals.diamondTotal)}</td>
-              <td style={styles.tdRight}>{fmtCurrency(totals.settingTotal)}</td>
+              <td data-label="$ total" style={styles.tdRight}>{fmtCurrency(totals.diamondTotal)}</td>
+              <td data-label="$ setting" style={styles.tdRight}>{fmtCurrency(totals.settingTotal)}</td>
               <td></td>
               <td></td>
             </tr>
@@ -3459,7 +3550,7 @@ function SectionLabel({ eyebrow, title, noMargin }) {
 
 function Field({ label, children, grow }) {
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 4, flex: grow ? 1 : "0 0 auto" }}>
+    <div className={grow ? "jwy-field jwy-field-grow" : "jwy-field"} style={{ display: "flex", flexDirection: "column", gap: 4, flex: grow ? 1 : "0 0 auto" }}>
       <label style={styles.label}>{label}</label>
       {children}
     </div>
@@ -3483,18 +3574,20 @@ const styles = {
     minHeight: "100%",
   },
   shell: {
-    maxWidth: 1180,
+    // Full page width (was capped at 1180px) so the stone schedule has room
+    // and doesn't need sideways scrolling on wide screens.
+    maxWidth: "none",
     margin: "0 auto",
-    padding: "14px 20px 28px",
+    padding: "14px 24px 28px",
   },
   topBar: {
     background: INK,
     borderBottom: `3px solid ${ROSE}`,
   },
   topBarInner: {
-    maxWidth: 1180,
+    maxWidth: "none",
     margin: "0 auto",
-    padding: "10px 20px",
+    padding: "10px 24px",
     display: "flex",
     justifyContent: "space-between",
     alignItems: "center",
@@ -3504,7 +3597,13 @@ const styles = {
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    padding: "6px 10px",
+    // Fixed window the logo fills; the PNG has wide transparent margins, so
+    // the image is cropped to its artwork (object-fit: cover) to read larger
+    // without making the banner any taller.
+    width: LOGO_BOX_W,
+    height: LOGO_BOX_H,
+    overflow: "hidden",
+    padding: 0,
     borderRadius: 8,
     background: "rgba(255,255,255,0.08)",
     border: "1px solid rgba(255,255,255,0.18)",
@@ -3695,9 +3794,9 @@ const styles = {
   grid2: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 0 },
   table: { fontSize: 12.5, marginTop: 10 },
   theadRow: { borderBottom: `2px solid ${ROSE_TINT_STRONG}` },
-  th: { padding: "6px 8px", color: MUTED, fontWeight: 600, fontSize: 10.5, textTransform: "uppercase", letterSpacing: 0.3 },
+  th: { padding: "6px 5px", color: MUTED, fontWeight: 600, fontSize: 10.5, textTransform: "uppercase", letterSpacing: 0.3 },
   thRight: {
-    padding: "6px 8px",
+    padding: "6px 5px",
     color: MUTED,
     fontWeight: 600,
     fontSize: 10.5,
@@ -3707,8 +3806,8 @@ const styles = {
   },
   tr: { borderBottom: "1px solid #F6E9ED" },
   trActive: { background: "#FFFCFD" },
-  td: { padding: "7px 8px", verticalAlign: "middle" },
-  tdRight: { padding: "7px 8px", verticalAlign: "middle", textAlign: "right", fontVariantNumeric: "tabular-nums" },
+  td: { padding: "7px 5px", verticalAlign: "middle" },
+  tdRight: { padding: "7px 5px", verticalAlign: "middle", textAlign: "right", fontVariantNumeric: "tabular-nums" },
   totalRow: { borderTop: `2px solid ${ROSE_TINT_STRONG}`, fontWeight: 600, background: ROSE_TINT },
   totalGramNote: { marginTop: 10, fontSize: 12, color: MUTED, textAlign: "right" },
   posBadge: {
