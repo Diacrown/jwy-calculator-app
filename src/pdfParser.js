@@ -23,6 +23,15 @@ function isOddShape(shape) {
   return LGD_ODD_SHAPES.some((k) => s.includes(k));
 }
 
+// The CAD Order Form spells this shape "Tappered Bagguette"; the correct
+// trade spelling is "Tapered Baguette". Every shape name coming in from the
+// form (or from a quote saved before this fix) goes through here so the
+// catalog lookup, the stone table and every export all use the right one.
+export function fixShapeSpelling(name) {
+  const s = String(name || "");
+  return /^\s*tapp?ered\s+bag+u?ette\s*$/i.test(s) ? "Tapered Baguette" : s;
+}
+
 function cardMetalToAlloyShort(type, color, extra) {
   const t = (type || "").toUpperCase().trim();
   const c = (color || "").toUpperCase().trim();
@@ -318,7 +327,8 @@ function mapFormDataToCalculator(data, { alloys = [], diaSize = [] } = {}) {
   const rawStones = Array.isArray(data["_RAW_STONES"]) ? data["_RAW_STONES"] : [];
   const stones = rawStones
     .filter((s) => s.Shape && num(s.Qty) > 0)
-    .map((s) => {
+    .map((raw) => {
+      const s = { ...raw, Shape: fixShapeSpelling(raw.Shape) };
       const bridge = bridgeStone(s, diaSize);
       return {
         pos: s.Pos || "",
@@ -360,7 +370,27 @@ function mapFormDataToCalculator(data, { alloys = [], diaSize = [] } = {}) {
     stoneSettings: data["_STONE_SETTINGS"] || "",
   };
 
-  return { jobInfo, metals, metalWarnings, stones, cadImageDataUrls, clientRefImageDataUrls, derivedSummary, rawJson: data };
+  // The stone table exactly as the CAD Order Form prints it on page 1 of the
+  // card (Pos / Stone / Shape / L x W x H / Avg Dia Wt / Qty / Total Wt /
+  // Setting / Source) -- kept so the full page-1 picture can be redrawn for
+  // Export to Main File. Blank weights stay blank (printed as "-").
+  const cadSheet = {
+    stones: rawStones
+      .filter((s) => s.Shape && num(s.Qty) > 0)
+      .map((s) => ({
+        pos: s.Pos || "",
+        stone: s.Stone || "",
+        shape: fixShapeSpelling(s.Shape),
+        dims: [s.L, s.W, s.H].filter(Boolean).join(" x "),
+        avgWt: s.AvgWt || "",
+        qty: num(s.Qty),
+        totalWt: s.Tot || "",
+        setting: s.Set || "",
+        source: s.Source || "",
+      })),
+  };
+
+  return { jobInfo, metals, metalWarnings, stones, cadSheet, cadImageDataUrls, clientRefImageDataUrls, derivedSummary, rawJson: data };
 }
 
 export function parseOrderFormJson(input, { alloys = [], diaSize = [] } = {}) {
@@ -383,3 +413,4 @@ export function parseOrderFormJson(input, { alloys = [], diaSize = [] } = {}) {
   }
   return { ok: true, data: mapFormDataToCalculator(data, { alloys, diaSize }) };
 }
+

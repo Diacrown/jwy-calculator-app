@@ -1,3 +1,4 @@
+import JSZip from "jszip";
 // Main File bulk-export bridge (formerly "Job Tracker export" -- renamed
 // to match the "Export to Main File" button, since this has always fed
 // the same Main WS sheet).
@@ -48,6 +49,31 @@ function blankRow() {
   return row;
 }
 
+// Main File writes dates day-month-year with no zero padding, e.g.
+// "8-8-2025". The date pickers in the Calculator hand over "2025-08-08",
+// which is converted here; anything that isn't in that shape is left alone.
+export function formatDmy(value) {
+  const m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(String(value || "").trim());
+  return m ? `${Number(m[3])}-${Number(m[2])}-${m[1]}` : value;
+}
+
+// Main File text is Google Sans, size 8. SheetJS can't style cells, so after
+// the workbook is written the default font in xl/styles.xml is swapped for
+// that one (every cell uses the default style, so this covers the whole
+// sheet, headers included).
+export const MAIN_FILE_FONT = { name: "Google Sans", size: 8 };
+export async function applyMainFileFont(xlsxBytes) {
+  const zip = await JSZip.loadAsync(xlsxBytes);
+  const stylesFile = zip.file("xl/styles.xml");
+  if (!stylesFile) return xlsxBytes;
+  let xml = await stylesFile.async("string");
+  const font = `<font><sz val="${MAIN_FILE_FONT.size}"/><color rgb="FF000000"/><name val="${MAIN_FILE_FONT.name}"/><family val="2"/></font>`;
+  const replaced = xml.replace(/(<fonts[^>]*>)\s*<font>[\s\S]*?<\/font>/, `$1${font}`);
+  if (replaced === xml) return xlsxBytes; // unexpected layout -- leave the file untouched
+  zip.file("xl/styles.xml", replaced);
+  return zip.generateAsync({ type: "uint8array", compression: "DEFLATE" });
+}
+
 // Header row + one data row, in exact JOB_TRACKER_COLUMNS order, for
 // XLSX.utils.aoa_to_sheet. Safe with the duplicate "Office Ship Date"
 // header (both copies read the same -- blank -- row value).
@@ -73,12 +99,14 @@ export function jobTrackerRowToAoa(row) {
 //                 it's left blank for those rather than guessed.
 // ============================================================
 const METAL_COLOR_CODES = ["WG", "YG", "RG"];
-function splitMetal(alloy) {
+export function splitMetal(alloy) {
   if (!alloy) return { metalType: "", metalColor: "", alloyType: "" };
   const short = alloy.short || "";
   const colorCode = METAL_COLOR_CODES.find((c) => short.includes(c));
   const metalColor = colorCode || (short.includes("PT") ? "PT" : short.includes("AG") ? "AG" : "");
-  const metalType = colorCode ? short.replace(colorCode, "").replace(/-NF|-PD/g, "").trim() : short;
+  let metalType = colorCode ? short.replace(colorCode, "").replace(/-NF|-PD/g, "").trim() : short;
+  // Platinum is just "PT" in Main File -- the purity (950 etc.) is not part of MetalType.
+  if (alloy.metal === "PT" || /^PT\d*$/i.test(short)) metalType = "PT";
 
   let alloyType = "";
   if (alloy.metal === "AU") {
@@ -178,7 +206,7 @@ function inferRhodium(metalColor) {
   return ""; // Platinum/Silver/unknown -- no confirmed pattern in real rows, left blank
 }
 
-function resolveRhodium(jobInfo, metalColor) {
+export function resolveRhodium(jobInfo, metalColor) {
   const fromCad = (jobInfo.rhodium || "").trim();
   return fromCad || inferRhodium(metalColor);
 }
@@ -209,25 +237,30 @@ export const PLAIN_STONE_FIELDS = {
   SettingType: "",
 };
 const isPlainRow = (r) => r && r.stoneTypeSel === "Plain";
-function stoneTypeLabel(r) {
+export function stoneTypeLabel(r) {
   const raw = r.stoneTypeSel || (r.mode === "lgd" ? "Lab grown" : "Mined");
   return STONE_TYPE_SHEET_LABELS[raw] || raw;
 }
 
-// One line per stone row, e.g. "Round 3.5mm 5pcs 0.25cttw TW SI1",
-// matching the shape/size/pcs/cttw pattern real StoneDetails rows use
-// (e.g. "RD 1.4mm 21pcs 0.25 cttw") -- no per-row source tag, since
-// StoneType already carries Mined/LGD/Mount/etc. for the whole quote.
-// c.size now reflects a real typed value even for fully-custom
-// shape+size rows (the Calculator used to hardcode "manual entry" here
-// with no way to type an actual size -- fixed alongside this export).
-function describeStoneRow(r, c) {
+// "2.1 mm (0.04 ct ±)" -> "2.1mm"; "6x4 mm" -> "6x4mm"; "6.90 x 4.30 x 1.60 mm" -> "6.90 x 4.30 x 1.60mm".
+// Shared with the PO (poExport.js) so both print a stone's size the same way.
+export function cleanSize(size) {
+  if (!size || size === "manual entry" || size === "custom size") return "";
+  return String(size).replace(/\s*\(.*?\)\s*/g, " ").replace(/\s*±\s*/g, " ").replace(/\s+mm\b/i, "mm").replace(/\s+/g, " ").trim();
+}
+
+// One line per stone row: Shape + Size + Proposed Quality, e.g.
+// "Round 1.9mm G/SI2" or "Tapered Baguette 6.90 x 4.30 x 1.60mm". A colour typed
+// into the row's Colour box goes right after the shape ("Round Black 8.2mm");
+// anything left blank is simply skipped. Pieces / weight are not repeated here,
+// and the internal pricing grade is never printed -- only the Proposed Quality
+// the person chose. Rows are joined with "; " (see mapQuoteToJobTrackerRow).
+export function describeStoneRow(r, c) {
   const shape = c.shape || r.customShape || "";
-  const size = c.size && c.size !== "manual entry" ? c.size : "";
-  const pcsLabel = r.pcs ? `${r.pcs}pcs` : "";
-  const wtLabel = c.totalWt ? `${c.totalWt.toFixed(2)}cttw` : "";
-  const qualityOrGrade = r.mode === "lgd" ? [r.lgdShape, r.lgdGrade].filter(Boolean).join(" ") : r.quality;
-  return [shape, size, pcsLabel, wtLabel, qualityOrGrade].filter(Boolean).join(" ");
+  const colour = (r.colour || "").trim();
+  const size = cleanSize(c.size);
+  const quality = (r.proposedQuality || "").trim();
+  return [shape, colour, size, quality].filter(Boolean).join(" ");
 }
 
 // ============================================================
@@ -303,6 +336,8 @@ export const JOB_TRACKER_MANUAL_FIELDS = [
   { key: "finding1", label: "Finding 1", column: "Finding1", group: "Finishing", type: "select" },
   { key: "finding2", label: "Finding 2", column: "Finding2", group: "Finishing", type: "select" },
   { key: "tagColor", label: "Tag Color", column: "Tag Color", group: "Finishing", type: "select" },
+  // Printed on the Purchase Order only -- not a Main File column.
+  { key: "setBy", label: "Set By (PO)", column: "", group: "Finishing", type: "select", poOnly: true },
 ];
 
 // ============================================================
@@ -388,6 +423,7 @@ export const JOB_TRACKER_DROPDOWN_OPTIONS = {
     `Metal Kt on Bale + One side logo in Basket and another side Sr No`,
   ]),
   tagColor: uniq([`White`, `Red`, `Grey`]),
+  setBy: uniq([`Hand`, `Machine`]),
 };
 
 // Finding 1 and Finding 2 share one list.
@@ -463,8 +499,9 @@ export function mapQuoteToJobTrackerRow(quote) {
   // all -- applied last, straight from the person's own typed/selected
   // values. (SSP is handled above via resolveSsp, not here.)
   for (const f of JOB_TRACKER_MANUAL_FIELDS) {
+    if (f.poOnly) continue; // PO-only fields (e.g. Set By) have no Main File column
     const val = (manualFields || {})[f.key];
-    if (val) row[f.column] = val;
+    if (val) row[f.column] = f.type === "date" ? formatDmy(val) : val;
   }
 
   // A Stamp Logo that has a link on file goes straight into Image3. This
@@ -486,6 +523,7 @@ export const JOB_TRACKER_PENDING_ITEMS = [
   "Approval Date, PODate, DueDate, Stone Issue Date, Vendor, VendorItemNo, StampLogo, StampMetal, StampOther, StampLoc, Finding1, Finding2, Tag Color -- the Calculator has no source for any of these (production-workflow dates and finishing instructions that only exist once the job is in progress). They're fillable by hand in the \"Job Tracker details\" panel in the Calculator (see JOB_TRACKER_MANUAL_FIELDS) so they don't have to stay blank in the export -- but if nobody fills that panel in, they still come through blank here.",
   "SSP -- auto-filled from the Calculator's own \"With 5% duty · USD\" total unless overridden by hand, but NOT yet run through the JADELIGHTXZ price-code cipher the real Main File column is expected to use -- see the comment above resolveSsp() -- so it currently comes through as the plain USD number.",
   "Image3 -- holds the Stamp Logo link when the chosen logo has one (then only the first 2 job images are uploaded); logos with no link yet leave Image3 to the job's own 3rd image. Links are the Google Drive share links as supplied (not direct image URLs).",
+  "StoneDetails -- one entry per stone row, written as Shape + Size + Proposed Quality (plus the Colour box if it is filled in), rows separated by \"; \". Piece counts and weights are not repeated there.",
   "StoneSource / SettingType -- only filled when the quote came from a CAD Order Form import (its Source/Set fields per stone); a quote built by hand in the Calculator has nowhere for these to come from, so they're blank for those",
   "Rhodium -- filled from the CAD Order Form's own Rhodium field when the quote was imported from one, or from the manual Rhodium dropdown in the Calculator if set there; otherwise falls back to an inferred default (WG -> Yes, YG/RG -> No) based on every real row seen so far -- double-check it on jobs that are an exception to that pattern",
   "MetalColor -- worked out from the primary + secondary alloy using the sheet's own codes (WG/YG/RG, WY YW WR RW YR RY, YP, RP, 950, 925, 925+18YG). YWR (three golds) and 925+SS (silver + steel) can't come from two alloy slots, and combos not on the list (e.g. White Gold + Platinum, PT900, AG935) come through flagged RECHECK: -- type those into Main File by hand.",
@@ -509,8 +547,12 @@ export const JOB_TRACKER_IMAGE_COLUMNS = ["Image1", "Image2", "Image3"];
 
 // slotCount defaults to all 3 image columns; pass 2 when Image3 is
 // already taken by a Stamp Logo link.
-export function pickJobTrackerImages(cadImages, clientRefImages, slotCount = JOB_TRACKER_IMAGE_COLUMNS.length) {
-  return [...(cadImages || []), ...(clientRefImages || [])].slice(0, slotCount);
+// page1Image (optional) is the redrawn full page 1 of the CAD card (render +
+// stone table); when there is one it takes the place of the first CAD render,
+// so it is always Image1.
+export function pickJobTrackerImages(cadImages, clientRefImages, slotCount = JOB_TRACKER_IMAGE_COLUMNS.length, page1Image = null) {
+  const cad = page1Image ? [page1Image, ...(cadImages || []).slice(1)] : cadImages || [];
+  return [...cad, ...(clientRefImages || [])].slice(0, slotCount);
 }
 
 // Data URLs coming out of the Calculator are always

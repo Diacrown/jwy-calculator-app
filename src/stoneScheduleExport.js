@@ -68,7 +68,7 @@ export function buildStoneScheduleAoa(jobInfo, lines) {
       c.size && c.size !== "manual entry" ? c.size : "",
       code || "",
       qualityGrade(r),
-      "", "", "", "", "", // Color, Clarity, Cut, Pol, Sym -- see header comment
+      (r.colour || "").trim(), "", "", "", "", // Color (typed in the Calculator, if any), Clarity, Cut, Pol, Sym -- see header comment
       r.lab || "",
       round3(c.wtPerPc),
       parseFloat(r.pcs) || 0,

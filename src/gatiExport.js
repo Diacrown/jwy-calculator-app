@@ -88,7 +88,7 @@ export function metalCode(alloy) {
 // ============================================================
 const STONE_SHAPE_CODE = {
   "Round": "B", "Baguette": "BAG", "Emerald": "E", "Heart": "H", "Marquise": "M", "Oval": "O",
-  "Princess": "P", "Pear": "D", "Radiant": "R", "Triangle": "TRG", "Trilliant": "TRN", "Tappered Bagguette": "TAP",
+  "Princess": "P", "Pear": "D", "Radiant": "R", "Triangle": "TRG", "Trilliant": "TRN", "Tapered Baguette": "TAP", "Tappered Bagguette": "TAP",
 };
 const STONE_QUALITY_CODE_NATURAL = {
   "TW VVS": "10", "TW VS1": "11", "TW VS2": "12", "TW SI1": "13", "TW SI2": "14", "TW SI3": "15", "TW I1": "16", "WH SI": "23",

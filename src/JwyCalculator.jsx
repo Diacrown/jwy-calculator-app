@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { fetchLiveSheetData } from "./sheetData.js";
 import { POLL_INTERVAL_MS } from "./config.js";
-import { parseOrderFormJson } from "./pdfParser.js";
+import { parseOrderFormJson, fixShapeSpelling } from "./pdfParser.js";
 import { pdf } from "@react-pdf/renderer";
 import * as XLSX from "xlsx";
 import { QuotePdfDocument } from "./pdfDocument.jsx";
@@ -16,7 +16,10 @@ import {
   EMPTY_JOB_TRACKER_MANUAL_FIELDS,
   pickJobTrackerImages,
   dataUrlImageExtension,
+  applyMainFileFont,
 } from "./jobTrackerExport.js";
+import { mapQuoteToPo } from "./poExport.js";
+import { PurchaseOrderPdf } from "./poDocument.jsx";
 import {
   STONE_ITEM_TYPES,
   STONE_LABS,
@@ -69,7 +72,7 @@ const ITEM_LETTER_TO_LOCATION = { T: "DMT", M: "WSME", S: "WSSY", B: "WSBN", N: 
 const SHAPE_ORDER = [
   "Round", "Baguette", "Carre", "Emerald", "Heart", "Marquise", "Oval",
   "Princess", "Pear", "Radiant", "Single Cut", "Sq. Cushion", "Sq. Emerald",
-  "Tappered Bagguette", "Triangle", "Trilliant",
+  "Tapered Baguette", "Triangle", "Trilliant",
 ];
 
 const STONE_TYPE_OPTIONS = [
@@ -78,6 +81,12 @@ const STONE_TYPE_OPTIONS = [
   "Emerald", "Garnet", "Hessonite Garnet", "Iolite", "Morganite", "Pearl",
   "Peridot", "Ruby", "Sapphire", "Spinel", "Tanzanite", "Topaz",
   "Tourmaline", "Zircon",
+];
+
+// Item type choices for Job details (also drives the PO's Order Qty). The
+// dropdown has an "Other (type manually)" escape hatch for anything else.
+const ITEM_TYPE_OPTIONS = [
+  "Ring", "Earring", "Pendant", "Necklace", "Bracelet", "Bangle", "Charm", "Anklet", "Brooch", "Chain", "Set",
 ];
 
 // Sentinel for the "Custom entry…" choice in the stone Type dropdown --
@@ -401,112 +410,112 @@ const DIA_SIZE = [
   { code: "SEM34M", key: "SEM34M", shape: "Sq. Emerald", size: "3.40 x 3.40 mm", wt: 0.24, group: null },
   { code: "SEM35M", key: "SEM35M", shape: "Sq. Emerald", size: "3.50 x 3.50 mm", wt: 0.26, group: null },
   { code: "SEM36M", key: "SEM36M", shape: "Sq. Emerald", size: "3.60 x 3.60 mm", wt: 0.33, group: null },
-  { code: "TAP151007", key: "TAP151007", shape: "Tappered Bagguette", size: "1.50 x 1.00 x 0.75 mm", wt: 0.01, group: null },
-  { code: "TAP151210", key: "TAP151210", shape: "Tappered Bagguette", size: "1.50 x 1.25 x 1.00 mm", wt: 0.01, group: null },
-  { code: "TAP170705", key: "TAP170705", shape: "Tappered Bagguette", size: "1.75 x 0.75 x 0.50 mm", wt: 0.008, group: null },
-  { code: "TAP171005", key: "TAP171005", shape: "Tappered Bagguette", size: "1.75 x 1.00 x 0.50 mm", wt: 0.01, group: null },
-  { code: "TAP171007", key: "TAP171007", shape: "Tappered Bagguette", size: "1.75 x 1.00 x 0.75 mm", wt: 0.01, group: null },
-  { code: "TAP171210", key: "TAP171210", shape: "Tappered Bagguette", size: "1.75 x 1.25 x 1.00 mm", wt: 0.02, group: null },
-  { code: "TAP171510", key: "TAP171510", shape: "Tappered Bagguette", size: "1.75 x 1.50 x 1.00 mm", wt: 0.02, group: null },
-  { code: "TAP171512", key: "TAP171512", shape: "Tappered Bagguette", size: "1.75 x 1.50 x 1.25 mm", wt: 0.02, group: null },
-  { code: "TAP201005", key: "TAP201005", shape: "Tappered Bagguette", size: "2.00 x 1.00 x 0.50 mm", wt: 0.01, group: null },
-  { code: "TAP201007", key: "TAP201007", shape: "Tappered Bagguette", size: "2.00 x 1.00 x 0.75 mm", wt: 0.01, group: null },
-  { code: "TAP201210", key: "TAP201210", shape: "Tappered Bagguette", size: "2.00 x 1.25 x 1.00 mm", wt: 0.02, group: null },
-  { code: "TAP201510", key: "TAP201510", shape: "Tappered Bagguette", size: "2.00 x 1.50 x 1.00 mm", wt: 0.02, group: null },
-  { code: "TAP201512", key: "TAP201512", shape: "Tappered Bagguette", size: "2.00 x 1.50 x 1.25 mm", wt: 0.03, group: null },
-  { code: "TAP221005", key: "TAP221005", shape: "Tappered Bagguette", size: "2.25 x 1.00 x 0.50 mm", wt: 0.01, group: null },
-  { code: "TAP221207", key: "TAP221207", shape: "Tappered Bagguette", size: "2.25 x 1.25 x 0.75 mm", wt: 0.02, group: null },
-  { code: "TAP221210", key: "TAP221210", shape: "Tappered Bagguette", size: "2.25 x 1.25 x 1.00 mm", wt: 0.02, group: null },
-  { code: "TAP221510", key: "TAP221510", shape: "Tappered Bagguette", size: "2.25 x 1.50 x 1.00 mm", wt: 0.03, group: null },
-  { code: "TAP221512", key: "TAP221512", shape: "Tappered Bagguette", size: "2.25 x 1.50 x 1.25 mm", wt: 0.04, group: null },
-  { code: "TAP221712", key: "TAP221712", shape: "Tappered Bagguette", size: "2.25 x 1.75 x 1.25 mm", wt: 0.04, group: null },
-  { code: "TAP221715", key: "TAP221715", shape: "Tappered Bagguette", size: "2.25 x 1.75 x 1.50 mm", wt: 0.05, group: null },
-  { code: "TAP222015", key: "TAP222015", shape: "Tappered Bagguette", size: "2.25 x 2.00 x 1.50 mm", wt: 0.05, group: null },
-  { code: "TAP251005", key: "TAP251005", shape: "Tappered Bagguette", size: "2.50 x 1.00 x 0.50 mm", wt: 0.02, group: null },
-  { code: "TAP251007", key: "TAP251007", shape: "Tappered Bagguette", size: "2.50 x 1.00 x 0.75 mm", wt: 0.02, group: null },
-  { code: "TAP251210", key: "TAP251210", shape: "Tappered Bagguette", size: "2.50 x 1.25 x 1.00 mm", wt: 0.03, group: null },
-  { code: "TAP251510", key: "TAP251510", shape: "Tappered Bagguette", size: "2.50 x 1.50 x 1.00 mm", wt: 0.03, group: null },
-  { code: "TAP251512", key: "TAP251512", shape: "Tappered Bagguette", size: "2.50 x 1.50 x 1.25 mm", wt: 0.04, group: null },
-  { code: "TAP251710", key: "TAP251710", shape: "Tappered Bagguette", size: "2.50 x 1.75 x 1.00 mm", wt: 0.04, group: null },
-  { code: "TAP251712", key: "TAP251712", shape: "Tappered Bagguette", size: "2.50 x 1.75 x 1.25 mm", wt: 0.05, group: null },
-  { code: "TAP252015", key: "TAP252015", shape: "Tappered Bagguette", size: "2.50 x 2.00 x 1.50 mm", wt: 0.05, group: null },
-  { code: "TAP271005", key: "TAP271005", shape: "Tappered Bagguette", size: "2.75 x 1.00 x 0.50 mm", wt: 0.02, group: null },
-  { code: "TAP271207", key: "TAP271207", shape: "Tappered Bagguette", size: "2.75 x 1.25 x 0.75 mm", wt: 0.03, group: null },
-  { code: "TAP271210", key: "TAP271210", shape: "Tappered Bagguette", size: "2.75 x 1.25 x 1.00 mm", wt: 0.03, group: null },
-  { code: "TAP271510", key: "TAP271510", shape: "Tappered Bagguette", size: "2.75 x 1.50 x 1.00 mm", wt: 0.04, group: null },
-  { code: "TAP271512", key: "TAP271512", shape: "Tappered Bagguette", size: "2.75 x 1.50 x 1.25 mm", wt: 0.04, group: null },
-  { code: "TAP271712", key: "TAP271712", shape: "Tappered Bagguette", size: "2.75 x 1.75 x 1.25 mm", wt: 0.05, group: null },
-  { code: "TAP271715", key: "TAP271715", shape: "Tappered Bagguette", size: "2.75 x 1.75 x 1.50 mm", wt: 0.05, group: null },
-  { code: "TAP272015", key: "TAP272015", shape: "Tappered Bagguette", size: "2.75 x 2.00 x 1.50 mm", wt: 0.07, group: null },
-  { code: "TAP301207", key: "TAP301207", shape: "Tappered Bagguette", size: "3.00 x 1.25 x 0.75 mm", wt: 0.03, group: null },
-  { code: "TAP301210", key: "TAP301210", shape: "Tappered Bagguette", size: "3.00 x 1.25 x 1.00 mm", wt: 0.04, group: null },
-  { code: "TAP301510", key: "TAP301510", shape: "Tappered Bagguette", size: "3.00 x 1.50 x 1.00 mm", wt: 0.04, group: null },
-  { code: "TAP301512", key: "TAP301512", shape: "Tappered Bagguette", size: "3.00 x 1.50 x 1.25 mm", wt: 0.05, group: null },
-  { code: "TAP301710", key: "TAP301710", shape: "Tappered Bagguette", size: "3.00 x 1.75 x 1.00 mm", wt: 0.06, group: null },
-  { code: "TAP301712", key: "TAP301712", shape: "Tappered Bagguette", size: "3.00 x 1.75 x 1.25 mm", wt: 0.06, group: null },
-  { code: "TAP302010", key: "TAP302010", shape: "Tappered Bagguette", size: "3.00 x 2.00 x 1.00 mm", wt: 0.06, group: null },
-  { code: "TAP302015", key: "TAP302015", shape: "Tappered Bagguette", size: "3.00 x 2.00 x 1.50 mm", wt: 0.07, group: null },
-  { code: "TAP302017", key: "TAP302017", shape: "Tappered Bagguette", size: "3.00 x 2.00 x 1.75 mm", wt: 0.08, group: null },
-  { code: "TAP302517", key: "TAP302517", shape: "Tappered Bagguette", size: "3.00 x 2.50 x 1.75 mm", wt: 0.09, group: null },
-  { code: "TAP321005", key: "TAP321005", shape: "Tappered Bagguette", size: "3.25 x 1.00 x 0.50 mm", wt: 0.02, group: null },
-  { code: "TAP321207", key: "TAP321207", shape: "Tappered Bagguette", size: "3.25 x 1.25 x 0.75 mm", wt: 0.03, group: null },
-  { code: "TAP321210", key: "TAP321210", shape: "Tappered Bagguette", size: "3.25 x 1.25 x 1.00 mm", wt: 0.03, group: null },
-  { code: "TAP321507", key: "TAP321507", shape: "Tappered Bagguette", size: "3.25 x 1.50 x 0.75 mm", wt: 0.04, group: null },
-  { code: "TAP321510", key: "TAP321510", shape: "Tappered Bagguette", size: "3.25 x 1.50 x 1.00 mm", wt: 0.05, group: null },
-  { code: "TAP321512", key: "TAP321512", shape: "Tappered Bagguette", size: "3.25 x 1.50 x 1.25 mm", wt: 0.05, group: null },
-  { code: "TAP321710", key: "TAP321710", shape: "Tappered Bagguette", size: "3.25 x 1.75 x 1.00 mm", wt: 0.06, group: null },
-  { code: "TAP321712", key: "TAP321712", shape: "Tappered Bagguette", size: "3.25 x 1.75 x 1.25 mm", wt: 0.06, group: null },
-  { code: "TAP321715", key: "TAP321715", shape: "Tappered Bagguette", size: "3.25 x 1.75 x 1.50 mm", wt: 0.06, group: null },
-  { code: "TAP322010", key: "TAP322010", shape: "Tappered Bagguette", size: "3.25 x 2.00 x 1.00 mm", wt: 0.07, group: null },
-  { code: "TAP322012", key: "TAP322012", shape: "Tappered Bagguette", size: "3.25 x 2.00 x 1.25 mm", wt: 0.07, group: null },
-  { code: "TAP322015", key: "TAP322015", shape: "Tappered Bagguette", size: "3.25 x 2.00 x 1.50 mm", wt: 0.07, group: null },
-  { code: "TAP322517", key: "TAP322517", shape: "Tappered Bagguette", size: "3.25 x 2.50 x 1.75 mm", wt: 0.1, group: null },
-  { code: "TAP351210", key: "TAP351210", shape: "Tappered Bagguette", size: "3.50 x 1.25 x 1.00 mm", wt: 0.04, group: null },
-  { code: "TAP351510", key: "TAP351510", shape: "Tappered Bagguette", size: "3.50 x 1.50 x 1.00 mm", wt: 0.05, group: null },
-  { code: "TAP351512", key: "TAP351512", shape: "Tappered Bagguette", size: "3.50 x 1.50 x 1.25 mm", wt: 0.05, group: null },
-  { code: "TAP351710", key: "TAP351710", shape: "Tappered Bagguette", size: "3.50 x 1.75 x 1.00 mm", wt: 0.06, group: null },
-  { code: "TAP351712", key: "TAP351712", shape: "Tappered Bagguette", size: "3.50 x 1.75 x 1.25 mm", wt: 0.07, group: null },
-  { code: "TAP352010", key: "TAP352010", shape: "Tappered Bagguette", size: "3.50 x 2.00 x 1.00 mm", wt: 0.08, group: null },
-  { code: "TAP352012", key: "TAP352012", shape: "Tappered Bagguette", size: "3.50 x 2.00 x 1.25 mm", wt: 0.08, group: null },
-  { code: "TAP352015", key: "TAP352015", shape: "Tappered Bagguette", size: "3.50 x 2.00 x 1.50 mm", wt: 0.08, group: null },
-  { code: "TAP352515", key: "TAP352515", shape: "Tappered Bagguette", size: "3.50 x 2.50 x 1.50 mm", wt: 0.1, group: null },
-  { code: "TAP371210", key: "TAP371210", shape: "Tappered Bagguette", size: "3.75 x 1.25 x 1.00 mm", wt: 0.05, group: null },
-  { code: "TAP371510", key: "TAP371510", shape: "Tappered Bagguette", size: "3.75 x 1.50 x 1.00 mm", wt: 0.06, group: null },
-  { code: "TAP371712", key: "TAP371712", shape: "Tappered Bagguette", size: "3.75 x 1.75 x 1.25 mm", wt: 0.07, group: null },
-  { code: "TAP372012", key: "TAP372012", shape: "Tappered Bagguette", size: "3.75 x 2.00 x 1.25 mm", wt: 0.09, group: null },
-  { code: "TAP372015", key: "TAP372015", shape: "Tappered Bagguette", size: "3.75 x 2.00 x 1.50 mm", wt: 0.1, group: null },
-  { code: "TAP372217", key: "TAP372217", shape: "Tappered Bagguette", size: "3.75 x 2.25 x 1.75 mm", wt: 0.11, group: null },
-  { code: "TAP401210", key: "TAP401210", shape: "Tappered Bagguette", size: "4.00 x 1.25 x 1.00 mm", wt: 0.04, group: null },
-  { code: "TAP401510", key: "TAP401510", shape: "Tappered Bagguette", size: "4.00 x 1.50 x 1.00 mm", wt: 0.06, group: null },
-  { code: "TAP401712", key: "TAP401712", shape: "Tappered Bagguette", size: "4.00 x 1.75 x 1.25 mm", wt: 0.08, group: null },
-  { code: "TAP402010", key: "TAP402010", shape: "Tappered Bagguette", size: "4.00 x 2.00 x 1.00 mm", wt: 0.08, group: null },
-  { code: "TAP402015", key: "TAP402015", shape: "Tappered Bagguette", size: "4.00 x 2.00 x 1.50 mm", wt: 0.1, group: null },
-  { code: "TAP402515", key: "TAP402515", shape: "Tappered Bagguette", size: "4.00 x 2.50 x 1.50 mm", wt: 0.13, group: null },
-  { code: "TAP402517", key: "TAP402517", shape: "Tappered Bagguette", size: "4.00 x 2.50 x 1.75 mm", wt: 0.13, group: null },
-  { code: "TAP422015", key: "TAP422015", shape: "Tappered Bagguette", size: "4.25 x 2.00 x 1.50 mm", wt: 0.11, group: null },
-  { code: "TAP422215", key: "TAP422215", shape: "Tappered Bagguette", size: "4.25 x 2.25 x 1.50 mm", wt: 0.13, group: null },
-  { code: "TAP422515", key: "TAP422515", shape: "Tappered Bagguette", size: "4.25 x 2.50 x 1.50 mm", wt: 0.14, group: null },
-  { code: "TAP422717", key: "TAP422717", shape: "Tappered Bagguette", size: "4.25 x 2.75 x 1.75 mm", wt: 0.18, group: null },
-  { code: "TAP451512", key: "TAP451512", shape: "Tappered Bagguette", size: "4.50 x 1.50 x 1.25 mm", wt: 0.08, group: null },
-  { code: "TAP452010", key: "TAP452010", shape: "Tappered Bagguette", size: "4.50 x 2.00 x 1.00 mm", wt: 0.09, group: null },
-  { code: "TAP452015", key: "TAP452015", shape: "Tappered Bagguette", size: "4.50 x 2.00 x 1.50 mm", wt: 0.11, group: null },
-  { code: "TAP452215", key: "TAP452215", shape: "Tappered Bagguette", size: "4.50 x 2.25 x 1.50 mm", wt: 0.13, group: null },
-  { code: "TAP452515", key: "TAP452515", shape: "Tappered Bagguette", size: "4.50 x 2.50 x 1.50 mm", wt: 0.16, group: null },
-  { code: "TAP452517", key: "TAP452517", shape: "Tappered Bagguette", size: "4.50 x 2.50 x 1.75 mm", wt: 0.15, group: null },
-  { code: "TAP452717", key: "TAP452717", shape: "Tappered Bagguette", size: "4.50 x 2.75 x 1.75 mm", wt: 0.19, group: null },
-  { code: "TAP471715", key: "TAP471715", shape: "Tappered Bagguette", size: "4.75 x 1.75 x 1.50 mm", wt: 0.11, group: null },
-  { code: "TAP472015", key: "TAP472015", shape: "Tappered Bagguette", size: "4.75 x 2.00 x 1.50 mm", wt: 0.13, group: null },
-  { code: "TAP472515", key: "TAP472515", shape: "Tappered Bagguette", size: "4.75 x 2.50 x 1.50 mm", wt: 0.17, group: null },
-  { code: "TAP472520", key: "TAP472520", shape: "Tappered Bagguette", size: "4.75 x 2.50 x 2.00 mm", wt: 0.18, group: null },
-  { code: "TAP473020", key: "TAP473020", shape: "Tappered Bagguette", size: "4.75 x 3.00 x 2.00 mm", wt: 0.22, group: null },
-  { code: "TAP502212", key: "TAP502212", shape: "Tappered Bagguette", size: "5.00 x 2.25 x 1.25 mm", wt: 0.13, group: null },
-  { code: "TAP502217", key: "TAP502217", shape: "Tappered Bagguette", size: "5.00 x 2.25 x 1.75 mm", wt: 0.16, group: null },
-  { code: "TAP502720", key: "TAP502720", shape: "Tappered Bagguette", size: "5.00 x 2.75 x 2.00 mm", wt: 0.23, group: null },
-  { code: "TAP552510", key: "TAP552510", shape: "Tappered Bagguette", size: "5.50 x 2.50 x 1.00 mm", wt: 0.17, group: null },
-  { code: "TAP552522", key: "TAP552522", shape: "Tappered Bagguette", size: "5.50 x 2.50 x 2.25 mm", wt: 0.23, group: null },
-  { code: "TAP553022", key: "TAP553022", shape: "Tappered Bagguette", size: "5.50 x 3.00 x 2.25 mm", wt: 0.3, group: null },
-  { code: "TAP602015", key: "TAP602015", shape: "Tappered Bagguette", size: "6.00 x 2.00 x 1.50 mm", wt: 0.18, group: null },
-  { code: "TAP603022", key: "TAP603022", shape: "Tappered Bagguette", size: "6.00 x 3.00 x 2.25 mm", wt: 0.28, group: null },
+  { code: "TAP151007", key: "TAP151007", shape: "Tapered Baguette", size: "1.50 x 1.00 x 0.75 mm", wt: 0.01, group: null },
+  { code: "TAP151210", key: "TAP151210", shape: "Tapered Baguette", size: "1.50 x 1.25 x 1.00 mm", wt: 0.01, group: null },
+  { code: "TAP170705", key: "TAP170705", shape: "Tapered Baguette", size: "1.75 x 0.75 x 0.50 mm", wt: 0.008, group: null },
+  { code: "TAP171005", key: "TAP171005", shape: "Tapered Baguette", size: "1.75 x 1.00 x 0.50 mm", wt: 0.01, group: null },
+  { code: "TAP171007", key: "TAP171007", shape: "Tapered Baguette", size: "1.75 x 1.00 x 0.75 mm", wt: 0.01, group: null },
+  { code: "TAP171210", key: "TAP171210", shape: "Tapered Baguette", size: "1.75 x 1.25 x 1.00 mm", wt: 0.02, group: null },
+  { code: "TAP171510", key: "TAP171510", shape: "Tapered Baguette", size: "1.75 x 1.50 x 1.00 mm", wt: 0.02, group: null },
+  { code: "TAP171512", key: "TAP171512", shape: "Tapered Baguette", size: "1.75 x 1.50 x 1.25 mm", wt: 0.02, group: null },
+  { code: "TAP201005", key: "TAP201005", shape: "Tapered Baguette", size: "2.00 x 1.00 x 0.50 mm", wt: 0.01, group: null },
+  { code: "TAP201007", key: "TAP201007", shape: "Tapered Baguette", size: "2.00 x 1.00 x 0.75 mm", wt: 0.01, group: null },
+  { code: "TAP201210", key: "TAP201210", shape: "Tapered Baguette", size: "2.00 x 1.25 x 1.00 mm", wt: 0.02, group: null },
+  { code: "TAP201510", key: "TAP201510", shape: "Tapered Baguette", size: "2.00 x 1.50 x 1.00 mm", wt: 0.02, group: null },
+  { code: "TAP201512", key: "TAP201512", shape: "Tapered Baguette", size: "2.00 x 1.50 x 1.25 mm", wt: 0.03, group: null },
+  { code: "TAP221005", key: "TAP221005", shape: "Tapered Baguette", size: "2.25 x 1.00 x 0.50 mm", wt: 0.01, group: null },
+  { code: "TAP221207", key: "TAP221207", shape: "Tapered Baguette", size: "2.25 x 1.25 x 0.75 mm", wt: 0.02, group: null },
+  { code: "TAP221210", key: "TAP221210", shape: "Tapered Baguette", size: "2.25 x 1.25 x 1.00 mm", wt: 0.02, group: null },
+  { code: "TAP221510", key: "TAP221510", shape: "Tapered Baguette", size: "2.25 x 1.50 x 1.00 mm", wt: 0.03, group: null },
+  { code: "TAP221512", key: "TAP221512", shape: "Tapered Baguette", size: "2.25 x 1.50 x 1.25 mm", wt: 0.04, group: null },
+  { code: "TAP221712", key: "TAP221712", shape: "Tapered Baguette", size: "2.25 x 1.75 x 1.25 mm", wt: 0.04, group: null },
+  { code: "TAP221715", key: "TAP221715", shape: "Tapered Baguette", size: "2.25 x 1.75 x 1.50 mm", wt: 0.05, group: null },
+  { code: "TAP222015", key: "TAP222015", shape: "Tapered Baguette", size: "2.25 x 2.00 x 1.50 mm", wt: 0.05, group: null },
+  { code: "TAP251005", key: "TAP251005", shape: "Tapered Baguette", size: "2.50 x 1.00 x 0.50 mm", wt: 0.02, group: null },
+  { code: "TAP251007", key: "TAP251007", shape: "Tapered Baguette", size: "2.50 x 1.00 x 0.75 mm", wt: 0.02, group: null },
+  { code: "TAP251210", key: "TAP251210", shape: "Tapered Baguette", size: "2.50 x 1.25 x 1.00 mm", wt: 0.03, group: null },
+  { code: "TAP251510", key: "TAP251510", shape: "Tapered Baguette", size: "2.50 x 1.50 x 1.00 mm", wt: 0.03, group: null },
+  { code: "TAP251512", key: "TAP251512", shape: "Tapered Baguette", size: "2.50 x 1.50 x 1.25 mm", wt: 0.04, group: null },
+  { code: "TAP251710", key: "TAP251710", shape: "Tapered Baguette", size: "2.50 x 1.75 x 1.00 mm", wt: 0.04, group: null },
+  { code: "TAP251712", key: "TAP251712", shape: "Tapered Baguette", size: "2.50 x 1.75 x 1.25 mm", wt: 0.05, group: null },
+  { code: "TAP252015", key: "TAP252015", shape: "Tapered Baguette", size: "2.50 x 2.00 x 1.50 mm", wt: 0.05, group: null },
+  { code: "TAP271005", key: "TAP271005", shape: "Tapered Baguette", size: "2.75 x 1.00 x 0.50 mm", wt: 0.02, group: null },
+  { code: "TAP271207", key: "TAP271207", shape: "Tapered Baguette", size: "2.75 x 1.25 x 0.75 mm", wt: 0.03, group: null },
+  { code: "TAP271210", key: "TAP271210", shape: "Tapered Baguette", size: "2.75 x 1.25 x 1.00 mm", wt: 0.03, group: null },
+  { code: "TAP271510", key: "TAP271510", shape: "Tapered Baguette", size: "2.75 x 1.50 x 1.00 mm", wt: 0.04, group: null },
+  { code: "TAP271512", key: "TAP271512", shape: "Tapered Baguette", size: "2.75 x 1.50 x 1.25 mm", wt: 0.04, group: null },
+  { code: "TAP271712", key: "TAP271712", shape: "Tapered Baguette", size: "2.75 x 1.75 x 1.25 mm", wt: 0.05, group: null },
+  { code: "TAP271715", key: "TAP271715", shape: "Tapered Baguette", size: "2.75 x 1.75 x 1.50 mm", wt: 0.05, group: null },
+  { code: "TAP272015", key: "TAP272015", shape: "Tapered Baguette", size: "2.75 x 2.00 x 1.50 mm", wt: 0.07, group: null },
+  { code: "TAP301207", key: "TAP301207", shape: "Tapered Baguette", size: "3.00 x 1.25 x 0.75 mm", wt: 0.03, group: null },
+  { code: "TAP301210", key: "TAP301210", shape: "Tapered Baguette", size: "3.00 x 1.25 x 1.00 mm", wt: 0.04, group: null },
+  { code: "TAP301510", key: "TAP301510", shape: "Tapered Baguette", size: "3.00 x 1.50 x 1.00 mm", wt: 0.04, group: null },
+  { code: "TAP301512", key: "TAP301512", shape: "Tapered Baguette", size: "3.00 x 1.50 x 1.25 mm", wt: 0.05, group: null },
+  { code: "TAP301710", key: "TAP301710", shape: "Tapered Baguette", size: "3.00 x 1.75 x 1.00 mm", wt: 0.06, group: null },
+  { code: "TAP301712", key: "TAP301712", shape: "Tapered Baguette", size: "3.00 x 1.75 x 1.25 mm", wt: 0.06, group: null },
+  { code: "TAP302010", key: "TAP302010", shape: "Tapered Baguette", size: "3.00 x 2.00 x 1.00 mm", wt: 0.06, group: null },
+  { code: "TAP302015", key: "TAP302015", shape: "Tapered Baguette", size: "3.00 x 2.00 x 1.50 mm", wt: 0.07, group: null },
+  { code: "TAP302017", key: "TAP302017", shape: "Tapered Baguette", size: "3.00 x 2.00 x 1.75 mm", wt: 0.08, group: null },
+  { code: "TAP302517", key: "TAP302517", shape: "Tapered Baguette", size: "3.00 x 2.50 x 1.75 mm", wt: 0.09, group: null },
+  { code: "TAP321005", key: "TAP321005", shape: "Tapered Baguette", size: "3.25 x 1.00 x 0.50 mm", wt: 0.02, group: null },
+  { code: "TAP321207", key: "TAP321207", shape: "Tapered Baguette", size: "3.25 x 1.25 x 0.75 mm", wt: 0.03, group: null },
+  { code: "TAP321210", key: "TAP321210", shape: "Tapered Baguette", size: "3.25 x 1.25 x 1.00 mm", wt: 0.03, group: null },
+  { code: "TAP321507", key: "TAP321507", shape: "Tapered Baguette", size: "3.25 x 1.50 x 0.75 mm", wt: 0.04, group: null },
+  { code: "TAP321510", key: "TAP321510", shape: "Tapered Baguette", size: "3.25 x 1.50 x 1.00 mm", wt: 0.05, group: null },
+  { code: "TAP321512", key: "TAP321512", shape: "Tapered Baguette", size: "3.25 x 1.50 x 1.25 mm", wt: 0.05, group: null },
+  { code: "TAP321710", key: "TAP321710", shape: "Tapered Baguette", size: "3.25 x 1.75 x 1.00 mm", wt: 0.06, group: null },
+  { code: "TAP321712", key: "TAP321712", shape: "Tapered Baguette", size: "3.25 x 1.75 x 1.25 mm", wt: 0.06, group: null },
+  { code: "TAP321715", key: "TAP321715", shape: "Tapered Baguette", size: "3.25 x 1.75 x 1.50 mm", wt: 0.06, group: null },
+  { code: "TAP322010", key: "TAP322010", shape: "Tapered Baguette", size: "3.25 x 2.00 x 1.00 mm", wt: 0.07, group: null },
+  { code: "TAP322012", key: "TAP322012", shape: "Tapered Baguette", size: "3.25 x 2.00 x 1.25 mm", wt: 0.07, group: null },
+  { code: "TAP322015", key: "TAP322015", shape: "Tapered Baguette", size: "3.25 x 2.00 x 1.50 mm", wt: 0.07, group: null },
+  { code: "TAP322517", key: "TAP322517", shape: "Tapered Baguette", size: "3.25 x 2.50 x 1.75 mm", wt: 0.1, group: null },
+  { code: "TAP351210", key: "TAP351210", shape: "Tapered Baguette", size: "3.50 x 1.25 x 1.00 mm", wt: 0.04, group: null },
+  { code: "TAP351510", key: "TAP351510", shape: "Tapered Baguette", size: "3.50 x 1.50 x 1.00 mm", wt: 0.05, group: null },
+  { code: "TAP351512", key: "TAP351512", shape: "Tapered Baguette", size: "3.50 x 1.50 x 1.25 mm", wt: 0.05, group: null },
+  { code: "TAP351710", key: "TAP351710", shape: "Tapered Baguette", size: "3.50 x 1.75 x 1.00 mm", wt: 0.06, group: null },
+  { code: "TAP351712", key: "TAP351712", shape: "Tapered Baguette", size: "3.50 x 1.75 x 1.25 mm", wt: 0.07, group: null },
+  { code: "TAP352010", key: "TAP352010", shape: "Tapered Baguette", size: "3.50 x 2.00 x 1.00 mm", wt: 0.08, group: null },
+  { code: "TAP352012", key: "TAP352012", shape: "Tapered Baguette", size: "3.50 x 2.00 x 1.25 mm", wt: 0.08, group: null },
+  { code: "TAP352015", key: "TAP352015", shape: "Tapered Baguette", size: "3.50 x 2.00 x 1.50 mm", wt: 0.08, group: null },
+  { code: "TAP352515", key: "TAP352515", shape: "Tapered Baguette", size: "3.50 x 2.50 x 1.50 mm", wt: 0.1, group: null },
+  { code: "TAP371210", key: "TAP371210", shape: "Tapered Baguette", size: "3.75 x 1.25 x 1.00 mm", wt: 0.05, group: null },
+  { code: "TAP371510", key: "TAP371510", shape: "Tapered Baguette", size: "3.75 x 1.50 x 1.00 mm", wt: 0.06, group: null },
+  { code: "TAP371712", key: "TAP371712", shape: "Tapered Baguette", size: "3.75 x 1.75 x 1.25 mm", wt: 0.07, group: null },
+  { code: "TAP372012", key: "TAP372012", shape: "Tapered Baguette", size: "3.75 x 2.00 x 1.25 mm", wt: 0.09, group: null },
+  { code: "TAP372015", key: "TAP372015", shape: "Tapered Baguette", size: "3.75 x 2.00 x 1.50 mm", wt: 0.1, group: null },
+  { code: "TAP372217", key: "TAP372217", shape: "Tapered Baguette", size: "3.75 x 2.25 x 1.75 mm", wt: 0.11, group: null },
+  { code: "TAP401210", key: "TAP401210", shape: "Tapered Baguette", size: "4.00 x 1.25 x 1.00 mm", wt: 0.04, group: null },
+  { code: "TAP401510", key: "TAP401510", shape: "Tapered Baguette", size: "4.00 x 1.50 x 1.00 mm", wt: 0.06, group: null },
+  { code: "TAP401712", key: "TAP401712", shape: "Tapered Baguette", size: "4.00 x 1.75 x 1.25 mm", wt: 0.08, group: null },
+  { code: "TAP402010", key: "TAP402010", shape: "Tapered Baguette", size: "4.00 x 2.00 x 1.00 mm", wt: 0.08, group: null },
+  { code: "TAP402015", key: "TAP402015", shape: "Tapered Baguette", size: "4.00 x 2.00 x 1.50 mm", wt: 0.1, group: null },
+  { code: "TAP402515", key: "TAP402515", shape: "Tapered Baguette", size: "4.00 x 2.50 x 1.50 mm", wt: 0.13, group: null },
+  { code: "TAP402517", key: "TAP402517", shape: "Tapered Baguette", size: "4.00 x 2.50 x 1.75 mm", wt: 0.13, group: null },
+  { code: "TAP422015", key: "TAP422015", shape: "Tapered Baguette", size: "4.25 x 2.00 x 1.50 mm", wt: 0.11, group: null },
+  { code: "TAP422215", key: "TAP422215", shape: "Tapered Baguette", size: "4.25 x 2.25 x 1.50 mm", wt: 0.13, group: null },
+  { code: "TAP422515", key: "TAP422515", shape: "Tapered Baguette", size: "4.25 x 2.50 x 1.50 mm", wt: 0.14, group: null },
+  { code: "TAP422717", key: "TAP422717", shape: "Tapered Baguette", size: "4.25 x 2.75 x 1.75 mm", wt: 0.18, group: null },
+  { code: "TAP451512", key: "TAP451512", shape: "Tapered Baguette", size: "4.50 x 1.50 x 1.25 mm", wt: 0.08, group: null },
+  { code: "TAP452010", key: "TAP452010", shape: "Tapered Baguette", size: "4.50 x 2.00 x 1.00 mm", wt: 0.09, group: null },
+  { code: "TAP452015", key: "TAP452015", shape: "Tapered Baguette", size: "4.50 x 2.00 x 1.50 mm", wt: 0.11, group: null },
+  { code: "TAP452215", key: "TAP452215", shape: "Tapered Baguette", size: "4.50 x 2.25 x 1.50 mm", wt: 0.13, group: null },
+  { code: "TAP452515", key: "TAP452515", shape: "Tapered Baguette", size: "4.50 x 2.50 x 1.50 mm", wt: 0.16, group: null },
+  { code: "TAP452517", key: "TAP452517", shape: "Tapered Baguette", size: "4.50 x 2.50 x 1.75 mm", wt: 0.15, group: null },
+  { code: "TAP452717", key: "TAP452717", shape: "Tapered Baguette", size: "4.50 x 2.75 x 1.75 mm", wt: 0.19, group: null },
+  { code: "TAP471715", key: "TAP471715", shape: "Tapered Baguette", size: "4.75 x 1.75 x 1.50 mm", wt: 0.11, group: null },
+  { code: "TAP472015", key: "TAP472015", shape: "Tapered Baguette", size: "4.75 x 2.00 x 1.50 mm", wt: 0.13, group: null },
+  { code: "TAP472515", key: "TAP472515", shape: "Tapered Baguette", size: "4.75 x 2.50 x 1.50 mm", wt: 0.17, group: null },
+  { code: "TAP472520", key: "TAP472520", shape: "Tapered Baguette", size: "4.75 x 2.50 x 2.00 mm", wt: 0.18, group: null },
+  { code: "TAP473020", key: "TAP473020", shape: "Tapered Baguette", size: "4.75 x 3.00 x 2.00 mm", wt: 0.22, group: null },
+  { code: "TAP502212", key: "TAP502212", shape: "Tapered Baguette", size: "5.00 x 2.25 x 1.25 mm", wt: 0.13, group: null },
+  { code: "TAP502217", key: "TAP502217", shape: "Tapered Baguette", size: "5.00 x 2.25 x 1.75 mm", wt: 0.16, group: null },
+  { code: "TAP502720", key: "TAP502720", shape: "Tapered Baguette", size: "5.00 x 2.75 x 2.00 mm", wt: 0.23, group: null },
+  { code: "TAP552510", key: "TAP552510", shape: "Tapered Baguette", size: "5.50 x 2.50 x 1.00 mm", wt: 0.17, group: null },
+  { code: "TAP552522", key: "TAP552522", shape: "Tapered Baguette", size: "5.50 x 2.50 x 2.25 mm", wt: 0.23, group: null },
+  { code: "TAP553022", key: "TAP553022", shape: "Tapered Baguette", size: "5.50 x 3.00 x 2.25 mm", wt: 0.3, group: null },
+  { code: "TAP602015", key: "TAP602015", shape: "Tapered Baguette", size: "6.00 x 2.00 x 1.50 mm", wt: 0.18, group: null },
+  { code: "TAP603022", key: "TAP603022", shape: "Tapered Baguette", size: "6.00 x 3.00 x 2.25 mm", wt: 0.28, group: null },
   { code: "TRG030W", key: "TRG030W", shape: "Triangle", size: "5.00 x 5.00 x 5.00 mm", wt: 0.3, group: null },
   { code: "TRG040W", key: "TRG040W", shape: "Triangle", size: "5.50 x 5.50 x 5.50 mm", wt: 0.37, group: null },
   { code: "TRG25M", key: "TRG25M", shape: "Triangle", size: "2.50 x 2.50 x 2.50 mm", wt: 0.04, group: null },
@@ -579,7 +588,7 @@ const roundUp5 = (n) => (isFinite(n) ? Math.ceil(n / 5) * 5 : 0);
 const roundUpMetalWt = (n) => (isFinite(n) ? Math.round(Math.ceil(n / 0.05) * 0.05 * 100) / 100 : n);
 
 function emptyRow() {
-  return { mode: "natural", stoneTypeSel: "Mined", typeCustom: false, customType: "", shapeSel: "", sizeCode: "", quality: "TW SI1", lgdGrade: "Non-cert", lgdShape: "RND", pcs: "", customShape: "", customSizeText: "", customWt: "", customRate: "", manualRate: "", proposedQuality: "", setting: "", source: "", itemType: "", lab: "" };
+  return { mode: "natural", stoneTypeSel: "Mined", typeCustom: false, customType: "", shapeSel: "", sizeCode: "", quality: "TW SI1", lgdGrade: "Non-cert", lgdShape: "RND", pcs: "", customShape: "", customSizeText: "", customWt: "", customRate: "", manualRate: "", proposedQuality: "", colour: "", setting: "", source: "", itemType: "", lab: "" };
 }
 
 
@@ -652,6 +661,9 @@ function JwyCalculatorApp() {
   const [pdfImport, setPdfImport] = useState(null);
   const [cadImages, setCadImages] = useState([]);
   const [clientRefImages, setClientRefImages] = useState([]);
+  // The CAD Order Form's own stone table (as printed on its page 1), kept from
+  // the JSON import so the full page-1 picture can be redrawn for Main File.
+  const [cadSheet, setCadSheet] = useState(null);
   const [turntableLink, setTurntableLink] = useState("");
 
   const [liveData, setLiveData] = useState({
@@ -680,6 +692,96 @@ function JwyCalculatorApp() {
   const [rateLoading, setRateLoading] = useState(false);
   const [rateErrors, setRateErrors] = useState({});
   const [lastSync, setLastSync] = useState(null);
+
+  // ---- Section 07 (Job Tracker details), remembered per Job No ----
+  // Edits made by hand are saved against the Job No a moment later; whenever a
+  // Job No comes up again (CAD import, loading a quote, typing it in) the saved
+  // values are filled back in. See the job-fields helpers near the top of the
+  // helper functions for where they are stored.
+  const jobFieldsOwnerRef = useRef(""); // Job No the current Section 07 values belong to
+  const jobFieldsDirtyRef = useRef(false); // edited by hand since the last save/restore
+  const rhodiumTouchedRef = useRef(false); // Rhodium set by hand (not just taken from the CAD import)
+  const jobTrackerFieldsRef = useRef(jobTrackerFields);
+  const jobInfoRef = useRef(jobInfo);
+  jobTrackerFieldsRef.current = jobTrackerFields;
+  jobInfoRef.current = jobInfo;
+  const [jobFieldsNote, setJobFieldsNote] = useState("");
+
+  const editJobTrackerFields = useCallback((updater) => {
+    jobFieldsDirtyRef.current = true;
+    setJobTrackerFields(updater);
+  }, []);
+  const editRhodium = useCallback((value) => {
+    jobFieldsDirtyRef.current = true;
+    rhodiumTouchedRef.current = true;
+    setJobInfo((prev) => ({ ...prev, rhodium: value }));
+  }, []);
+
+  useEffect(() => {
+    const key = jobFieldsKey(jobInfo.jobNo);
+    setJobFieldsNote("");
+    if (!key) return undefined;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      const saved = await loadJobFields(key);
+      if (cancelled) return;
+      const owner = jobFieldsOwnerRef.current;
+      const mine = owner === key;
+      if (owner && !mine) {
+        // The values on screen belonged to another job -- they are not "edits" for this one.
+        jobFieldsDirtyRef.current = false;
+        rhodiumTouchedRef.current = false;
+      }
+      jobFieldsOwnerRef.current = key;
+      const wasDirty = jobFieldsDirtyRef.current;
+      const cur = jobTrackerFieldsRef.current;
+      let next = cur;
+      let rhodium = rhodiumTouchedRef.current ? jobInfoRef.current.rhodium || "" : undefined;
+      if (saved) {
+        const { rhodium: savedRhodium, ...savedFields } = saved;
+        const curEmpty = !Object.values(cur).some(Boolean);
+        next = { ...EMPTY_JOB_TRACKER_MANUAL_FIELDS, ...savedFields };
+        if (!(curEmpty || (!wasDirty && !mine))) {
+          // Fields already belong to this job (or were typed before the Job No) -- what is on
+          // screen wins, the saved values only fill the empty ones.
+          for (const [k, v] of Object.entries(cur)) if (v) next[k] = v;
+        }
+        jobFieldsDirtyRef.current = false;
+        setJobTrackerFields(next);
+        if (savedRhodium && !(wasDirty && rhodiumTouchedRef.current)) {
+          rhodiumTouchedRef.current = true;
+          rhodium = savedRhodium;
+          setJobInfo((prev) => ({ ...prev, rhodium: savedRhodium }));
+        }
+        setJobFieldsNote("restored");
+      }
+      if (wasDirty) {
+        // Typed in before the Job No was known: save it against this job now.
+        jobFieldsDirtyRef.current = false;
+        const where = await saveJobFields(key, rhodium !== undefined ? { ...next, rhodium } : next);
+        if (!cancelled) setJobFieldsNote(where === "cloud" ? "saved" : "saved on this device");
+      }
+    }, 600);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [jobInfo.jobNo]);
+
+  useEffect(() => {
+    if (!jobFieldsDirtyRef.current) return undefined;
+    const key = jobFieldsKey(jobInfo.jobNo);
+    if (!key) return undefined; // saved as soon as a Job No is entered (see above)
+    const timer = setTimeout(async () => {
+      jobFieldsDirtyRef.current = false;
+      jobFieldsOwnerRef.current = key;
+      const payload = { ...jobTrackerFieldsRef.current };
+      if (rhodiumTouchedRef.current) payload.rhodium = jobInfoRef.current.rhodium || "";
+      const where = await saveJobFields(key, payload);
+      setJobFieldsNote(where === "cloud" ? "saved" : "saved on this device");
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [jobTrackerFields, jobInfo.rhodium]);
 
   const refreshRates = useCallback(async () => {
     setRateLoading(true);
@@ -761,7 +863,8 @@ function JwyCalculatorApp() {
   }, [refreshRates]);
 
   const applyImportResult = async (fileName, resultData) => {
-    const { jobInfo: ji, metals, metalWarnings, stones, cadImageDataUrls, clientRefImageDataUrls, derivedSummary } = resultData;
+    const { jobInfo: ji, metals, metalWarnings, stones, cadSheet: importedSheet, cadImageDataUrls, clientRefImageDataUrls, derivedSummary } = resultData;
+    setCadSheet(importedSheet && importedSheet.stones && importedSheet.stones.length ? importedSheet : null);
     if (cadImageDataUrls?.length) {
       const compressed = await Promise.all(cadImageDataUrls.map((u) => compressDataUrl(u)));
       setCadImages((prev) => [...compressed, ...prev]);
@@ -801,6 +904,7 @@ function JwyCalculatorApp() {
     }
 
     const newRows = stones.map((s) => ({
+      ...emptyRow(),
       mode: s.diamondMode || "natural",
       stoneTypeSel: STONE_TYPE_OPTIONS.includes(s.stoneType) ? s.stoneType : s.diamondMode === "lgd" ? "Lab grown" : "Mined",
       shapeSel: s.isCustom ? CUSTOM_CODE : s.matchedShape || "",
@@ -810,7 +914,10 @@ function JwyCalculatorApp() {
       lgdShape: s.lgdShape || "RND",
       pcs: s.qty ? String(s.qty) : "",
       customShape: s.customShape || "",
-      customSizeText: s.customSizeText || "",
+      // A stone typed in by hand on the CAD form has no catalog size, so the
+      // form's own L x W x H is carried into "Describe size" (it then reads
+      // properly in Main File / PO stone details).
+      customSizeText: s.customSizeText || (s.isCustom && s.dims ? `${s.dims} mm` : ""),
       customWt: s.customWt ? String(s.customWt) : "",
       customRate: "",
       manualRate: "",
@@ -890,11 +997,16 @@ function JwyCalculatorApp() {
     setPdfFileName("");
     setCadImages([]);
     setClientRefImages([]);
+    setCadSheet(null);
     setTurntableLink("");
     setManualPriceOverride("");
     setAdditionalChargeName("");
     setAdditionalChargeAmount("");
     setJobTrackerFields(EMPTY_JOB_TRACKER_MANUAL_FIELDS);
+    jobFieldsOwnerRef.current = "";
+    jobFieldsDirtyRef.current = false;
+    rhodiumTouchedRef.current = false;
+    setJobFieldsNote("");
   };
 
   const persistQuotes = (list) => {
@@ -922,6 +1034,7 @@ function JwyCalculatorApp() {
     jobTrackerFields,
     cadImages,
     clientRefImages,
+    cadSheet,
     turntableLink,
     calculatedTotalWithDutyUSD: totalWithDutyUSD,
     calculatedTotalWithDutyLocal: totalWithDutyLocal,
@@ -947,13 +1060,17 @@ function JwyCalculatorApp() {
     setPrimaryGramWt(q.primaryGramWt);
     setSecondaryAlloyShort(q.secondaryAlloyShort);
     setSecondaryGramWt(q.secondaryGramWt);
-    setRows(q.rows.map((r) => ({ ...emptyRow(), ...r })));
+    // Quotes saved before the spelling fix carry "Tappered Bagguette".
+    setRows(q.rows.map((r) => ({ ...emptyRow(), ...r, shapeSel: fixShapeSpelling(r.shapeSel), customShape: fixShapeSpelling(r.customShape) })));
     setManualPriceOverride(q.manualPriceOverride || "");
     setAdditionalChargeName(q.additionalChargeName || "");
     setAdditionalChargeAmount(q.additionalChargeAmount || "");
     setJobTrackerFields({ ...EMPTY_JOB_TRACKER_MANUAL_FIELDS, ...q.jobTrackerFields });
+    jobFieldsOwnerRef.current = jobFieldsKey(q.jobInfo && q.jobInfo.jobNo);
+    jobFieldsDirtyRef.current = false;
     setCadImages(q.cadImages || []);
     setClientRefImages(q.clientRefImages || []);
+    setCadSheet(q.cadSheet || null);
     setTurntableLink(q.turntableLink || "");
   };
 
@@ -1244,7 +1361,7 @@ function JwyCalculatorApp() {
     // so plain jewellery can be exported; the mapper decides what it fills.
     const rowsWithCalcs = rows
       .map((r, i) => ({ r, c: rowCalcs[i] }))
-      .filter(({ r, c }) => r.stoneTypeSel === PLAIN_TYPE || ((r.sizeCode || r.customShape) && c.totalWt > 0));
+      .filter(({ r, c }) => r.stoneTypeSel === PLAIN_TYPE || hasStoneLine(r, c));
 
     if (rowsWithCalcs.length === 0) {
       throw new Error("Add at least one stone row (or choose Plain for a metal-only item) before exporting.");
@@ -1272,7 +1389,17 @@ function JwyCalculatorApp() {
     // put it in Image3 -- so only 2 job images are uploaded (slots 1-2)
     // and that cell is left alone.
     const logoLinked = !!jtRow.Image3;
-    const imagesToUpload = pickJobTrackerImages(cadImages, clientRefImages, logoLinked ? 2 : 3);
+    // Image1 is the full page 1 of the CAD card (CAD render + stone table),
+    // redrawn from the imported CAD data; any other CAD renders and then the
+    // client reference images follow it. A quote with no CAD import has no
+    // stone table to draw, so it keeps the plain CAD render as before.
+    let page1Image = null;
+    try {
+      page1Image = await composePage1Image((cadImages || [])[0], cadSheet);
+    } catch {
+      page1Image = null;
+    }
+    const imagesToUpload = pickJobTrackerImages(cadImages, clientRefImages, logoLinked ? 2 : 3, page1Image);
     let uploadedCount = 0;
     for (let idx = 0; idx < imagesToUpload.length; idx++) {
       const dataUrl = imagesToUpload[idx];
@@ -1301,9 +1428,53 @@ function JwyCalculatorApp() {
     const ws = XLSX.utils.aoa_to_sheet(jobTrackerRowToAoa(jtRow));
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Main File");
-    XLSX.writeFile(wb, `${filenameBase}_MainFile.xlsx`);
+    // Written to bytes (not writeFile) so the Google Sans / size 8 font can be
+    // applied before download -- see applyMainFileFont in jobTrackerExport.js.
+    const rawBytes = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+    const styledBytes = await applyMainFileFont(rawBytes);
+    downloadBlob(
+      new Blob([styledBytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
+      `${filenameBase}_MainFile.xlsx`
+    );
 
-    return { uploadedCount, availableCount: imagesToUpload.length, logoLinked };
+    return { uploadedCount, availableCount: imagesToUpload.length, logoLinked, page1: !!page1Image };
+  };
+
+  // Purchase Order PDF -- same job as Export to Main File, laid out as the PO
+  // form (see poExport.js for the field rules, poDocument.jsx for the layout).
+  // Page 1: details + main CAD image; page 2: reference image(s).
+  const doGeneratePO = async () => {
+    const rowsWithCalcs = rows
+      .map((r, i) => ({ r, c: rowCalcs[i] }))
+      .filter(({ r, c }) => r.stoneTypeSel === PLAIN_TYPE || hasStoneLine(r, c));
+
+    if (rowsWithCalcs.length === 0) {
+      throw new Error("Add at least one stone row (or choose Plain for a metal-only item) before generating the PO.");
+    }
+
+    const data = mapQuoteToPo({
+      jobInfo,
+      primaryAlloy,
+      secondaryAlloy: secondaryAlloyShort ? secondaryAlloy : null,
+      secondaryGramWt,
+      rowsWithCalcs,
+      manualFields: jobTrackerFields,
+      printDate,
+    });
+
+    // Page 1 carries the main CAD image (the first CAD render); the following
+    // page(s) carry the client reference image(s). Every image is prepared for
+    // the PDF (white background, sensible size) and keeps its real proportions,
+    // so the page layouts can be fitted to each job's pictures.
+    const cadMain = (cadImages || [])[0] ? (await prepareImageForPdf(cadImages[0], 2200)).src : null;
+    const pool = await Promise.all((clientRefImages || []).map((src) => prepareImageForPdf(src, 1600)));
+    const logo = (await trimLogo("/logoblack.PNG")) || "/logoblack.PNG";
+
+    const blob = await pdf(
+      <PurchaseOrderPdf data={data} logo={logo} cadImage={cadMain} extraImages={pool} />
+    ).toBlob();
+    downloadBlob(blob, `${quoteFilenameBase()}_PO.pdf`);
+    return { hasCad: !!cadMain, refCount: pool.length };
   };
 
   // Order-stage Stone Schedule download: one Excel line per stone row,
@@ -1317,7 +1488,7 @@ function JwyCalculatorApp() {
         c: rowCalcs[i],
         code: r.sizeCode && r.sizeCode !== CUSTOM_CODE ? (DIA_SIZE.find((d) => d.key === r.sizeCode) || {}).code || "" : "",
       }))
-      .filter(({ r, c }) => (r.sizeCode || r.customShape) && c.totalWt > 0);
+      .filter(({ r, c }) => hasStoneLine(r, c));
 
     if (lines.length === 0) {
       throw new Error("Add at least one stone row before downloading the stone schedule (Plain items have no stones to list).");
@@ -1744,11 +1915,14 @@ function JwyCalculatorApp() {
 
         <JobTrackerFieldsCard
           jobTrackerFields={jobTrackerFields}
-          setJobTrackerFields={setJobTrackerFields}
+          setJobTrackerFields={editJobTrackerFields}
+          onRhodiumChange={editRhodium}
+          savedNote={jobFieldsNote}
           jobInfo={jobInfo}
           setJobInfo={setJobInfo}
           totalWithDutyUSD={totalWithDutyUSD}
           onExportJobTracker={doExportJobTracker}
+          onGeneratePO={doGeneratePO}
         />
       </div>
     </div>
@@ -1812,13 +1986,33 @@ function GlobalStyles() {
 }
 
 function TopBar({ jobInfo, pdfFileName, pdfStatus, pdfImport, onJsonUpload, onSavedQuoteUpload, onClear }) {
+  // Logo cropped to its artwork so it shows at a proper size; until it's ready
+  // (or if it can't be cropped) the original file is shown in a cropping window.
+  const [logo, setLogo] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    trimLogo("/logowhite.PNG").then((t) => alive && setLogo(t));
+    return () => {
+      alive = false;
+    };
+  }, []);
   return (
     <div style={styles.topBar}>
       <div className="jwy-topbar-inner" style={styles.topBarInner}>
         <div className="jwy-brand" style={styles.brandBlock}>
-          <div style={styles.brandLogoBox}>
-            <img src="/logowhite.PNG" alt="Made with Love" style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: "center", display: "block" }} />
-          </div>
+          {logo ? (
+            <div style={{ ...styles.brandLogoBox, width: "auto", padding: "4px 10px" }}>
+              <img
+                src={logo.src}
+                alt="Made with Love"
+                style={{ height: 40, width: "auto", maxWidth: 200, objectFit: "contain", display: "block" }}
+              />
+            </div>
+          ) : (
+            <div style={styles.brandLogoBox}>
+              <img src="/logowhite.PNG" alt="Made with Love" style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: "center", display: "block" }} />
+            </div>
+          )}
           <div>
             <div style={styles.brandTitle}>JWY Calculator</div>
             <div style={styles.brandSub}>Job {jobInfo.jobNo || "—"}</div>
@@ -2010,6 +2204,16 @@ function JobInfoCard({ jobInfo, setJobInfo, location, setLocation, locationList,
             onChange={(e) => setJobInfo({ ...jobInfo, itemSize: e.target.value })}
           />
         </Field>
+        <Field label="Item type">
+          <div style={{ minWidth: 130 }}>
+            <DropdownOrOtherField
+              value={jobInfo.itemType}
+              options={ITEM_TYPE_OPTIONS}
+              onChange={(val) => setJobInfo({ ...jobInfo, itemType: val })}
+              placeholder="Item type"
+            />
+          </div>
+        </Field>
         <Field label="Date">
           <input
             type="date"
@@ -2065,6 +2269,303 @@ function JobInfoCard({ jobInfo, setJobInfo, location, setLocation, locationList,
       </div>
     </div>
   );
+}
+
+// A stone row counts for the Main File / PO / stone schedule once it has a
+// shape or size AND a piece count -- even when the CAD form gave it no weight
+// (tapered baguettes, for one). Rows like that used to be dropped from those
+// outputs altogether, taking their Source / Setting with them.
+const hasStoneLine = (r, c) => (r.sizeCode || r.customShape) && (c.totalWt > 0 || (parseFloat(r.pcs) || 0) > 0);
+
+// ---- Page-1 picture for Main File (Image1) ---------------------------------
+// The CAD Order Form's page 1 is the CAD render with the stone table under it
+// (Pos / Stone / Shape / L x W x H / Avg Dia Wt / Qty / Total Wt / Setting /
+// Source, then the stone count and total weight). The JSON only carries the
+// render and the stone data, so the same page is redrawn here -- same layout,
+// same wording -- as one picture: Main File's Image1 (and what its PO is
+// made from). Returns a PNG data URL, or null when there is nothing to draw.
+const PAGE1_COLS = [
+  ["Pos", 0.15], ["Stone", 0.108], ["Shape", 0.175], ["L x W x H", 0.165], ["Avg Dia Wt", 0.105],
+  ["Qty", 0.048], ["Total Wt", 0.08], ["Setting", 0.087], ["Source", 0.082],
+];
+const PAGE1_FONT = '"Helvetica Neue", Helvetica, Arial, sans-serif';
+
+function loadImageEl(src) {
+  return new Promise((resolve, reject) => {
+    const img = new window.Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("image could not be read"));
+    img.src = src;
+  });
+}
+
+function wrapCellText(ctx, text, maxW, maxLines = 3) {
+  const words = String(text).split(/\s+/).filter(Boolean);
+  const lines = [];
+  let cur = "";
+  for (const w of words) {
+    const test = cur ? `${cur} ${w}` : w;
+    if (cur && ctx.measureText(test).width > maxW) {
+      lines.push(cur);
+      cur = w;
+    } else cur = test;
+  }
+  if (cur) lines.push(cur);
+  return lines.slice(0, maxLines);
+}
+
+async function composePage1Image(renderDataUrl, cadSheet) {
+  const stones = (cadSheet && cadSheet.stones) || [];
+  if (!renderDataUrl || stones.length === 0) return null;
+  try {
+    const img = await loadImageEl(renderDataUrl);
+    if (!img.naturalWidth || !img.naturalHeight) return null;
+    const W = 1400;
+    const renderH = Math.round((img.naturalHeight / img.naturalWidth) * W);
+    const M = 26; // side margin of the table
+    const tableW = W - 2 * M;
+    const colX = [];
+    let acc = M;
+    for (const [, f] of PAGE1_COLS) {
+      colX.push(acc);
+      acc += f * tableW;
+    }
+    const colW = PAGE1_COLS.map(([, f]) => f * tableW);
+    const FONT_PX = 24;
+    const LINE_H = 31;
+    const PAD_Y = 22;
+    const HEAD_H = 72;
+
+    const dash = (v) => (v === "" || v === undefined || v === null ? "-" : String(v));
+    const cells = stones.map((s) => [
+      dash(s.pos), dash(s.stone), dash(s.shape), dash(s.dims),
+      dash(s.avgWt), dash(s.qty), dash(s.totalWt), dash(s.setting), dash(s.source),
+    ]);
+
+    // Measure first (rows grow when a cell wraps), draw second.
+    const measure = document.createElement("canvas").getContext("2d");
+    measure.font = `${FONT_PX}px ${PAGE1_FONT}`;
+    const laid = cells.map((row) => {
+      const lines = row.map((txt, ci) => wrapCellText(measure, txt, colW[ci] - 16));
+      const n = Math.max(...lines.map((l) => l.length));
+      return { lines, h: Math.max(78, n * LINE_H + PAD_Y * 2) };
+    });
+    const tableH = HEAD_H + laid.reduce((a, r) => a + r.h, 0);
+    const GAP_TOP = 44;
+    const FOOT_H = 110;
+    const H = renderH + GAP_TOP + tableH + FOOT_H;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#FFFFFF";
+    ctx.fillRect(0, 0, W, H);
+    ctx.drawImage(img, 0, 0, W, renderH);
+
+    // Header row
+    let y = renderH + GAP_TOP;
+    ctx.fillStyle = "#3B82F6";
+    ctx.fillRect(M, y, tableW, HEAD_H);
+    ctx.fillStyle = "#FFFFFF";
+    ctx.font = `bold ${FONT_PX}px ${PAGE1_FONT}`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    PAGE1_COLS.forEach(([label], ci) => ctx.fillText(label, colX[ci] + colW[ci] / 2, y + HEAD_H / 2));
+    y += HEAD_H;
+
+    // Body rows
+    ctx.strokeStyle = "#E5E7EB";
+    ctx.lineWidth = 2;
+    for (const row of laid) {
+      ctx.strokeRect(M, y, tableW, row.h);
+      ctx.font = `${FONT_PX}px ${PAGE1_FONT}`;
+      ctx.fillStyle = "#1F2937";
+      row.lines.forEach((lines, ci) => {
+        if (ci > 0) {
+          ctx.beginPath();
+          ctx.moveTo(colX[ci], y);
+          ctx.lineTo(colX[ci], y + row.h);
+          ctx.stroke();
+        }
+        const startY = y + row.h / 2 - ((lines.length - 1) * LINE_H) / 2;
+        lines.forEach((ln, li) => ctx.fillText(ln, colX[ci] + colW[ci] / 2, startY + li * LINE_H));
+      });
+      y += row.h;
+    }
+
+    // Totals line
+    const totalQty = stones.reduce((a, s) => a + (Number(s.qty) || 0), 0);
+    const totalWt = stones.reduce((a, s) => a + (parseFloat(s.totalWt) || 0), 0);
+    ctx.fillStyle = "#111827";
+    ctx.font = `bold 29px ${PAGE1_FONT}`;
+    ctx.textAlign = "left";
+    ctx.fillText(`NO. OF STONES: ${totalQty}      |      TOTAL STONE WEIGHT: ${totalWt.toFixed(3)} ct`, M, y + 56);
+
+    let out = canvas.toDataURL("image/png");
+    if (out.length > 3_000_000) out = canvas.toDataURL("image/jpeg", 0.92); // keep the upload comfortably small
+    return out;
+  } catch {
+    return null; // fall back to the plain CAD render
+  }
+}
+
+// ---- Job Tracker details (Section 07), remembered per Job No ---------------
+// Whatever is filled in Section 07 is saved against the quote's Job No and
+// filled back in whenever that job number comes up again (a fresh CAD import,
+// a reload, another machine). Stored in the cloud when the Netlify function is
+// reachable and always on this device as well, so nothing is lost offline.
+const JOB_FIELDS_LS_KEY = "jwyJobTrackerFields";
+const jobFieldsKey = (jobNo) => String(jobNo || "").trim().replace(/\s+/g, " ").toUpperCase();
+
+function readLocalJobFields(key) {
+  try {
+    const all = JSON.parse(localStorage.getItem(JOB_FIELDS_LS_KEY) || "{}");
+    return all[key] || null;
+  } catch {
+    return null;
+  }
+}
+function writeLocalJobFields(key, fields) {
+  try {
+    const all = JSON.parse(localStorage.getItem(JOB_FIELDS_LS_KEY) || "{}");
+    all[key] = { fields, updatedAt: Date.now() };
+    const keys = Object.keys(all);
+    if (keys.length > 300) {
+      keys.sort((a, b) => (all[a].updatedAt || 0) - (all[b].updatedAt || 0)).slice(0, keys.length - 300).forEach((k) => delete all[k]);
+    }
+    localStorage.setItem(JOB_FIELDS_LS_KEY, JSON.stringify(all));
+  } catch {}
+}
+async function fetchCloudJobFields(key) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 5000);
+  try {
+    const res = await fetch(`/.netlify/functions/job-tracker-fields?jobNo=${encodeURIComponent(key)}`, { signal: ctrl.signal });
+    if (!res.ok) return null;
+    const body = await res.json();
+    return body && body.fields ? { fields: body.fields, updatedAt: body.updatedAt || 0 } : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+// -> the saved fields object, or null when this job has nothing saved
+async function loadJobFields(key) {
+  const cloud = await fetchCloudJobFields(key);
+  const local = readLocalJobFields(key);
+  const best = [cloud, local].filter(Boolean).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
+  return best ? best.fields : null;
+}
+// -> "cloud" or "local" (where it ended up)
+async function saveJobFields(key, fields) {
+  writeLocalJobFields(key, fields);
+  try {
+    const res = await fetch("/.netlify/functions/job-tracker-fields", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jobNo: key, fields }),
+    });
+    return res.ok ? "cloud" : "local";
+  } catch {
+    return "local";
+  }
+}
+
+// Gets an image ready for the PO PDF: re-draws it on a white background (so a
+// transparent PNG doesn't turn black), scales it down when it is larger than
+// the PDF needs (keeps the file small and quick), and stores it as a JPEG -- a
+// format the PDF engine always accepts. Returns { src, w, h } with the final
+// pixel size, which the PO uses to lay images out by their real shape. If the
+// image can't be processed, the original is passed through unchanged.
+function prepareImageForPdf(src, maxDim = 1800, quality = 0.88) {
+  return new Promise((resolve) => {
+    const img = new window.Image();
+    img.onerror = () => resolve({ src, w: 0, h: 0 });
+    img.onload = () => {
+      const W = img.naturalWidth || 0;
+      const H = img.naturalHeight || 0;
+      if (!W || !H) return resolve({ src, w: 0, h: 0 });
+      try {
+        const scale = Math.min(1, maxDim / Math.max(W, H));
+        const w = Math.max(1, Math.round(W * scale));
+        const h = Math.max(1, Math.round(H * scale));
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle = "#FFFFFF";
+        ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve({ src: canvas.toDataURL("image/jpeg", quality), w, h });
+      } catch {
+        resolve({ src, w: W, h: H });
+      }
+    };
+    img.src = src;
+  });
+}
+
+// The brand logo PNGs carry wide transparent margins, which is why they look
+// tiny at any normal size. This crops a logo to its actual artwork (the
+// smallest box holding every visible pixel) and returns { src, w, h } as a PNG
+// data URL, or null if it can't be done -- callers then fall back to the
+// original file. Cached per URL.
+const trimmedLogoCache = {};
+function trimLogo(url) {
+  if (!trimmedLogoCache[url]) {
+    trimmedLogoCache[url] = new Promise((resolve) => {
+      const img = new window.Image();
+      img.onerror = () => resolve(null);
+      img.onload = () => {
+        try {
+          const W = img.naturalWidth;
+          const H = img.naturalHeight;
+          if (!W || !H) return resolve(null);
+          const canvas = document.createElement("canvas");
+          canvas.width = W;
+          canvas.height = H;
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(img, 0, 0);
+          const data = ctx.getImageData(0, 0, W, H).data;
+          // Background = the top-left pixel when it's opaque (a logo saved on a
+          // plain colour); otherwise transparency itself is the background.
+          const bgOpaque = data[3] > 200;
+          const [br, bg, bb] = [data[0], data[1], data[2]];
+          let minX = W, minY = H, maxX = -1, maxY = -1;
+          for (let y = 0; y < H; y++) {
+            for (let x = 0; x < W; x++) {
+              const i = (y * W + x) * 4;
+              if (data[i + 3] < 24) continue;
+              if (bgOpaque && Math.abs(data[i] - br) + Math.abs(data[i + 1] - bg) + Math.abs(data[i + 2] - bb) < 60) continue;
+              if (x < minX) minX = x;
+              if (x > maxX) maxX = x;
+              if (y < minY) minY = y;
+              if (y > maxY) maxY = y;
+            }
+          }
+          if (maxX < 0) return resolve(null);
+          const pad = 2;
+          minX = Math.max(0, minX - pad);
+          minY = Math.max(0, minY - pad);
+          maxX = Math.min(W - 1, maxX + pad);
+          maxY = Math.min(H - 1, maxY + pad);
+          const cw = maxX - minX + 1;
+          const ch = maxY - minY + 1;
+          const out = document.createElement("canvas");
+          out.width = cw;
+          out.height = ch;
+          out.getContext("2d").drawImage(canvas, minX, minY, cw, ch, 0, 0, cw, ch);
+          resolve({ src: out.toDataURL("image/png"), w: cw, h: ch });
+        } catch {
+          resolve(null);
+        }
+      };
+      img.src = url;
+    });
+  }
+  return trimmedLogoCache[url];
 }
 
 function compressDataUrl(dataUrl, maxDim = 1600, quality = 0.82) {
@@ -2865,6 +3366,7 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
               <th style={styles.th}>Shape</th>
               <th style={styles.th}>Size</th>
               <th style={styles.th}>Spec</th>
+              <th style={styles.th}>Colour</th>
               <th style={styles.th}>Quality</th>
               <th style={styles.th}>Proposed Quality</th>
               <th style={styles.thRight}>Wt/pc</th>
@@ -2889,7 +3391,7 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                   </td>
                   <td data-label="Type" style={styles.td}>
                     <select
-                      style={{ ...styles.inputSm, width: 108 }}
+                      style={{ ...styles.inputSm, width: 100 }}
                       value={row.typeCustom ? CUSTOM_TYPE_OPTION : row.stoneTypeSel || "Mined"}
                       onChange={(e) => {
                         const val = e.target.value;
@@ -2916,7 +3418,7 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                     </select>
                     {row.typeCustom && (
                       <input
-                        style={{ ...styles.inputSm, width: 108, marginTop: 4 }}
+                        style={{ ...styles.inputSm, width: 100, marginTop: 4 }}
                         placeholder="Type stone name"
                         value={row.customType || ""}
                         onChange={(e) => updateRow(i, { customType: e.target.value, stoneTypeSel: e.target.value.trim() || "Custom" })}
@@ -2926,7 +3428,7 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                   {isPlain ? (
                     <td
                       className="jwy-plain"
-                      colSpan={14}
+                      colSpan={15}
                       data-label=""
                       style={{ ...styles.td, fontSize: 12, color: "var(--muted)", fontStyle: "italic" }}
                     >
@@ -2936,7 +3438,7 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                     <>
                   <td data-label="Item" style={styles.td}>
                     <select
-                      style={{ ...styles.inputSm, width: 62 }}
+                      style={{ ...styles.inputSm, width: 56 }}
                       value={row.itemType || ""}
                       onChange={(e) => updateRow(i, { itemType: e.target.value })}
                       title="Item Type -- goes into the downloaded stone schedule"
@@ -2951,7 +3453,7 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                   </td>
                   <td data-label="Lab" style={styles.td}>
                     <select
-                      style={{ ...styles.inputSm, width: 82 }}
+                      style={{ ...styles.inputSm, width: 76 }}
                       value={row.lab || ""}
                       onChange={(e) => updateRow(i, { lab: e.target.value })}
                       title="Lab -- goes into the downloaded stone schedule"
@@ -3044,6 +3546,16 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                       calc.size
                     )}
                   </td>
+                  <td data-label="Colour" style={styles.td}>
+                    <input
+                      style={{ ...styles.inputSm, width: 62 }}
+                      list="jwy-stone-colours"
+                      placeholder="colour"
+                      value={row.colour || ""}
+                      onChange={(e) => updateRow(i, { colour: e.target.value })}
+                      title="Stone colour -- printed on the PO and in Main File stone details (e.g. Black)"
+                    />
+                  </td>
                   <td data-label="Quality" style={styles.td}>
                     {row.typeCustom || (row.stoneTypeSel && row.stoneTypeSel !== "Mined" && row.stoneTypeSel !== "Lab grown") ? (
                       <span style={{ fontSize: 11, color: "var(--muted)", fontStyle: "italic" }}>manual $/ct</span>
@@ -3085,7 +3597,7 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                     )}
                   </td>
                   <td data-label="Proposed quality" style={styles.td}>
-                    <div style={{ minWidth: 118 }} title="Shown to the customer on the Price Only print, instead of the internal quality grade">
+                    <div style={{ minWidth: 108 }} title="Shown to the customer on the Price Only print, instead of the internal quality grade">
                       <DropdownOrOtherField
                         value={row.proposedQuality || ""}
                         options={PROPOSED_DIA_QUALITIES}
@@ -3165,7 +3677,7 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
           </tbody>
           <tfoot>
             <tr className="jwy-stone-total" style={styles.totalRow}>
-              <td className="jwy-wide" style={styles.td} colSpan={10}>
+              <td className="jwy-wide" style={styles.td} colSpan={11}>
                 Totals
               </td>
               <td data-label="Pcs" style={styles.tdRight}>{fmt(totals.totalPcs, 0)}</td>
@@ -3178,6 +3690,11 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
             </tr>
           </tfoot>
         </table>
+        <datalist id="jwy-stone-colours">
+          {["White", "Black", "Blue", "Pink", "Yellow", "Green", "Red", "Brown", "Champagne", "Orange", "Purple"].map((c) => (
+            <option key={c} value={c} />
+          ))}
+        </datalist>
       </div>
       <button style={{ ...styles.smallBtn, marginTop: 10 }} onClick={onAddRow} type="button">
         + Add custom stone row
@@ -3398,13 +3915,17 @@ function DropdownOrOtherField({ value, options, onChange, placeholder }) {
 function JobTrackerFieldsCard({
   jobTrackerFields,
   setJobTrackerFields,
+  onRhodiumChange,
+  savedNote,
   jobInfo,
   setJobInfo,
   totalWithDutyUSD,
   onExportJobTracker,
+  onGeneratePO,
 }) {
   const [open, setOpen] = useState(false);
   const [exportStatus, setExportStatus] = useState("");
+  const [poStatus, setPoStatus] = useState("");
   const filledCount = Object.values(jobTrackerFields).filter(Boolean).length + (jobInfo.rhodium ? 1 : 0);
   const setField = (key, value) => setJobTrackerFields((prev) => ({ ...prev, [key]: value }));
   const groups = [...new Set(JOB_TRACKER_MANUAL_FIELDS.map((f) => f.group))];
@@ -3413,12 +3934,24 @@ function JobTrackerFieldsCard({
     e.stopPropagation(); // don't also toggle the collapse when clicking the button
     setExportStatus("exporting");
     try {
-      const { uploadedCount, availableCount, logoLinked } = await onExportJobTracker();
+      const { uploadedCount, availableCount, logoLinked, page1 } = await onExportJobTracker();
       const imgPart = availableCount === 0 ? "no images uploaded" : `${uploadedCount}/${availableCount} image URL(s) added`;
-      setExportStatus(`Downloaded -- ${imgPart}${logoLinked ? " + stamp logo link in Image3" : ""}`);
+      setExportStatus(`Downloaded -- ${imgPart}${page1 ? " (Image1 = full page 1)" : ""}${logoLinked ? " + stamp logo link in Image3" : ""}`);
       setTimeout(() => setExportStatus(""), 6000);
     } catch (err) {
       setExportStatus((err && err.message) || "Couldn't build the Main File export");
+    }
+  };
+
+  const doPO = async (e) => {
+    e.stopPropagation(); // don't also toggle the collapse when clicking the button
+    setPoStatus("building");
+    try {
+      const { hasCad } = await onGeneratePO();
+      setPoStatus(hasCad ? "Downloaded -- PO ready" : "Downloaded -- no CAD image on this quote");
+      setTimeout(() => setPoStatus(""), 6000);
+    } catch (err) {
+      setPoStatus((err && err.message) || "Couldn't generate the PO");
     }
   };
 
@@ -3430,7 +3963,23 @@ function JobTrackerFieldsCard({
       >
         <SectionLabel eyebrow="07" title="Job Tracker details" noMargin />
         <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontSize: 12, color: MUTED }}>{filledCount > 0 ? `${filledCount} filled` : "optional"}</span>
+          <span style={{ fontSize: 12, color: MUTED }} title={savedNote ? `Job ${jobFieldsKey(jobInfo.jobNo)}: ${savedNote}` : ""}>
+            {filledCount > 0 ? `${filledCount} filled` : "optional"}
+            {savedNote ? ` · ${savedNote}` : ""}
+          </span>
+          <button
+            style={{ ...styles.smallBtn, ...styles.smallBtnAccent, padding: "4px 7px" }}
+            type="button"
+            disabled={poStatus === "building"}
+            onClick={doPO}
+          >
+            {poStatus === "building" ? "Building…" : "Generate PO"}
+          </button>
+          {poStatus && poStatus !== "building" && (
+            <span style={poStatus.startsWith("Downloaded") ? styles.statusOk : styles.statusWarn} title={poStatus}>
+              {poStatus.startsWith("Downloaded") ? "✓" : poStatus.slice(0, 24) + "…"}
+            </span>
+          )}
           <button
             style={{ ...styles.smallBtn, ...styles.smallBtnAccent, padding: "4px 7px" }}
             type="button"
@@ -3451,7 +4000,8 @@ function JobTrackerFieldsCard({
         <div style={{ marginTop: 12 }}>
           <p style={{ fontSize: 12, color: MUTED, marginTop: 0, marginBottom: 12 }}>
             None of these come from the quote or a CAD Order Form import -- fill in whatever's already known and it
-            flows straight into "Export to Main File" instead of a blank cell.
+            flows straight into "Export to Main File" instead of a blank cell. What you fill in here is saved
+            against the Job No and filled back in whenever that job comes up again.
           </p>
 
           <div style={{ display: "flex", flexWrap: "wrap", gap: 14, marginBottom: 14 }}>
@@ -3460,7 +4010,7 @@ function JobTrackerFieldsCard({
                 <select
                   style={{ ...styles.inputSm, width: "100%" }}
                   value={jobInfo.rhodium || ""}
-                  onChange={(e) => setJobInfo({ ...jobInfo, rhodium: e.target.value })}
+                  onChange={(e) => onRhodiumChange(e.target.value)}
                 >
                   <option value="">— not set —</option>
                   <option value="Yes">Yes</option>
