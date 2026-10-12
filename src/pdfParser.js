@@ -280,6 +280,17 @@ function bridgeStone(stone, diaSize) {
 // extraction and direct JSON import) so there's exactly one place that
 // defines how card data becomes calculator state -- no drift between
 // the two entry points.
+// The stone's Source off the CAD form ("HO" / "Customer" / ...). Tolerates the
+// key being spelled a little differently ("Stone Source", "Src").
+function sourceOf(stone) {
+  if (!stone || typeof stone !== "object") return "";
+  if (stone.Source) return String(stone.Source).trim();
+  for (const k of Object.keys(stone)) {
+    if (/^(stone\s*)?(source|src)$/i.test(k.trim()) && stone[k]) return String(stone[k]).trim();
+  }
+  return "";
+}
+
 function mapFormDataToCalculator(data, { alloys = [], diaSize = [] } = {}) {
   // --- Job info ---
   const jobInfo = {
@@ -339,7 +350,7 @@ function mapFormDataToCalculator(data, { alloys = [], diaSize = [] } = {}) {
         qty: num(s.Qty),
         totalWt: num(s.Tot),
         setting: s.Set || "",
-        source: s.Source || "",
+        source: sourceOf(s),
         ...bridge,
       };
     });
@@ -386,9 +397,17 @@ function mapFormDataToCalculator(data, { alloys = [], diaSize = [] } = {}) {
         qty: num(s.Qty),
         totalWt: s.Tot || "",
         setting: s.Set || "",
-        source: s.Source || "",
+        source: sourceOf(s),
       })),
   };
+
+  // A stone with no Source of its own takes the form's own summary line
+  // (_STONE_SOURCES) when that names a single source for the whole job.
+  const summarySources = [...new Set(String(derivedSummary.stoneSources || "").split(/[,;/]+/).map((v) => v.trim()).filter(Boolean))];
+  if (summarySources.length === 1) {
+    stones.forEach((st) => { if (!st.source) st.source = summarySources[0]; });
+    cadSheet.stones.forEach((st) => { if (!st.source) st.source = summarySources[0]; });
+  }
 
   return { jobInfo, metals, metalWarnings, stones, cadSheet, cadImageDataUrls, clientRefImageDataUrls, derivedSummary, rawJson: data };
 }
@@ -413,4 +432,3 @@ export function parseOrderFormJson(input, { alloys = [], diaSize = [] } = {}) {
   }
   return { ok: true, data: mapFormDataToCalculator(data, { alloys, diaSize }) };
 }
-
