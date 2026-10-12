@@ -249,18 +249,21 @@ export function cleanSize(size) {
   return String(size).replace(/\s*\(.*?\)\s*/g, " ").replace(/\s*±\s*/g, " ").replace(/\s+mm\b/i, "mm").replace(/\s+/g, " ").trim();
 }
 
-// One line per stone row: Shape + Size + Proposed Quality, e.g.
-// "Round 1.9mm G/SI2" or "Tapered Baguette 6.90 x 4.30 x 1.60mm". A colour typed
-// into the row's Colour box goes right after the shape ("Round Black 8.2mm");
-// anything left blank is simply skipped. Pieces / weight are not repeated here,
-// and the internal pricing grade is never printed -- only the Proposed Quality
-// the person chose. Rows are joined with "; " (see mapQuoteToJobTrackerRow).
+// One line per stone row: Shape + Size + Proposed Quality + Pcs, e.g.
+// "Round 1.9mm G/SI2 12 pcs" or "Tapered Baguette 6.90 x 4.30 x 1.60mm FG/VS2 2 pcs".
+// A colour typed into the row's Colour box goes right after the shape
+// ("Round Black 8.2mm ..."); anything left blank is simply skipped. Weight is
+// not repeated here, and the internal pricing grade is never printed -- only the
+// Proposed Quality the person chose. Rows are joined with "; " (see
+// mapQuoteToJobTrackerRow).
 export function describeStoneRow(r, c) {
   const shape = c.shape || r.customShape || "";
   const colour = (r.colour || "").trim();
   const size = cleanSize(c.size);
   const quality = (r.proposedQuality || "").trim();
-  return [shape, colour, size, quality].filter(Boolean).join(" ");
+  const n = parseFloat(r.pcs) || 0;
+  const pcs = n > 0 ? `${Math.round(n * 1000) / 1000} pcs` : "";
+  return [shape, colour, size, quality, pcs].filter(Boolean).join(" ");
 }
 
 // ============================================================
@@ -303,28 +306,29 @@ export function formatProductSize(itemSize, locationCode) {
 }
 
 // ============================================================
-// SSP -- pulled straight from the Calculator's own "(With 5% duty ·
-// USD)" total (totalWithDutyUSD, passed in as sspDefaultUsd) rather
-// than typed by hand. Still overridable: if the Job Tracker details
-// panel has something typed into SSP, that wins.
+// SSP -- the Calculator's own "With 5% duty · USD" total (totalWithDutyUSD,
+// passed in as sspDefaultUsd), written in the JADELIGHTXZ price code, e.g.
+// $1,610 -> "JIJX". Still overridable: whatever is typed into SSP in the Job
+// Tracker details panel goes out exactly as typed.
 //
-// NOT YET DONE: the real Main File SSP column is expected to hold this
-// number run through a "JADELIGHTXZ" price-code cipher (the common
-// jewellery-retail trick of a 10ish-letter codeword standing in for
-// digits, so a plain wholesale cost isn't sitting in the open on the
-// sheet) rather than the raw USD figure. Nobody has given this
-// function the actual letter<->digit mapping yet, so for now SSP comes
-// through as the plain calculated number -- someone needs to
-// hand-apply the cipher after export until the mapping is supplied and
-// wired in here.
-// ============================================================
+// ASSUMED MAPPING (the real letter<->digit table has not been supplied; this is
+// the one the Phoenix Calculator uses): the digits 1 2 3 4 5 6 7 8 9 0 are
+// written J A D E L I G H T X, position by position. "Z" (the 11th letter of
+// JADELIGHTXZ) is not used -- if it is a repeat marker or stands for something
+// else, change SSP_CIPHER / encodeSsp below; nothing else needs touching.
+export const SSP_CIPHER = { digits: "1234567890", letters: "JADELIGHTX" };
+export function encodeSsp(amount) {
+  const n = Math.round(Number(amount));
+  if (!isFinite(n) || n <= 0) return "";
+  return String(n)
+    .split("")
+    .map((d) => SSP_CIPHER.letters[SSP_CIPHER.digits.indexOf(d)] || d)
+    .join("");
+}
 function resolveSsp(manualFields, sspDefaultUsd) {
   const typed = ((manualFields || {}).ssp || "").trim();
   if (typed) return typed;
-  if (typeof sspDefaultUsd === "number" && isFinite(sspDefaultUsd) && sspDefaultUsd > 0) {
-    return String(sspDefaultUsd);
-  }
-  return "";
+  return encodeSsp(sspDefaultUsd);
 }
 
 // ============================================================
@@ -547,9 +551,9 @@ export function mapQuotesToJobTrackerSheet(quotes) {
 export const JOB_TRACKER_PENDING_ITEMS = [
   "Office Ship Date (both columns), QC pass Date, Ship Date, Delay, Saurabh Bhai -- not collected in the Calculator at all; these columns always come through blank and are filled in Main File directly.",
   "Approval Date, PODate, DueDate, Stone Issue Date, Vendor, VendorItemNo, StampLogo, StampMetal, StampOther, StampLoc, Finding1, Finding2, Tag Color -- the Calculator has no source for any of these (production-workflow dates and finishing instructions that only exist once the job is in progress). They're fillable by hand in the \"Job Tracker details\" panel in the Calculator (see JOB_TRACKER_MANUAL_FIELDS) so they don't have to stay blank in the export -- but if nobody fills that panel in, they still come through blank here.",
-  "SSP -- auto-filled from the Calculator's own \"With 5% duty · USD\" total unless overridden by hand, but NOT yet run through the JADELIGHTXZ price-code cipher the real Main File column is expected to use -- see the comment above resolveSsp() -- so it currently comes through as the plain USD number.",
+  "SSP -- the Calculator\'s \"With 5% duty · USD\" total written in the JADELIGHTXZ code (digits 1234567890 -> JADELIGHTX, assumed from the Phoenix Calculator; Z unused). Check one known job against Main File before relying on it. Anything typed into SSP in the Job Tracker details panel overrides it and goes out as typed.",
   "Image3 -- holds the Stamp Logo link when the chosen logo has one (then only the first 2 job images are uploaded); logos with no link yet leave Image3 to the job's own 3rd image. Links are the Google Drive share links as supplied (not direct image URLs).",
-  "StoneDetails -- one entry per stone row, written as Shape + Size + Proposed Quality (plus the Colour box if it is filled in), rows separated by \"; \". Piece counts and weights are not repeated there.",
+  "StoneDetails -- one entry per stone row, written as Shape + Size + Proposed Quality + Pcs (plus the Colour box if it is filled in), rows separated by \"; \". Weights are not repeated there.",
   "StoneSource / SettingType -- come from the CAD Order Form import (its Source/Set fields per stone). Source \"HO\" is written as \"Diacrown\" (Customer stays Customer). A stone with no setting gets the default \"Hand\". A quote built by hand has no Source, so StoneSource is blank for those.",
   "Rhodium -- filled from the CAD Order Form's own Rhodium field when the quote was imported from one, or from the manual Rhodium dropdown in the Calculator if set there; otherwise falls back to an inferred default (WG -> Yes, YG/RG -> No) based on every real row seen so far -- double-check it on jobs that are an exception to that pattern",
   "MetalColor -- worked out from the primary + secondary alloy using the sheet's own codes (WG/YG/RG, WY YW WR RW YR RY, YP, RP, 950, 925, 925+18YG). YWR (three golds) and 925+SS (silver + steel) can't come from two alloy slots, and combos not on the list (e.g. White Gold + Platinum, PT900, AG935) come through flagged RECHECK: -- type those into Main File by hand.",
