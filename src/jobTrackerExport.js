@@ -286,24 +286,9 @@ function mainFileSource(v) {
   return /^ho$/i.test(t) ? "Diacrown" : t;
 }
 
-// Setting type defaults to "Hand" when the CAD form gave none for a stone.
-const DEFAULT_SETTING_TYPE = "Hand";
-const mainFileSetting = (v) => String(v || "").trim() || DEFAULT_SETTING_TYPE;
-
-// Product size as "<size> (<region>)", e.g. "M (UK)" or "7 (US)". The CAD form
-// sends the size with its own region in front ("UK M", "US 7"); that region
-// moves into the brackets after the size. A size with no region in front takes
-// the Calculator's selected location without its "WS" prefix (WSUK -> UK).
-const SIZE_REGIONS = "UK|US|EU|AU|IN|JP|CA|NZ|SG|AE|FR|DE|IT|CH|HK";
-export function formatProductSize(itemSize, locationCode) {
-  let size = String(itemSize || "").trim().replace(/\s+/g, " ");
-  if (!size) return "";
-  if (/\(\s*[A-Za-z]{2,4}\s*\)$/.test(size)) return size; // already "M (UK)"
-  const m = size.match(new RegExp(`^(${SIZE_REGIONS})\\s+(\\S.*)$`, "i"));
-  if (m) return `${m[2].trim()} (${m[1].toUpperCase()})`;
-  const loc = String(locationCode || "").trim().toUpperCase().replace(/^WS(?=[A-Z]{2}$)/, "");
-  return loc ? `${size} (${loc})` : size;
-}
+// Setting type in Main File is always "Hand" (the CAD form's own "Set" values --
+// Prong, Micro prong, ... -- are setting styles and do not go in this column).
+const MAIN_FILE_SETTING_TYPE = "Hand";
 
 // ============================================================
 // SSP -- the Calculator's own "With 5% duty · USD" total (totalWithDutyUSD,
@@ -493,7 +478,7 @@ export const EMPTY_JOB_TRACKER_MANUAL_FIELDS = {
  * duty · USD") figure, used to auto-fill SSP when nothing's typed in.
  */
 export function mapQuoteToJobTrackerRow(quote) {
-  const { jobInfo, primaryAlloy, secondaryAlloy, secondaryGramWt, rowsWithCalcs, manualFields, sspDefaultUsd, locationCode } = quote;
+  const { jobInfo, primaryAlloy, secondaryAlloy, secondaryGramWt, rowsWithCalcs, manualFields, sspDefaultUsd, stoneSourcesFallback } = quote;
   const row = blankRow();
 
   const { metalType, alloyType } = splitMetal(primaryAlloy);
@@ -506,13 +491,23 @@ export function mapQuoteToJobTrackerRow(quote) {
   const isPlainItem = realStoneRows.length === 0 && rowsWithCalcs.some(({ r }) => isPlainRow(r));
   const stoneDetails = isPlainItem ? PLAIN_STONE_FIELDS.StoneDetails : realStoneRows.map(({ r, c }) => describeStoneRow(r, c)).join("; ");
   const stoneType = isPlainItem ? PLAIN_STONE_FIELDS.StoneType : uniqueJoined(realStoneRows.map(({ r }) => stoneTypeLabel(r)));
-  const stoneSource = isPlainItem ? PLAIN_STONE_FIELDS.StoneSource : uniqueJoined(realStoneRows.map(({ r }) => mainFileSource(r.source)));
-  const settingType = isPlainItem ? PLAIN_STONE_FIELDS.SettingType : uniqueJoined(realStoneRows.map(({ r }) => mainFileSetting(r.setting)));
+  // Each stone's Source from the CAD form; when the rows carry none, the CAD
+  // form's own source list for the job (stoneSourcesFallback) is used instead.
+  const stoneSource = isPlainItem
+    ? PLAIN_STONE_FIELDS.StoneSource
+    : uniqueJoined(realStoneRows.map(({ r }) => mainFileSource(r.source))) ||
+      uniqueJoined(
+        []
+          .concat(stoneSourcesFallback || [])
+          .flatMap((v) => String(v || "").split(/[,;/]+/))
+          .map(mainFileSource)
+      );
+  const settingType = isPlainItem ? PLAIN_STONE_FIELDS.SettingType : MAIN_FILE_SETTING_TYPE;
 
   Object.assign(row, {
     SSP: resolveSsp(manualFields, sspDefaultUsd),
     ItemType: jobInfo.itemType || "",
-    ItemSize: formatProductSize(jobInfo.itemSize, locationCode),
+    ItemSize: jobInfo.itemSize || "",
     Qty: 1,
     MetalType: metalType,
     MetalColor: metalColor,
@@ -554,7 +549,7 @@ export const JOB_TRACKER_PENDING_ITEMS = [
   "SSP -- the Calculator\'s \"With 5% duty · USD\" total written in the JADELIGHTXZ code (digits 1234567890 -> JADELIGHTX, assumed from the Phoenix Calculator; Z unused). Check one known job against Main File before relying on it. Anything typed into SSP in the Job Tracker details panel overrides it and goes out as typed.",
   "Image3 -- holds the Stamp Logo link when the chosen logo has one (then only the first 2 job images are uploaded); logos with no link yet leave Image3 to the job's own 3rd image. Links are the Google Drive share links as supplied (not direct image URLs).",
   "StoneDetails -- one entry per stone row, written as Shape + Size + Proposed Quality + Pcs (plus the Colour box if it is filled in), rows separated by \"; \". Weights are not repeated there.",
-  "StoneSource / SettingType -- come from the CAD Order Form import (its Source/Set fields per stone). Source \"HO\" is written as \"Diacrown\" (Customer stays Customer). A stone with no setting gets the default \"Hand\". A quote built by hand has no Source, so StoneSource is blank for those.",
+  "StoneSource -- the CAD Order Form\'s Source for each stone (\"HO\" is written as \"Diacrown\", \"Customer\" stays Customer; e.g. \"Diacrown, Customer\"). If the stones carry none, the form\'s own source list for the job is used. A quote built by hand has none, so it is blank. SettingType is always \"Hand\"; ItemSize is the CAD form\'s value as it is.",
   "Rhodium -- filled from the CAD Order Form's own Rhodium field when the quote was imported from one, or from the manual Rhodium dropdown in the Calculator if set there; otherwise falls back to an inferred default (WG -> Yes, YG/RG -> No) based on every real row seen so far -- double-check it on jobs that are an exception to that pattern",
   "MetalColor -- worked out from the primary + secondary alloy using the sheet's own codes (WG/YG/RG, WY YW WR RW YR RY, YP, RP, 950, 925, 925+18YG). YWR (three golds) and 925+SS (silver + steel) can't come from two alloy slots, and combos not on the list (e.g. White Gold + Platinum, PT900, AG935) come through flagged RECHECK: -- type those into Main File by hand.",
   "Plain items (Type = Plain, metal only) -- StoneType comes through as \"Plain\" and StoneDetails/StoneSource/SettingType are left empty. PROVISIONAL until the Main File sheet for plain items is checked; adjust PLAIN_STONE_FIELDS in jobTrackerExport.js.",
