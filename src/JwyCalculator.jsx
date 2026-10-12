@@ -1412,7 +1412,7 @@ function JwyCalculatorApp() {
       rowsWithCalcs,
       manualFields: jobTrackerFields,
       sspDefaultUsd: totalWithDutyUSD,
-      locationCode: locInfo.code,
+      stoneSourcesFallback: [...((cadSheet && cadSheet.stones) || []).map((x) => x.source), pdfImport && pdfImport.derivedSummary && pdfImport.derivedSummary.stoneSources],
     });
 
     // Up to 3 images -- CAD renders first, then client reference images
@@ -2321,8 +2321,8 @@ const hasStoneLine = (r, c) => (r.sizeCode || r.customShape) && (c.totalWt > 0 |
 // same wording -- as one picture: Main File's Image1 (and what its PO is
 // made from). Returns a PNG data URL, or null when there is nothing to draw.
 const PAGE1_COLS = [
-  ["Pos", 0.15], ["Stone", 0.108], ["Shape", 0.175], ["L x W x H", 0.165], ["Avg Dia Wt", 0.105],
-  ["Qty", 0.048], ["Total Wt", 0.08], ["Setting", 0.087], ["Source", 0.082],
+  ["Pos", 0.15], ["Stone", 0.1], ["Shape", 0.175], ["L x W x H", 0.165], ["Avg Dia Wt", 0.1],
+  ["Qty", 0.048], ["Total Wt", 0.08], ["Setting", 0.078], ["Source", 0.104],
 ];
 const PAGE1_FONT = '"Helvetica Neue", Helvetica, Arial, sans-serif';
 
@@ -2375,7 +2375,8 @@ async function composePage1Image(renderDataUrl, cadSheet) {
     const dash = (v) => (v === "" || v === undefined || v === null ? "-" : String(v));
     const cells = stones.map((s) => [
       dash(s.pos), dash(s.stone), dash(s.shape), dash(s.dims),
-      dash(s.avgWt), dash(s.qty), dash(s.totalWt), dash(s.setting), dash(s.source),
+      // Same wording as the Main File cells: Setting is always "Hand", Source "HO" reads "Diacrown".
+      dash(s.avgWt), dash(s.qty), dash(s.totalWt), "Hand", dash(/^\s*ho\s*$/i.test(String(s.source || "")) ? "Diacrown" : s.source),
     ]);
 
     // Measure first (rows grow when a cell wraps), draw second.
