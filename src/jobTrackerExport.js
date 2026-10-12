@@ -276,6 +276,32 @@ function uniqueJoined(values) {
   return [...new Set(values.filter(Boolean))].join(", ");
 }
 
+// Main File wording for the stone Source: the CAD form's "HO" is written
+// "Diacrown" here; "Customer" (or anything else typed) is passed through.
+function mainFileSource(v) {
+  const t = String(v || "").trim();
+  return /^ho$/i.test(t) ? "Diacrown" : t;
+}
+
+// Setting type defaults to "Hand" when the CAD form gave none for a stone.
+const DEFAULT_SETTING_TYPE = "Hand";
+const mainFileSetting = (v) => String(v || "").trim() || DEFAULT_SETTING_TYPE;
+
+// Product size as "<size> (<region>)", e.g. "M (UK)" or "7 (US)". The CAD form
+// sends the size with its own region in front ("UK M", "US 7"); that region
+// moves into the brackets after the size. A size with no region in front takes
+// the Calculator's selected location without its "WS" prefix (WSUK -> UK).
+const SIZE_REGIONS = "UK|US|EU|AU|IN|JP|CA|NZ|SG|AE|FR|DE|IT|CH|HK";
+export function formatProductSize(itemSize, locationCode) {
+  let size = String(itemSize || "").trim().replace(/\s+/g, " ");
+  if (!size) return "";
+  if (/\(\s*[A-Za-z]{2,4}\s*\)$/.test(size)) return size; // already "M (UK)"
+  const m = size.match(new RegExp(`^(${SIZE_REGIONS})\\s+(\\S.*)$`, "i"));
+  if (m) return `${m[2].trim()} (${m[1].toUpperCase()})`;
+  const loc = String(locationCode || "").trim().toUpperCase().replace(/^WS(?=[A-Z]{2}$)/, "");
+  return loc ? `${size} (${loc})` : size;
+}
+
 // ============================================================
 // SSP -- pulled straight from the Calculator's own "(With 5% duty ·
 // USD)" total (totalWithDutyUSD, passed in as sspDefaultUsd) rather
@@ -463,7 +489,7 @@ export const EMPTY_JOB_TRACKER_MANUAL_FIELDS = {
  * duty · USD") figure, used to auto-fill SSP when nothing's typed in.
  */
 export function mapQuoteToJobTrackerRow(quote) {
-  const { jobInfo, primaryAlloy, secondaryAlloy, secondaryGramWt, rowsWithCalcs, manualFields, sspDefaultUsd } = quote;
+  const { jobInfo, primaryAlloy, secondaryAlloy, secondaryGramWt, rowsWithCalcs, manualFields, sspDefaultUsd, locationCode } = quote;
   const row = blankRow();
 
   const { metalType, alloyType } = splitMetal(primaryAlloy);
@@ -476,13 +502,13 @@ export function mapQuoteToJobTrackerRow(quote) {
   const isPlainItem = realStoneRows.length === 0 && rowsWithCalcs.some(({ r }) => isPlainRow(r));
   const stoneDetails = isPlainItem ? PLAIN_STONE_FIELDS.StoneDetails : realStoneRows.map(({ r, c }) => describeStoneRow(r, c)).join("; ");
   const stoneType = isPlainItem ? PLAIN_STONE_FIELDS.StoneType : uniqueJoined(realStoneRows.map(({ r }) => stoneTypeLabel(r)));
-  const stoneSource = isPlainItem ? PLAIN_STONE_FIELDS.StoneSource : uniqueJoined(realStoneRows.map(({ r }) => r.source));
-  const settingType = isPlainItem ? PLAIN_STONE_FIELDS.SettingType : uniqueJoined(realStoneRows.map(({ r }) => r.setting));
+  const stoneSource = isPlainItem ? PLAIN_STONE_FIELDS.StoneSource : uniqueJoined(realStoneRows.map(({ r }) => mainFileSource(r.source)));
+  const settingType = isPlainItem ? PLAIN_STONE_FIELDS.SettingType : uniqueJoined(realStoneRows.map(({ r }) => mainFileSetting(r.setting)));
 
   Object.assign(row, {
     SSP: resolveSsp(manualFields, sspDefaultUsd),
     ItemType: jobInfo.itemType || "",
-    ItemSize: jobInfo.itemSize || "",
+    ItemSize: formatProductSize(jobInfo.itemSize, locationCode),
     Qty: 1,
     MetalType: metalType,
     MetalColor: metalColor,
@@ -524,7 +550,7 @@ export const JOB_TRACKER_PENDING_ITEMS = [
   "SSP -- auto-filled from the Calculator's own \"With 5% duty · USD\" total unless overridden by hand, but NOT yet run through the JADELIGHTXZ price-code cipher the real Main File column is expected to use -- see the comment above resolveSsp() -- so it currently comes through as the plain USD number.",
   "Image3 -- holds the Stamp Logo link when the chosen logo has one (then only the first 2 job images are uploaded); logos with no link yet leave Image3 to the job's own 3rd image. Links are the Google Drive share links as supplied (not direct image URLs).",
   "StoneDetails -- one entry per stone row, written as Shape + Size + Proposed Quality (plus the Colour box if it is filled in), rows separated by \"; \". Piece counts and weights are not repeated there.",
-  "StoneSource / SettingType -- only filled when the quote came from a CAD Order Form import (its Source/Set fields per stone); a quote built by hand in the Calculator has nowhere for these to come from, so they're blank for those",
+  "StoneSource / SettingType -- come from the CAD Order Form import (its Source/Set fields per stone). Source \"HO\" is written as \"Diacrown\" (Customer stays Customer). A stone with no setting gets the default \"Hand\". A quote built by hand has no Source, so StoneSource is blank for those.",
   "Rhodium -- filled from the CAD Order Form's own Rhodium field when the quote was imported from one, or from the manual Rhodium dropdown in the Calculator if set there; otherwise falls back to an inferred default (WG -> Yes, YG/RG -> No) based on every real row seen so far -- double-check it on jobs that are an exception to that pattern",
   "MetalColor -- worked out from the primary + secondary alloy using the sheet's own codes (WG/YG/RG, WY YW WR RW YR RY, YP, RP, 950, 925, 925+18YG). YWR (three golds) and 925+SS (silver + steel) can't come from two alloy slots, and combos not on the list (e.g. White Gold + Platinum, PT900, AG935) come through flagged RECHECK: -- type those into Main File by hand.",
   "Plain items (Type = Plain, metal only) -- StoneType comes through as \"Plain\" and StoneDetails/StoneSource/SettingType are left empty. PROVISIONAL until the Main File sheet for plain items is checked; adjust PLAIN_STONE_FIELDS in jobTrackerExport.js.",
