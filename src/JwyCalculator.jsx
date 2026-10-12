@@ -17,6 +17,7 @@ import {
   pickJobTrackerImages,
   dataUrlImageExtension,
   applyMainFileFont,
+  encodeSsp,
 } from "./jobTrackerExport.js";
 import { mapQuoteToPo } from "./poExport.js";
 import { PurchaseOrderPdf } from "./poDocument.jsx";
@@ -3562,39 +3563,41 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                     <span style={{ ...styles.posBadge, ...(active ? styles.posBadgeActive : {}) }}>{i + 1}</span>
                   </td>
                   <td data-label="Type" style={styles.td}>
-                    <select
-                      style={{ ...styles.inputSm, width: 100 }}
-                      value={row.typeCustom ? CUSTOM_TYPE_OPTION : row.stoneTypeSel || "Mined"}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        if (val === CUSTOM_TYPE_OPTION) {
-                          // Typed name becomes the type (priced by manual $/ct
-                          // like every other non-Mined/Lab grown type).
-                          updateRow(i, {
-                            typeCustom: true,
-                            stoneTypeSel: (row.customType || "").trim() || "Custom",
-                            mode: "natural",
-                          });
-                        } else {
-                          const newMode = val === "Lab grown" ? "lgd" : "natural";
-                          updateRow(i, { typeCustom: false, stoneTypeSel: val, mode: newMode });
-                        }
-                      }}
-                    >
-                      {STONE_TYPE_OPTIONS.map((t) => (
-                        <option key={t} value={t}>
-                          {t}
-                        </option>
-                      ))}
-                      <option value={CUSTOM_TYPE_OPTION}>Custom entry…</option>
-                    </select>
-                    {row.typeCustom && (
-                      <input
-                        style={{ ...styles.inputSm, width: 100, marginTop: 4 }}
+                    {row.typeCustom ? (
+                      // "Custom entry…" turns this field itself into a text box (no dropdown left
+                      // on screen); the arrow goes back to the list.
+                      <CustomFieldBox
+                        width={100}
                         placeholder="Type stone name"
                         value={row.customType || ""}
-                        onChange={(e) => updateRow(i, { customType: e.target.value, stoneTypeSel: e.target.value.trim() || "Custom" })}
+                        onChange={(v) => updateRow(i, { customType: v, stoneTypeSel: v.trim() || "Custom" })}
+                        onBack={() => updateRow(i, { typeCustom: false, customType: "", stoneTypeSel: "Mined", mode: "natural" })}
                       />
+                    ) : (
+                      <select
+                        style={{ ...styles.inputSm, width: 100 }}
+                        value={row.stoneTypeSel || "Mined"}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (val === CUSTOM_TYPE_OPTION) {
+                            const td = e.target.closest("td");
+                            // Typed name becomes the type (priced by manual $/ct like every other
+                            // non-Mined/Lab grown type).
+                            updateRow(i, { typeCustom: true, customType: "", stoneTypeSel: "Custom", mode: "natural" });
+                            focusFirstInput(td);
+                          } else {
+                            const newMode = val === "Lab grown" ? "lgd" : "natural";
+                            updateRow(i, { typeCustom: false, stoneTypeSel: val, mode: newMode });
+                          }
+                        }}
+                      >
+                        {STONE_TYPE_OPTIONS.map((t) => (
+                          <option key={t} value={t}>
+                            {t}
+                          </option>
+                        ))}
+                        <option value={CUSTOM_TYPE_OPTION}>Custom entry…</option>
+                      </select>
                     )}
                   </td>
                   {isPlain ? (
@@ -3639,39 +3642,43 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                     </select>
                   </td>
                   <td data-label="Shape" style={styles.td}>
-                    <select
-                      style={styles.inputSm}
-                      value={row.shapeSel || ""}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        if (val === CUSTOM_CODE) {
-                          // No size list exists for a shape that isn't in the catalog, so
-                          // Size is typed too (it follows this choice automatically).
-                          updateRow(i, { shapeSel: CUSTOM_CODE, sizeCode: CUSTOM_CODE, customShape: "", customSizeText: "", customWt: "", customRate: "" });
-                        } else {
-                          updateRow(i, { shapeSel: val, sizeCode: "", customShape: "", customSizeText: "", customWt: "", customRate: "" });
-                        }
-                      }}
-                    >
-                      <option value="">Select shape</option>
-                      {SHAPE_ORDER.map((shapeName) => {
-                        const hasEntries = DIA_SIZE.some((d) => d.shape === shapeName);
-                        if (!hasEntries) return null;
-                        return (
-                          <option key={shapeName} value={shapeName}>
-                            {shapeName}
-                          </option>
-                        );
-                      })}
-                      <option value={CUSTOM_CODE}>Custom entry…</option>
-                    </select>
-                    {row.shapeSel === CUSTOM_CODE && (
-                      <input
-                        style={{ ...styles.inputSm, width: "100%", marginTop: 4 }}
+                    {row.shapeSel === CUSTOM_CODE ? (
+                      <CustomFieldBox
+                        width={128}
                         placeholder="Type shape name"
                         value={row.customShape}
-                        onChange={(e) => updateRow(i, { customShape: e.target.value })}
+                        onChange={(v) => updateRow(i, { customShape: v })}
+                        onBack={() => updateRow(i, { shapeSel: "", sizeCode: "", customShape: "", customSizeText: "", customWt: "", customRate: "" })}
                       />
+                    ) : (
+                      <select
+                        style={styles.inputSm}
+                        value={row.shapeSel || ""}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (val === CUSTOM_CODE) {
+                            const td = e.target.closest("td");
+                            // No size list exists for a shape that isn't in the catalog, so
+                            // Size is typed too (it follows this choice automatically).
+                            updateRow(i, { shapeSel: CUSTOM_CODE, sizeCode: CUSTOM_CODE, customShape: "", customSizeText: "", customWt: "", customRate: "" });
+                            focusFirstInput(td);
+                          } else {
+                            updateRow(i, { shapeSel: val, sizeCode: "", customShape: "", customSizeText: "", customWt: "", customRate: "" });
+                          }
+                        }}
+                      >
+                        <option value="">Select shape</option>
+                        {SHAPE_ORDER.map((shapeName) => {
+                          const hasEntries = DIA_SIZE.some((d) => d.shape === shapeName);
+                          if (!hasEntries) return null;
+                          return (
+                            <option key={shapeName} value={shapeName}>
+                              {shapeName}
+                            </option>
+                          );
+                        })}
+                        <option value={CUSTOM_CODE}>Custom entry…</option>
+                      </select>
                     )}
                   </td>
                   <td className="jwy-wide" data-label="Size" style={styles.td}>
@@ -3681,42 +3688,42 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                       </select>
                     ) : row.shapeSel === CUSTOM_CODE ? (
                       <input
-                        style={{ ...styles.inputSm, width: "100%" }}
+                        style={{ ...styles.inputSm, width: "100%", minWidth: 90 }}
                         placeholder="Type size"
                         value={row.customSizeText}
                         onChange={(e) => updateRow(i, { customSizeText: e.target.value })}
                       />
+                    ) : row.sizeCode === CUSTOM_CODE ? (
+                      <CustomFieldBox
+                        width={90}
+                        placeholder="Type size"
+                        value={row.customSizeText}
+                        onChange={(v) => updateRow(i, { customSizeText: v })}
+                        onBack={() => updateRow(i, { sizeCode: "", customSizeText: "", customWt: "", customRate: "" })}
+                      />
                     ) : (
-                      <>
-                        <select
-                          style={styles.inputSm}
-                          value={row.sizeCode}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            if (val === CUSTOM_CODE) {
-                              updateRow(i, { sizeCode: CUSTOM_CODE, customSizeText: "", customWt: "", customRate: "" });
-                            } else {
-                              updateRow(i, { sizeCode: val, customSizeText: "", customWt: "", customRate: "" });
-                            }
-                          }}
-                        >
-                          <option value="">Select size</option>
-                          {DIA_SIZE.filter((d) => d.shape === row.shapeSel).map((d) => (
-                            <option key={d.key} value={d.key}>
-                              {d.code} · {d.size} ({d.wt}ct)
-                            </option>
-                          ))}
-                          <option value={CUSTOM_CODE}>Custom entry…</option>
-                        </select>
-                        {row.sizeCode === CUSTOM_CODE && (
-                          <input
-                            style={{ ...styles.inputSm, width: "100%", marginTop: 4 }}
-                            placeholder="Type size"
-                            value={row.customSizeText}
-                            onChange={(e) => updateRow(i, { customSizeText: e.target.value })}
-                          />
-                        )}
-                      </>
+                      <select
+                        style={styles.inputSm}
+                        value={row.sizeCode}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (val === CUSTOM_CODE) {
+                            const td = e.target.closest("td");
+                            updateRow(i, { sizeCode: CUSTOM_CODE, customSizeText: "", customWt: "", customRate: "" });
+                            focusFirstInput(td);
+                          } else {
+                            updateRow(i, { sizeCode: val, customSizeText: "", customWt: "", customRate: "" });
+                          }
+                        }}
+                      >
+                        <option value="">Select size</option>
+                        {DIA_SIZE.filter((d) => d.shape === row.shapeSel).map((d) => (
+                          <option key={d.key} value={d.key}>
+                            {d.code} · {d.size} ({d.wt}ct)
+                          </option>
+                        ))}
+                        <option value={CUSTOM_CODE}>Custom entry…</option>
+                      </select>
                     )}
                   </td>
                   <td className="jwy-spec jwy-wide" data-label="Spec" style={{ ...styles.td, fontSize: 12, color: "var(--muted)" }}>
@@ -4029,6 +4036,37 @@ function RemarksCard({ jobInfo, setJobInfo }) {
 // Quotes toolbar) since everything it needs is right above it.
 const OTHER_OPTION = "__OTHER__";
 
+// "Custom entry…" in a stone-schedule dropdown: the field itself becomes a text
+// box (the dropdown is gone), with a small arrow to go back to the list.
+function CustomFieldBox({ value, onChange, onBack, placeholder, width }) {
+  return (
+    <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+      <input
+        style={{ ...styles.inputSm, width, minWidth: 0, flex: 1 }}
+        placeholder={placeholder}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      <button
+        type="button"
+        title="Back to the list"
+        aria-label="Back to the list"
+        style={{ ...styles.smallBtn, padding: "0 7px", alignSelf: "stretch" }}
+        onClick={onBack}
+      >
+        ▾
+      </button>
+    </div>
+  );
+}
+// Puts the cursor in the text box that just replaced a dropdown.
+function focusFirstInput(td) {
+  setTimeout(() => {
+    const el = td && td.querySelector("input");
+    if (el) el.focus();
+  }, 0);
+}
+
 // A dropdown that falls back to a free-text box the moment its options
 // don't cover what's needed -- used for the Vendor/Stamp Logo/Stamp
 // Metal/Stamp Location/Finding1/Finding2/Tag Color fields (option lists
@@ -4202,11 +4240,11 @@ function JobTrackerFieldsCard({
                   style={{ ...styles.inputSm, width: "100%" }}
                   value={jobTrackerFields.ssp || ""}
                   onChange={(e) => setField("ssp", e.target.value)}
-                  placeholder={totalWithDutyUSD ? `calculated: ${fmtCurrency(totalWithDutyUSD)}` : "SSP"}
+                  placeholder={totalWithDutyUSD ? `auto: ${encodeSsp(totalWithDutyUSD)}` : "SSP"}
                 />
                 <span style={{ fontSize: 10, color: MUTED }}>
-                  Auto-fills from "With duty · USD" unless typed over here -- still the plain number, not yet the
-                  JADELIGHTXZ-coded value Main File expects.
+                  Auto-filled as the JADELIGHTXZ code of "With duty · USD"
+                  {totalWithDutyUSD ? ` (${fmtCurrency(totalWithDutyUSD)})` : ""}; anything typed here goes to Main File as typed.
                 </span>
               </Field>
             </div>
