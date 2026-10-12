@@ -588,7 +588,7 @@ const roundUp5 = (n) => (isFinite(n) ? Math.ceil(n / 5) * 5 : 0);
 const roundUpMetalWt = (n) => (isFinite(n) ? Math.round(Math.ceil(n / 0.05) * 0.05 * 100) / 100 : n);
 
 function emptyRow() {
-  return { mode: "natural", stoneTypeSel: "Mined", typeCustom: false, customType: "", shapeSel: "", sizeCode: "", quality: "TW SI1", lgdGrade: "Non-cert", lgdShape: "RND", pcs: "", customShape: "", customSizeText: "", customWt: "", customRate: "", manualRate: "", proposedQuality: "", colour: "", setting: "", source: "", itemType: "", lab: "" };
+  return { mode: "natural", stoneTypeSel: "Mined", typeCustom: false, customType: "", shapeSel: "", sizeCode: "", quality: "TW SI1", lgdGrade: "Non-cert", lgdShape: "RND", pcs: "", customShape: "", customSizeText: "", customWt: "", customRate: "", manualRate: "", proposedQuality: "", colour: "", setting: "", source: "", itemType: "", lab: "", srcKey: "" };
 }
 
 
@@ -783,6 +783,26 @@ function JwyCalculatorApp() {
     return () => clearTimeout(timer);
   }, [jobTrackerFields, jobInfo.rhodium]);
 
+  // ---- Custom stone fields, remembered per Job No + line ----
+  // Which fields of a stone line were set to "Custom entry…" (shape / size / type)
+  // and what was typed into them is saved against the Job No, and put back on the
+  // same line whenever that job's CAD order data is loaded again. (A saved quote
+  // already carries these on its rows.) Only lines that came from the CAD import
+  // can be matched up again, via the row's srcKey.
+  const linesDirtyRef = useRef(false); // a custom field was changed by hand since the last save
+  const rowsRef = useRef(null);
+
+  useEffect(() => {
+    if (!linesDirtyRef.current) return undefined;
+    const key = jobFieldsKey(jobInfo.jobNo);
+    if (!key) return undefined;
+    const timer = setTimeout(() => {
+      linesDirtyRef.current = false;
+      saveJobLines(key, collectCustomLines(rowsRef.current || []));
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [rows, jobInfo.jobNo]);
+
   const refreshRates = useCallback(async () => {
     setRateLoading(true);
     try {
@@ -925,8 +945,17 @@ function JwyCalculatorApp() {
       source: s.source || "",
       itemType: "",
       lab: "",
+      srcKey: stoneSrcKey(s),
     }));
+    linesDirtyRef.current = false;
     setRows(newRows.length ? newRows : Array.from({ length: 5 }, emptyRow));
+    // Put back anything that was set to "Custom entry…" on this job's lines earlier.
+    const importedJobKey = jobFieldsKey(ji.jobNo || jobInfoRef.current.jobNo);
+    if (importedJobKey && newRows.length) {
+      loadJobLines(importedJobKey).then((saved) => {
+        if (saved && saved.length) setRows((prev) => applyCustomLines(prev, saved));
+      });
+    }
 
     setPdfImport({
       fileName,
@@ -1006,6 +1035,7 @@ function JwyCalculatorApp() {
     jobFieldsOwnerRef.current = "";
     jobFieldsDirtyRef.current = false;
     rhodiumTouchedRef.current = false;
+    linesDirtyRef.current = false;
     setJobFieldsNote("");
   };
 
@@ -1061,7 +1091,8 @@ function JwyCalculatorApp() {
     setSecondaryAlloyShort(q.secondaryAlloyShort);
     setSecondaryGramWt(q.secondaryGramWt);
     // Quotes saved before the spelling fix carry "Tappered Bagguette".
-    setRows(q.rows.map((r) => ({ ...emptyRow(), ...r, shapeSel: fixShapeSpelling(r.shapeSel), customShape: fixShapeSpelling(r.customShape) })));
+    setRows(q.rows.map(normalizeRow));
+    linesDirtyRef.current = false;
     setManualPriceOverride(q.manualPriceOverride || "");
     setAdditionalChargeName(q.additionalChargeName || "");
     setAdditionalChargeAmount(q.additionalChargeAmount || "");
@@ -1118,7 +1149,9 @@ function JwyCalculatorApp() {
   const secondaryAlloy = alloyList.find((a) => a.short === secondaryAlloyShort) || alloyList[0];
   const totalGramWt = (parseFloat(primaryGramWt) || 0) + (parseFloat(secondaryGramWt) || 0);
 
+  rowsRef.current = rows;
   const updateRow = (idx, patch) => {
+    if (Object.keys(patch).some((k) => CUSTOM_ROW_KEYS.has(k))) linesDirtyRef.current = true;
     setRows((prev) => prev.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
   };
 
@@ -1136,6 +1169,7 @@ function JwyCalculatorApp() {
   };
 
   const removeRow = (idx) => {
+    linesDirtyRef.current = true;
     setRows((prev) => prev.filter((_, i) => i !== idx));
   };
 
@@ -1156,7 +1190,7 @@ function JwyCalculatorApp() {
         const hasRealShape = row.shapeSel && row.shapeSel !== CUSTOM_CODE;
         return {
           shape: hasRealShape ? row.shapeSel : row.customShape || "Custom",
-          size: hasRealShape ? row.customShape || "custom size" : row.customSizeText || "manual entry",
+          size: row.customSizeText || (hasRealShape ? "custom size" : "manual entry"),
           wtPerPc,
           totalWt,
           perCt,
@@ -1377,6 +1411,7 @@ function JwyCalculatorApp() {
       rowsWithCalcs,
       manualFields: jobTrackerFields,
       sspDefaultUsd: totalWithDutyUSD,
+      locationCode: locInfo.code,
     });
 
     // Up to 3 images -- CAD renders first, then client reference images
@@ -2408,6 +2443,143 @@ async function composePage1Image(renderDataUrl, cadSheet) {
   } catch {
     return null; // fall back to the plain CAD render
   }
+}
+
+// ---- Custom entries in the stone schedule ----------------------------------
+// "Custom entry…" on a field (Type, Shape or Size) only turns THAT field into a
+// text box, shown right under its own dropdown:
+//   Type  -> typeCustom + customType
+//   Shape -> shapeSel = CUSTOM_CODE + customShape (the shape name). There is no
+//            size list for a shape that is not in the catalog, so Size is typed too.
+//   Size  -> sizeCode = CUSTOM_CODE + customSizeText (the size description);
+//            Wt/pc and $/ct are then typed because there is no catalog weight or price.
+// Quotes saved before this change kept the size text of a custom size in
+// customShape -- normalizeRow moves it to customSizeText.
+const CUSTOM_ROW_KEYS = new Set(["shapeSel", "sizeCode", "customShape", "customSizeText", "customWt", "customRate", "typeCustom", "customType"]);
+
+function normalizeRow(r) {
+  const row = { ...emptyRow(), ...r, shapeSel: fixShapeSpelling(r.shapeSel), customShape: fixShapeSpelling(r.customShape) };
+  if (row.sizeCode === CUSTOM_CODE && row.shapeSel && row.shapeSel !== CUSTOM_CODE && row.customShape && !row.customSizeText) {
+    row.customSizeText = row.customShape;
+    row.customShape = "";
+  }
+  return row;
+}
+
+// Identifies the CAD-form stone a row was imported from, so remembered custom
+// fields go back onto the same line.
+const stoneSrcKey = (s) => [s.pos, s.shape, s.dims, s.avgWt, s.qty].map((v) => String(v == null ? "" : v).trim().toLowerCase()).join("|");
+
+const rowIsCustom = (r) => r.shapeSel === CUSTOM_CODE || r.sizeCode === CUSTOM_CODE || !!r.typeCustom;
+
+// -> [{ k, shapeSel, sizeCustom, customShape, customSizeText, customWt, customRate, typeCustom, customType }]
+function collectCustomLines(rows) {
+  const seen = {};
+  const out = [];
+  rows.forEach((r) => {
+    if (!r.srcKey) return;
+    seen[r.srcKey] = (seen[r.srcKey] || 0) + 1;
+    if (!rowIsCustom(r)) return;
+    out.push({
+      k: `${r.srcKey}#${seen[r.srcKey]}`,
+      shapeSel: r.shapeSel === CUSTOM_CODE ? CUSTOM_CODE : r.shapeSel || "",
+      sizeCustom: r.sizeCode === CUSTOM_CODE,
+      customShape: r.customShape || "",
+      customSizeText: r.customSizeText || "",
+      customWt: r.customWt || "",
+      customRate: r.customRate || "",
+      typeCustom: !!r.typeCustom,
+      customType: r.customType || "",
+    });
+  });
+  return out;
+}
+
+function applyCustomLines(rows, saved) {
+  const byKey = {};
+  saved.forEach((l) => {
+    if (l && l.k) byKey[l.k] = l;
+  });
+  const seen = {};
+  return rows.map((r) => {
+    if (!r.srcKey) return r;
+    seen[r.srcKey] = (seen[r.srcKey] || 0) + 1;
+    const l = byKey[`${r.srcKey}#${seen[r.srcKey]}`];
+    if (!l) return r;
+    const next = { ...r };
+    if (l.shapeSel === CUSTOM_CODE) {
+      next.shapeSel = CUSTOM_CODE;
+      next.sizeCode = CUSTOM_CODE;
+      next.customShape = l.customShape || r.customShape || "";
+    } else if (l.sizeCustom) {
+      next.shapeSel = l.shapeSel || r.shapeSel;
+      next.sizeCode = CUSTOM_CODE;
+    }
+    if (next.sizeCode === CUSTOM_CODE) {
+      next.customSizeText = l.customSizeText || r.customSizeText || "";
+      next.customWt = l.customWt || r.customWt || "";
+      next.customRate = l.customRate || r.customRate || "";
+    }
+    if (l.typeCustom) {
+      next.typeCustom = true;
+      next.customType = l.customType || "";
+      next.stoneTypeSel = (l.customType || "").trim() || "Custom";
+      next.mode = "natural";
+    }
+    return next;
+  });
+}
+
+const JOB_LINES_LS_KEY = "jwyJobStoneCustom";
+function readLocalJobLines(key) {
+  try {
+    const all = JSON.parse(localStorage.getItem(JOB_LINES_LS_KEY) || "{}");
+    return all[key] || null;
+  } catch {
+    return null;
+  }
+}
+function writeLocalJobLines(key, lines) {
+  try {
+    const all = JSON.parse(localStorage.getItem(JOB_LINES_LS_KEY) || "{}");
+    all[key] = { lines, updatedAt: Date.now() };
+    const keys = Object.keys(all);
+    if (keys.length > 300) {
+      keys.sort((a, b) => (all[a].updatedAt || 0) - (all[b].updatedAt || 0)).slice(0, keys.length - 300).forEach((k) => delete all[k]);
+    }
+    localStorage.setItem(JOB_LINES_LS_KEY, JSON.stringify(all));
+  } catch {}
+}
+async function fetchCloudJobLines(key) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 5000);
+  try {
+    const res = await fetch(`/.netlify/functions/job-stone-custom?jobNo=${encodeURIComponent(key)}`, { signal: ctrl.signal });
+    if (!res.ok) return null;
+    const body = await res.json();
+    return body && Array.isArray(body.lines) ? { lines: body.lines, updatedAt: body.updatedAt || 0 } : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+// -> the remembered custom lines for this job (newest of cloud / this device), or null
+async function loadJobLines(key) {
+  const cloud = await fetchCloudJobLines(key);
+  const local = readLocalJobLines(key);
+  const best = [cloud, local].filter(Boolean).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
+  return best ? best.lines : null;
+}
+async function saveJobLines(key, lines) {
+  writeLocalJobLines(key, lines);
+  try {
+    await fetch("/.netlify/functions/job-stone-custom", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jobNo: key, lines }),
+    });
+  } catch {}
 }
 
 // ---- Job Tracker details (Section 07), remembered per Job No ---------------
@@ -3473,7 +3645,9 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                       onChange={(e) => {
                         const val = e.target.value;
                         if (val === CUSTOM_CODE) {
-                          updateRow(i, { shapeSel: CUSTOM_CODE, sizeCode: CUSTOM_CODE });
+                          // No size list exists for a shape that isn't in the catalog, so
+                          // Size is typed too (it follows this choice automatically).
+                          updateRow(i, { shapeSel: CUSTOM_CODE, sizeCode: CUSTOM_CODE, customShape: "", customSizeText: "", customWt: "", customRate: "" });
                         } else {
                           updateRow(i, { shapeSel: val, sizeCode: "", customShape: "", customSizeText: "", customWt: "", customRate: "" });
                         }
@@ -3491,6 +3665,14 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                       })}
                       <option value={CUSTOM_CODE}>Custom entry…</option>
                     </select>
+                    {row.shapeSel === CUSTOM_CODE && (
+                      <input
+                        style={{ ...styles.inputSm, width: "100%", marginTop: 4 }}
+                        placeholder="Type shape name"
+                        value={row.customShape}
+                        onChange={(e) => updateRow(i, { customShape: e.target.value })}
+                      />
+                    )}
                   </td>
                   <td className="jwy-wide" data-label="Size" style={styles.td}>
                     {!row.shapeSel ? (
@@ -3499,52 +3681,46 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                       </select>
                     ) : row.shapeSel === CUSTOM_CODE ? (
                       <input
-                        style={{ ...styles.inputSm, width: 90 }}
-                        placeholder="Describe shape"
-                        value={row.customShape}
-                        onChange={(e) => updateRow(i, { customShape: e.target.value })}
-                      />
-                    ) : row.sizeCode === CUSTOM_CODE ? (
-                      <input
-                        style={{ ...styles.inputSm, width: 90 }}
-                        placeholder="Describe size"
-                        value={row.customShape}
-                        onChange={(e) => updateRow(i, { customShape: e.target.value })}
-                      />
-                    ) : (
-                      <select
-                        style={styles.inputSm}
-                        value={row.sizeCode}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          if (val === CUSTOM_CODE) {
-                            updateRow(i, { sizeCode: CUSTOM_CODE, customShape: "", customWt: "", customRate: "" });
-                          } else {
-                            updateRow(i, { sizeCode: val });
-                          }
-                        }}
-                      >
-                        <option value="">Select size</option>
-                        {DIA_SIZE.filter((d) => d.shape === row.shapeSel).map((d) => (
-                          <option key={d.key} value={d.key}>
-                            {d.code} · {d.size} ({d.wt}ct)
-                          </option>
-                        ))}
-                        <option value={CUSTOM_CODE}>Custom entry…</option>
-                      </select>
-                    )}
-                  </td>
-                  <td className="jwy-spec jwy-wide" data-label="Spec" style={{ ...styles.td, fontSize: 12, color: "var(--muted)" }}>
-                    {row.shapeSel === CUSTOM_CODE ? (
-                      <input
-                        style={{ ...styles.inputSm, width: 90 }}
-                        placeholder="Describe size"
+                        style={{ ...styles.inputSm, width: "100%" }}
+                        placeholder="Type size"
                         value={row.customSizeText}
                         onChange={(e) => updateRow(i, { customSizeText: e.target.value })}
                       />
                     ) : (
-                      calc.size
+                      <>
+                        <select
+                          style={styles.inputSm}
+                          value={row.sizeCode}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            if (val === CUSTOM_CODE) {
+                              updateRow(i, { sizeCode: CUSTOM_CODE, customSizeText: "", customWt: "", customRate: "" });
+                            } else {
+                              updateRow(i, { sizeCode: val, customSizeText: "", customWt: "", customRate: "" });
+                            }
+                          }}
+                        >
+                          <option value="">Select size</option>
+                          {DIA_SIZE.filter((d) => d.shape === row.shapeSel).map((d) => (
+                            <option key={d.key} value={d.key}>
+                              {d.code} · {d.size} ({d.wt}ct)
+                            </option>
+                          ))}
+                          <option value={CUSTOM_CODE}>Custom entry…</option>
+                        </select>
+                        {row.sizeCode === CUSTOM_CODE && (
+                          <input
+                            style={{ ...styles.inputSm, width: "100%", marginTop: 4 }}
+                            placeholder="Type size"
+                            value={row.customSizeText}
+                            onChange={(e) => updateRow(i, { customSizeText: e.target.value })}
+                          />
+                        )}
+                      </>
                     )}
+                  </td>
+                  <td className="jwy-spec jwy-wide" data-label="Spec" style={{ ...styles.td, fontSize: 12, color: "var(--muted)" }}>
+                    {row.sizeCode === CUSTOM_CODE ? "" : calc.size}
                   </td>
                   <td data-label="Colour" style={styles.td}>
                     <input
