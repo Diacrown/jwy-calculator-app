@@ -23,6 +23,15 @@ function isOddShape(shape) {
   return LGD_ODD_SHAPES.some((k) => s.includes(k));
 }
 
+// The CAD Order Form spells this shape "Tappered Bagguette"; the correct
+// trade spelling is "Tapered Baguette". Every shape name coming in from the
+// form (or from a quote saved before this fix) goes through here so the
+// catalog lookup, the stone table and every export all use the right one.
+export function fixShapeSpelling(name) {
+  const s = String(name || "");
+  return /^\s*tapp?ered\s+bag+u?ette\s*$/i.test(s) ? "Tapered Baguette" : s;
+}
+
 function cardMetalToAlloyShort(type, color, extra) {
   const t = (type || "").toUpperCase().trim();
   const c = (color || "").toUpperCase().trim();
@@ -68,9 +77,29 @@ function num(v, d = 0) {
 // pricing data for them yet, with the real stone type preserved in the
 // flag so it's clear what it actually is. Rows the form itself marked
 // Mode: "custom" are always treated as custom, no exceptions.
+// Exact-match only -- never a substring check. "Round" is a real, distinct
+// shape in its own right, but plenty of legitimate CAD-form shape values
+// merely CONTAIN the word "round" without being round at all -- "Round
+// Baguette" (a real, commonly used trade name for a baguette with rounded
+// corners) is the one that actually bit us: shapeRaw.includes("round")
+// used to return true for it, which forced the row into the Round-only
+// branch below and silently snapped it to the nearest ROUND catalog entry
+// by weight, discarding the real Baguette shape entirely (e.g. a 0.07ct
+// Baguette importing as a 0.07ct Round). The fix is to take the shape
+// value exactly as the CAD Order Form sent it -- hardcoded against a
+// finite list of known "this literally means Round" spellings -- rather
+// than inferring it from a substring match. Add another literal spelling
+// here if the form ever sends a new one; never widen this back to .includes().
+const ROUND_SHAPE_VALUES = new Set([
+  "round", "rnd", "rd", "round brilliant", "brilliant round", "brilliant",
+]);
+function isExactlyRoundShape(shapeRaw) {
+  return ROUND_SHAPE_VALUES.has((shapeRaw || "").toLowerCase().trim());
+}
+
 function bridgeStone(stone, diaSize) {
   const shapeRaw = (stone.Shape || "").toLowerCase();
-  const isRound = shapeRaw.includes("round") || shapeRaw === "rnd";
+  const isRound = isExactlyRoundShape(shapeRaw);
   const stoneTypeRaw = (stone.Stone || "").trim();
   const stoneTypeUpper = stoneTypeRaw.toUpperCase();
   const avgWt = num(stone.AvgWt);
@@ -251,6 +280,17 @@ function bridgeStone(stone, diaSize) {
 // extraction and direct JSON import) so there's exactly one place that
 // defines how card data becomes calculator state -- no drift between
 // the two entry points.
+// The stone's Source off the CAD form ("HO" / "Customer" / ...). Tolerates the
+// key being spelled a little differently ("Stone Source", "Src").
+function sourceOf(stone) {
+  if (!stone || typeof stone !== "object") return "";
+  if (stone.Source) return String(stone.Source).trim();
+  for (const k of Object.keys(stone)) {
+    if (/^(stone\s*)?(source|src)$/i.test(k.trim()) && stone[k]) return String(stone[k]).trim();
+  }
+  return "";
+}
+
 function mapFormDataToCalculator(data, { alloys = [], diaSize = [] } = {}) {
   // --- Job info ---
   const jobInfo = {
@@ -298,7 +338,8 @@ function mapFormDataToCalculator(data, { alloys = [], diaSize = [] } = {}) {
   const rawStones = Array.isArray(data["_RAW_STONES"]) ? data["_RAW_STONES"] : [];
   const stones = rawStones
     .filter((s) => s.Shape && num(s.Qty) > 0)
-    .map((s) => {
+    .map((raw) => {
+      const s = { ...raw, Shape: fixShapeSpelling(raw.Shape) };
       const bridge = bridgeStone(s, diaSize);
       return {
         pos: s.Pos || "",
@@ -309,7 +350,7 @@ function mapFormDataToCalculator(data, { alloys = [], diaSize = [] } = {}) {
         qty: num(s.Qty),
         totalWt: num(s.Tot),
         setting: s.Set || "",
-        source: s.Source || "",
+        source: sourceOf(s),
         ...bridge,
       };
     });
@@ -340,7 +381,35 @@ function mapFormDataToCalculator(data, { alloys = [], diaSize = [] } = {}) {
     stoneSettings: data["_STONE_SETTINGS"] || "",
   };
 
-  return { jobInfo, metals, metalWarnings, stones, cadImageDataUrls, clientRefImageDataUrls, derivedSummary, rawJson: data };
+  // The stone table exactly as the CAD Order Form prints it on page 1 of the
+  // card (Pos / Stone / Shape / L x W x H / Avg Dia Wt / Qty / Total Wt /
+  // Setting / Source) -- kept so the full page-1 picture can be redrawn for
+  // Export to Main File. Blank weights stay blank (printed as "-").
+  const cadSheet = {
+    stones: rawStones
+      .filter((s) => s.Shape && num(s.Qty) > 0)
+      .map((s) => ({
+        pos: s.Pos || "",
+        stone: s.Stone || "",
+        shape: fixShapeSpelling(s.Shape),
+        dims: [s.L, s.W, s.H].filter(Boolean).join(" x "),
+        avgWt: s.AvgWt || "",
+        qty: num(s.Qty),
+        totalWt: s.Tot || "",
+        setting: s.Set || "",
+        source: sourceOf(s),
+      })),
+  };
+
+  // A stone with no Source of its own takes the form's own summary line
+  // (_STONE_SOURCES) when that names a single source for the whole job.
+  const summarySources = [...new Set(String(derivedSummary.stoneSources || "").split(/[,;/]+/).map((v) => v.trim()).filter(Boolean))];
+  if (summarySources.length === 1) {
+    stones.forEach((st) => { if (!st.source) st.source = summarySources[0]; });
+    cadSheet.stones.forEach((st) => { if (!st.source) st.source = summarySources[0]; });
+  }
+
+  return { jobInfo, metals, metalWarnings, stones, cadSheet, cadImageDataUrls, clientRefImageDataUrls, derivedSummary, rawJson: data };
 }
 
 export function parseOrderFormJson(input, { alloys = [], diaSize = [] } = {}) {
