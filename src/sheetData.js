@@ -257,6 +257,25 @@ function transformNaturalPrices(rawRows) {
   return out;
 }
 
+// Fancy-shape natural pricing: one row per size code (SizeCode column, an
+// optional Shape column that is ignored) and one column per grade, e.g.
+// "TW VS", "TW SI", "TW SI3". Output: { [sizeCode]: { [grade]: price } }.
+function transformFancyPrices(rawRows) {
+  const out = {};
+  for (const r of rawRows) {
+    const code = pick(r, ["sizeCode", "Size Code", "Code"]);
+    if (!code) continue;
+    const grid = {};
+    for (const [header, value] of Object.entries(r)) {
+      if (["sizecode", "code", "shape"].includes(normHeader(header))) continue;
+      const n = num(value, NaN);
+      if (isFinite(n) && n > 0) grid[header.trim()] = n;
+    }
+    out[code.trim()] = grid;
+  }
+  return out;
+}
+
 // Lab Grown diamond pricing -- confirmed real structure: one row per
 // (Shape, Min_Ct, Max_Ct) band, three price columns (D_VVS2, D_VS1,
 // Non_cert). Output shape matches SAMPLE_LGD_BANDS exactly: an array of
@@ -299,6 +318,7 @@ export async function fetchLiveSheetData() {
     { key: "cadFeesAndLabor", url: SHEET_URLS.cadFeesAndLabor, transform: transformCadFeesAndLabor },
     { key: "settingTiers", url: SHEET_URLS.settingTiers, transform: transformSettingTiers },
     { key: "naturalPrices", url: SHEET_URLS.naturalPrices, transform: transformNaturalPrices },
+    { key: "fancyPrices", url: SHEET_URLS.fancyPrices, transform: transformFancyPrices },
     { key: "labGrownPrices", url: SHEET_URLS.labGrownPrices, transform: transformLabGrownPrices },
   ];
 
@@ -308,7 +328,8 @@ export async function fetchLiveSheetData() {
   await Promise.all(
     specs.map(async ({ key, url, transform }) => {
       if (!url) {
-        errors[key] = "not configured";
+        // The fancy tab is optional: a built-in copy of the prices is used until it is connected.
+        if (key !== "fancyPrices") errors[key] = "not configured";
         return;
       }
       try {
