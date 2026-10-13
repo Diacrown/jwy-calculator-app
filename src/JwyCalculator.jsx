@@ -79,9 +79,10 @@ const SHAPE_ORDER = [
 ];
 
 const STONE_TYPE_OPTIONS = ["Mined", "Lab grown", "CZ", "Mount", "Semi-Mount", "Plain", "Color"];
-// Gemstone names that used to be in the Type list. Saved quotes / CAD imports
-// that carry one of them now come in as a Custom entry with that name.
-const LEGACY_GEM_TYPES = [
+// Proposed Quality choices when the Type is "Color" (replace the diamond qualities).
+// Saved quotes / CAD imports that carry one of these as the stone type come in as
+// Color with that gemstone as the Proposed Quality.
+const GEM_NAMES = [
   "Cabochon", "Opal", "Alexandrite", "Ametrine", "Amethyst", "Aquamarine", "Citrine",
   "Emerald", "Garnet", "Hessonite Garnet", "Iolite", "Morganite", "Pearl",
   "Peridot", "Ruby", "Sapphire", "Spinel", "Tanzanite", "Topaz", "Tourmaline", "Zircon",
@@ -946,7 +947,8 @@ function JwyCalculatorApp() {
     const newRows = stones.map((s) => normalizeRow({
       ...emptyRow(),
       mode: s.diamondMode || "natural",
-      stoneTypeSel: STONE_TYPE_OPTIONS.includes(s.stoneType) || LEGACY_GEM_TYPES.includes(s.stoneType) ? s.stoneType : s.diamondMode === "lgd" ? "Lab grown" : "Mined",
+      stoneTypeSel: STONE_TYPE_OPTIONS.includes(s.stoneType) || GEM_NAMES.includes(s.stoneType) ? s.stoneType : s.diamondMode === "lgd" ? "Lab grown" : "Mined",
+      proposedQuality: GEM_NAMES.includes(s.stoneType) ? s.stoneType : "",
       shapeSel: s.isCustom ? CUSTOM_CODE : s.matchedShape || "",
       sizeCode: s.isCustom ? CUSTOM_CODE : s.sizeCode || "",
       quality: "TW SI1",
@@ -2530,10 +2532,10 @@ function normalizeRow(r) {
   }
   // The Colour box was removed from the calculator.
   row.colour = "";
-  // Gemstone names that used to be in the Type list are now Custom entries.
-  if (!row.typeCustom && LEGACY_GEM_TYPES.includes(row.stoneTypeSel)) {
-    row.customType = row.stoneTypeSel;
-    row.typeCustom = true;
+  // Gemstone names that used to be in the Type list are now Color + gemstone.
+  if (!row.typeCustom && GEM_NAMES.includes(row.stoneTypeSel)) {
+    if (!row.proposedQuality) row.proposedQuality = row.stoneTypeSel;
+    row.stoneTypeSel = "Color";
   }
   if ((row.mode || "natural") === "natural") row.quality = fixQuality(row);
   return row;
@@ -3658,7 +3660,9 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                             focusFirstInput(td);
                           } else {
                             const newMode = val === "Lab grown" ? "lgd" : "natural";
-                            updateRow(i, { typeCustom: false, stoneTypeSel: val, mode: newMode });
+                            // Color stones carry a gemstone as Proposed Quality; any other type uses the diamond list.
+                            const colourChange = (val === "Color") !== (row.stoneTypeSel === "Color");
+                            updateRow(i, { typeCustom: false, stoneTypeSel: val, mode: newMode, ...(colourChange ? { proposedQuality: "" } : {}) });
                           }
                         }}
                       >
@@ -3844,7 +3848,7 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                     <div style={{ minWidth: 108 }} title="Shown to the customer on the Price Only print, instead of the internal quality grade">
                       <DropdownOrOtherField
                         value={row.proposedQuality || ""}
-                        options={PROPOSED_DIA_QUALITIES}
+                        options={!row.typeCustom && row.stoneTypeSel === "Color" ? GEM_NAMES : PROPOSED_DIA_QUALITIES}
                         onChange={(val) => updateRow(i, { proposedQuality: val })}
                         placeholder="Proposed quality"
                       />
