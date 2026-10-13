@@ -27,6 +27,10 @@ export const SHEET_URLS = {
   cadFeesAndLabor: gvizUrl(386901877), // Tab 5: CadFeesAndLabor
   settingTiers: gvizUrl(1907251116), // Tab 6: SettingTiers
   naturalPrices: gvizUrl(1752109100), // Tab 7: Natural Prices (SizeGroup -> SSP)
+  // Tab 9: Fancy Prices (SizeCode -> $/ct per grade). Create the tab from
+  // FancyPrices_tab_NEW.csv, then paste its gid here: gvizUrl(<gid>). Left
+  // blank, the app uses the built-in copy in fancyPrices.js.
+  fancyPrices: "",
   labGrownPrices: gvizUrl(1815938036), // Tab 8: Lab Grown Prices (Shape/Min_Ct/Max_Ct bands)
 };
 
