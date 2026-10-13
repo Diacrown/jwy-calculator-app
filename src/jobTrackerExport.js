@@ -4,7 +4,7 @@ import JSZip from "jszip";
 // the same Main WS sheet).
 //
 // Converts ONE resolved JWY Calculator quote into a single Main File
-// row, using your exact 35-column list, in order. Most of the sheet
+// row, using your exact 34-column list, in order. Most of the sheet
 // still gets typed in by hand -- this export pre-fills only the columns
 // the Calculator actually has a real answer for -- SSP, ItemType,
 // ItemSize, Qty, MetalType/MetalColor/AlloyType, Rhodium,
@@ -14,7 +14,7 @@ import JSZip from "jszip";
 // built from one -- see uniqueJoined()/resolveRhodium() below.
 //
 // Everything else on the list (approvals, PO/due dates, stamping,
-// findings, tag color, images) is downstream production data that only
+// findings, images) is downstream production data that only
 // exists once the job is physically moving through the shop floor --
 // the Calculator has no source for it, so those columns are
 // intentionally left blank for whoever runs Main File to fill in. See
@@ -22,7 +22,7 @@ import JSZip from "jszip";
 // blank and why.
 
 // ============================================================
-// COLUMN LIST -- exact order, exact spelling, as given (35 columns).
+// COLUMN LIST -- exact order, exact spelling, as given (34 columns).
 // Columns for fields that aren't collected in the Calculator at all
 // (Office Ship Date, QC pass Date, Ship Date, Delay, Saurabh Bhai) stay
 // on this list -- the sheet has those columns, they just come through
@@ -40,7 +40,7 @@ export const JOB_TRACKER_COLUMNS = [
   "Saurabh Bhai", "Delay", "Stone Issue Date", "Office Ship Date", "QC pass Date", "Ship Date",
   "ItemType", "ItemSize", "Qty", "MetalType", "MetalColor", "AlloyType", "Rhodium", "StoneType",
   "StoneDetails", "StoneSource", "SettingType", "StampLogo", "StampMetal", "StampOther", "StampLoc",
-  "Finding1", "Finding2", "Remarks", "Tag Color", "Image1", "Image2", "Image3",
+  "Finding1", "Finding2", "Remarks", "Image1", "Image2", "Image3",
 ];
 
 function blankRow() {
@@ -86,7 +86,7 @@ export function jobTrackerRowToAoa(row) {
 // "PT950" / "AG925" into three columns, matching the exact vocabulary
 // your real Main WS rows use (verified against real rows -- e.g.
 // "14KT | YG | Standard" and "18KT | WG | Palladium"):
-//   MetalType  -- "14KT" (karat, no color/variant suffix)
+//   MetalType  -- "14KT" (karat, no color/variant suffix; 9KT goes out as "09KT" in Main File)
 //   MetalColor -- the sheet's designated colour code, worked out from
 //                 the PRIMARY and SECONDARY alloy together -- see
 //                 resolveMetalColor() below (e.g. YG, WY, YR, YP, 950,
@@ -317,7 +317,7 @@ function resolveSsp(manualFields, sspDefaultUsd) {
 }
 
 // ============================================================
-// MANUAL FIELDS -- everything on the 35-column list that the
+// MANUAL FIELDS -- everything on the 34-column list that the
 // Calculator has no source for at all (no quote data, no CAD Order
 // Form field) -- production-workflow dates, vendor/finishing info that
 // only exists once the job is physically moving. Single source of
@@ -350,7 +350,6 @@ export const JOB_TRACKER_MANUAL_FIELDS = [
   { key: "stampLoc", label: "Stamp Location", column: "StampLoc", group: "Finishing", type: "select" },
   { key: "finding1", label: "Finding 1", column: "Finding1", group: "Finishing", type: "select" },
   { key: "finding2", label: "Finding 2", column: "Finding2", group: "Finishing", type: "select" },
-  { key: "tagColor", label: "Tag Color", column: "Tag Color", group: "Finishing", type: "select" },
   // Printed on the Purchase Order only -- not a Main File column.
   { key: "setBy", label: "Set By (PO)", column: "", group: "Finishing", type: "select", poOnly: true },
 ];
@@ -437,7 +436,6 @@ export const JOB_TRACKER_DROPDOWN_OPTIONS = {
     `Metal Kt Rearside + One side logo in Basket and another side Sr No`,
     `Metal Kt on Bale + One side logo in Basket and another side Sr No`,
   ]),
-  tagColor: uniq([`White`, `Red`, `Grey`]),
   setBy: uniq([`Hand`, `Machine`]),
 };
 
@@ -481,7 +479,10 @@ export function mapQuoteToJobTrackerRow(quote) {
   const { jobInfo, primaryAlloy, secondaryAlloy, secondaryGramWt, rowsWithCalcs, manualFields, sspDefaultUsd, stoneSourcesFallback } = quote;
   const row = blankRow();
 
-  const { metalType, alloyType } = splitMetal(primaryAlloy);
+  const split = splitMetal(primaryAlloy);
+  const { alloyType } = split;
+  // Main File writes single-digit karats with a leading zero: 9KT -> "09KT".
+  const metalType = String(split.metalType || "").replace(/^(\d)KT\b/i, "0$1KT");
   // Secondary alloy counts only when chosen and actually weighed in.
   const secondaryUsed = secondaryAlloy && (parseFloat(secondaryGramWt) || 0) > 0 ? secondaryAlloy : null;
   const metalColor = resolveMetalColor(primaryAlloy, secondaryUsed);
@@ -545,7 +546,7 @@ export function mapQuotesToJobTrackerSheet(quotes) {
 
 export const JOB_TRACKER_PENDING_ITEMS = [
   "Office Ship Date (both columns), QC pass Date, Ship Date, Delay, Saurabh Bhai -- not collected in the Calculator at all; these columns always come through blank and are filled in Main File directly.",
-  "Approval Date, PODate, DueDate, Stone Issue Date, Vendor, VendorItemNo, StampLogo, StampMetal, StampOther, StampLoc, Finding1, Finding2, Tag Color -- the Calculator has no source for any of these (production-workflow dates and finishing instructions that only exist once the job is in progress). They're fillable by hand in the \"Job Tracker details\" panel in the Calculator (see JOB_TRACKER_MANUAL_FIELDS) so they don't have to stay blank in the export -- but if nobody fills that panel in, they still come through blank here.",
+  "Approval Date, PODate, DueDate, Stone Issue Date, Vendor, VendorItemNo, StampLogo, StampMetal, StampOther, StampLoc, Finding1, Finding2 -- the Calculator has no source for any of these (production-workflow dates and finishing instructions that only exist once the job is in progress). They're fillable by hand in the \"Job Tracker details\" panel in the Calculator (see JOB_TRACKER_MANUAL_FIELDS) so they don't have to stay blank in the export -- but if nobody fills that panel in, they still come through blank here.",
   "SSP -- the Calculator\'s \"With 5% duty · USD\" total written in the JADELIGHTXZ code (digits 1234567890 -> JADELIGHTX, assumed from the Phoenix Calculator; Z unused). Check one known job against Main File before relying on it. Anything typed into SSP in the Job Tracker details panel overrides it and goes out as typed.",
   "Image3 -- holds the Stamp Logo link when the chosen logo has one (then only the first 2 job images are uploaded); logos with no link yet leave Image3 to the job's own 3rd image. Links are the Google Drive share links as supplied (not direct image URLs).",
   "StoneDetails -- one entry per stone row, written as Shape + Size + Proposed Quality + Pcs (plus the Colour box if it is filled in), rows separated by \"; \". Weights are not repeated there.",
@@ -577,7 +578,8 @@ export const JOB_TRACKER_IMAGE_COLUMNS = ["Image1", "Image2", "Image3"];
 // so it is always Image1.
 export function pickJobTrackerImages(cadImages, clientRefImages, slotCount = JOB_TRACKER_IMAGE_COLUMNS.length, page1Image = null) {
   const cad = page1Image ? [page1Image, ...(cadImages || []).slice(1)] : cadImages || [];
-  return [...cad, ...(clientRefImages || [])].slice(0, slotCount);
+  // The same picture is never put in two slots.
+  return [...new Set([...cad, ...(clientRefImages || [])])].slice(0, slotCount);
 }
 
 // Data URLs coming out of the Calculator are always
