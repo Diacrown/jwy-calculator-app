@@ -18,6 +18,7 @@ import {
   dataUrlImageExtension,
   applyMainFileFont,
   encodeSsp,
+  cleanSize,
 } from "./jobTrackerExport.js";
 import { mapQuoteToPo } from "./poExport.js";
 import { PurchaseOrderPdf } from "./poDocument.jsx";
@@ -28,13 +29,14 @@ import {
   downloadBlob,
   qualityGrade,
 } from "./stoneScheduleExport.js";
+import { FANCY_PRICES, fancyGradesFor } from "./fancyPrices.js";
 
 // "Proposed Quality" dropdown values (customer-facing diamond quality
 // shown on the Price Only print). Wording kept exactly as supplied.
 // A row can still hold any other typed value via "Other (type manually)".
 const PROPOSED_DIA_QUALITIES = [
   "FG/VS2", "FG/SI1", "FG/SI2", "FG/SI3", "FGH/I1", "H/SI2", "IJ/SI2", "IJ/I1",
-  "F/VS2 (LG)", "D/VS 1", "D/VVS1", "D/VVS2",
+  "F/VS2 (LG)", "D/VS 1", "D/VVS1", "D/VVS2", "FG/VS2(LG)",
 ];
 
 // Local Quotes (this-device save/load/delete via localStorage) is
@@ -76,13 +78,25 @@ const SHAPE_ORDER = [
   "Tapered Baguette", "Triangle", "Trilliant",
 ];
 
-const STONE_TYPE_OPTIONS = [
-  "Mined", "Lab grown", "CZ", "Mount", "Semi-Mount", "Plain", "Cabochon", "Color",
-  "Opal", "Alexandrite", "Ametrine", "Amethyst", "Aquamarine", "Citrine",
+const STONE_TYPE_OPTIONS = ["Mined", "Lab grown", "CZ", "Mount", "Semi-Mount", "Plain", "Color"];
+// Proposed Quality choices when the Type is "Color" (replace the diamond qualities).
+// Saved quotes / CAD imports that carry one of these as the stone type come in as
+// Color with that gemstone as the Proposed Quality.
+const GEM_NAMES = [
+  "Cabochon", "Opal", "Alexandrite", "Ametrine", "Amethyst", "Aquamarine", "Citrine",
   "Emerald", "Garnet", "Hessonite Garnet", "Iolite", "Morganite", "Pearl",
-  "Peridot", "Ruby", "Sapphire", "Spinel", "Tanzanite", "Topaz",
-  "Tourmaline", "Zircon",
+  "Peridot", "Ruby", "Sapphire", "Spinel", "Tanzanite", "Topaz", "Tourmaline", "Zircon",
 ];
+
+// Fancy-shape natural prices in use right now: the built-in table until the
+// "Fancy Prices" sheet tab is connected, then the live copy of it.
+let FANCY_ACTIVE = FANCY_PRICES;
+// Fancy sizes only carry the grades they have a price for; keep a row's grade valid.
+function fixQuality(row) {
+  const grades = fancyGradesFor(FANCY_ACTIVE, row.sizeCode);
+  if (grades.length) return grades.includes(row.quality) ? row.quality : grades[0];
+  return NATURAL_GRADES.includes(row.quality) ? row.quality : "TW SI1";
+}
 
 // Item type choices for Job details (also drives the PO's Order Qty). The
 // dropdown has an "Other (type manually)" escape hatch for anything else.
@@ -175,7 +189,7 @@ const DIA_SIZE = [
   { code: "RND3.0M", key: "RND3.0M", shape: "Round", size: "3.0 mm (0.10-0.11 ct ±)", wt: 0.107, group: "R12" },
   { code: "RND3.1M", key: "RND3.1M", shape: "Round", size: "3.1 mm (0.11-0.12 ct ±)", wt: 0.117, group: "R12" },
   { code: "RND3.2M", key: "RND3.2M", shape: "Round", size: "3.2 mm (0.12-0.13 ct ±)", wt: 0.127, group: "R12" },
-  { code: "RND3.3M", key: "RND3.3M", shape: "Round", size: "3.3 mm (0.14-0.145 ct ±)", wt: 0.143, group: "R12" },
+  { code: "RND3.3M", key: "RND3.3M", shape: "Round", size: "3.3 mm (0.14-0.145 ct ±)", wt: 0.143, group: "R13" },
   { code: "RND3.4M", key: "RND3.4M", shape: "Round", size: "3.4 mm (0.15-0.16 ct ±)", wt: 0.155, group: "R14" },
   { code: "RND3.5M", key: "RND3.5M", shape: "Round", size: "3.5 mm (0.16-0.17 ct ±)", wt: 0.165, group: "R14" },
   { code: "RND3.6M", key: "RND3.6M", shape: "Round", size: "3.6 mm (0.17-0.18 ct ±)", wt: 0.175, group: "R18" },
@@ -533,25 +547,26 @@ const DIA_SIZE = [
 ];
 
 const SAMPLE_NATURAL_PRICES = {
-  R00: { "TW VS": 470, "TW SI1": 450, "TW SI2": 410, "TW SI3": 390, "TW I1": 350, "WH SI": 370, "IJ SI2-I1": 340 },
-  R02: { "TW VS": 420, "TW SI1": 400, "TW SI2": 370, "TW SI3": 350, "TW I1": 320, "WH SI": 330, "IJ SI2-I1": 300 },
-  R09: { "TW VS": 540, "TW SI1": 520, "TW SI2": 470, "TW SI3": 450, "TW I1": 410, "WH SI": 430, "IJ SI2-I1": 365 },
-  R11: { "TW VS": 550, "TW SI1": 530, "TW SI2": 480, "TW SI3": 460, "TW I1": 420, "WH SI": 430, "IJ SI2-I1": 390 },
-  R12: { "TW VS": 650, "TW SI1": 620, "TW SI2": 560, "TW SI3": 540, "TW I1": 480, "WH SI": 490, "IJ SI2-I1": 435 },
-  R14: { "TW VS": 770, "TW SI1": 710, "TW SI2": 650, "TW SI3": 630, "TW I1": 550, "WH SI": 550, "IJ SI2-I1": 495 },
-  R18: { "TW VS": 770, "TW SI1": 710, "TW SI2": 650, "TW SI3": 630, "TW I1": 550, "WH SI": 550, "IJ SI2-I1": 495 },
-  R20: { "TW VS": 850, "TW SI1": 790, "TW SI2": 730, "TW SI3": 690, "TW I1": 610, "WH SI": 580, "IJ SI2-I1": 535 },
-  R23: { "TW VS": 920, "TW SI1": 840, "TW SI2": 790, "TW SI3": 750, "TW I1": 650, "WH SI": 620, "IJ SI2-I1": 575 },
-  R25: { "TW VS": 920, "TW SI1": 840, "TW SI2": 790, "TW SI3": 750, "TW I1": 650, "WH SI": 620, "IJ SI2-I1": 575 },
-  R30: { "TW VS": 950, "TW SI1": 850, "TW SI2": 810, "TW SI3": 780, "TW I1": 660, "WH SI": 650, "IJ SI2-I1": 615 },
-  R38: { "TW VS": 1080, "TW SI1": 930, "TW SI2": 830, "TW SI3": 790, "TW I1": 700, "WH SI": 670, "IJ SI2-I1": 640 },
-  R40: { "TW VS": 1120, "TW SI1": 950, "TW SI2": 850, "TW SI3": 800, "TW I1": 720, "WH SI": 680, "IJ SI2-I1": 650 },
-  R46: { "TW VS": 1150, "TW SI1": 990, "TW SI2": 900, "TW SI3": 830, "TW I1": 740, "WH SI": 740, "IJ SI2-I1": 705 },
-  R50: { "TW VS": 1200, "TW SI1": 1000, "TW SI2": 910, "TW SI3": 850, "TW I1": 770, "WH SI": 760, "IJ SI2-I1": 715 },
-  R60: { "TW VS": 1300, "TW SI1": 1050, "TW SI2": 920, "TW SI3": 900, "TW I1": 790, "WH SI": 780, "IJ SI2-I1": 740 },
-  R70: { "TW SI2": 1200, "TW SI3": 1100, "TW I1": 950, "WH SI": 900, "IJ SI2-I1": 860 },
-  R75: { "TW SI2": 1200, "TW SI3": 1100, "TW I1": 950, "WH SI": 900, "IJ SI2-I1": 860 },
-  R80: { "TW SI2": 1300, "TW SI3": 1200, "TW I1": 1050, "WH SI": 1050, "IJ SI2-I1": 1000 },
+  R00: { "TW VS": 450, "TW SI1": 410, "TW SI2": 380, "TW SI3": 360, "TW I1": 330, "WH SI": 300, "IJ SI2-I1": 270 },
+  R02: { "TW VS": 380, "TW SI1": 350, "TW SI2": 330, "TW SI3": 320, "TW I1": 290, "WH SI": 260, "IJ SI2-I1": 230 },
+  R09: { "TW VS": 490, "TW SI1": 450, "TW SI2": 420, "TW SI3": 400, "TW I1": 360, "WH SI": 330, "IJ SI2-I1": 300 },
+  R11: { "TW VS": 540, "TW SI1": 490, "TW SI2": 450, "TW SI3": 430, "TW I1": 390, "WH SI": 360, "IJ SI2-I1": 330 },
+  R12: { "TW VS": 620, "TW SI1": 560, "TW SI2": 520, "TW SI3": 500, "TW I1": 450, "WH SI": 400, "IJ SI2-I1": 360 },
+  R13: { "TW VS": 650, "TW SI1": 600, "TW SI2": 540, "TW SI3": 520, "TW I1": 490, "WH SI": 450, "IJ SI2-I1": 410 },
+  R14: { "TW VS": 650, "TW SI1": 600, "TW SI2": 540, "TW SI3": 520, "TW I1": 490, "WH SI": 450, "IJ SI2-I1": 410 },
+  R18: { "TW VS": 650, "TW SI1": 600, "TW SI2": 540, "TW SI3": 520, "TW I1": 490, "WH SI": 450, "IJ SI2-I1": 410 },
+  R20: { "TW VS": 740, "TW SI1": 690, "TW SI2": 630, "TW SI3": 610, "TW I1": 530, "WH SI": 500, "IJ SI2-I1": 450 },
+  R23: { "TW VS": 760, "TW SI1": 720, "TW SI2": 660, "TW SI3": 630, "TW I1": 550, "WH SI": 500, "IJ SI2-I1": 490 },
+  R25: { "TW VS": 760, "TW SI1": 720, "TW SI2": 660, "TW SI3": 630, "TW I1": 550, "WH SI": 530, "IJ SI2-I1": 490 },
+  R30: { "TW VS": 800, "TW SI1": 740, "TW SI2": 670, "TW SI3": 640, "TW I1": 580, "WH SI": 550, "IJ SI2-I1": 500 },
+  R38: { "TW VS": 930, "TW SI1": 850, "TW SI2": 770, "TW SI3": 750, "TW I1": 660, "WH SI": 600, "IJ SI2-I1": 550 },
+  R40: { "TW VS": 950, "TW SI1": 870, "TW SI2": 790, "TW SI3": 770, "TW I1": 670, "WH SI": 620, "IJ SI2-I1": 560 },
+  R46: { "TW SI2": 800, "TW SI3": 760, "TW I1": 690, "WH SI": 640, "IJ SI2-I1": 590 },
+  R50: { "TW SI2": 820, "TW SI3": 790, "TW I1": 700, "WH SI": 650, "IJ SI2-I1": 600 },
+  R60: { "TW SI2": 850, "TW SI3": 830, "TW I1": 730, "WH SI": 670, "IJ SI2-I1": 620 },
+  R70: { "TW SI2": 1000, "TW SI3": 980, "TW I1": 800, "WH SI": 720, "IJ SI2-I1": 650 },
+  R75: { "TW SI2": 1000, "TW SI3": 980, "TW I1": 800, "WH SI": 720, "IJ SI2-I1": 650 },
+  R80: { "TW SI2": 1150, "TW SI3": 1100, "TW I1": 900, "WH SI": 750, "IJ SI2-I1": 700 },
 };
 
 const NATURAL_GRADES = ["TW VS", "TW SI1", "TW SI2", "TW SI3", "TW I1", "WH SI", "IJ SI2-I1"];
@@ -678,6 +693,7 @@ function JwyCalculatorApp() {
     cadFees: CAD_FEES,
     settingTiers: SETTING_TIERS,
     naturalPrices: null,
+    fancyPrices: null,
     labGrownPrices: null,
   });
   const [tableSources, setTableSources] = useState({
@@ -688,6 +704,7 @@ function JwyCalculatorApp() {
     cadFeesAndLabor: "sample",
     settingTiers: "sample",
     naturalPrices: "sample",
+    fancyPrices: "sample",
     labGrownPrices: "sample",
   });
   const [rateLoading, setRateLoading] = useState(false);
@@ -824,8 +841,10 @@ function JwyCalculatorApp() {
         cadFees: data.cadFeesAndLabor ? data.cadFeesAndLabor.cadFees : prev.cadFees,
         settingTiers: data.settingTiers && data.settingTiers.length ? data.settingTiers : prev.settingTiers,
         naturalPrices: data.naturalPrices && Object.keys(data.naturalPrices).length ? data.naturalPrices : prev.naturalPrices,
+        fancyPrices: data.fancyPrices && Object.keys(data.fancyPrices).length ? data.fancyPrices : prev.fancyPrices,
         labGrownPrices: data.labGrownPrices && data.labGrownPrices.length ? data.labGrownPrices : prev.labGrownPrices,
       }));
+      FANCY_ACTIVE = data.fancyPrices && Object.keys(data.fancyPrices).length ? data.fancyPrices : FANCY_ACTIVE;
       setTableSources({
         metalRates: sheetHasMetalRates ? "live" : "sample",
         alloys: data.alloys ? "live" : "sample",
@@ -834,6 +853,7 @@ function JwyCalculatorApp() {
         cadFeesAndLabor: data.cadFeesAndLabor ? "live" : "sample",
         settingTiers: data.settingTiers ? "live" : "sample",
         naturalPrices: data.naturalPrices ? "live" : "sample",
+        fancyPrices: data.fancyPrices ? "live" : "sample",
         labGrownPrices: data.labGrownPrices ? "live" : "sample",
       });
       setRateErrors(errors);
@@ -888,11 +908,11 @@ function JwyCalculatorApp() {
     setCadSheet(importedSheet && importedSheet.stones && importedSheet.stones.length ? importedSheet : null);
     if (cadImageDataUrls?.length) {
       const compressed = await Promise.all(cadImageDataUrls.map((u) => compressDataUrl(u)));
-      setCadImages((prev) => [...compressed, ...prev]);
+      setCadImages((prev) => [...new Set([...compressed, ...prev])]);
     }
     if (clientRefImageDataUrls?.length) {
       const compressed = await Promise.all(clientRefImageDataUrls.map((u) => compressDataUrl(u)));
-      setClientRefImages((prev) => [...compressed, ...prev]);
+      setClientRefImages((prev) => [...new Set([...compressed, ...prev])]);
     }
 
     setJobInfo((prev) => ({
@@ -924,10 +944,11 @@ function JwyCalculatorApp() {
       setSecondaryGramWt(roundUpMetalWt(metals.secondary.wt));
     }
 
-    const newRows = stones.map((s) => ({
+    const newRows = stones.map((s) => normalizeRow({
       ...emptyRow(),
       mode: s.diamondMode || "natural",
-      stoneTypeSel: STONE_TYPE_OPTIONS.includes(s.stoneType) ? s.stoneType : s.diamondMode === "lgd" ? "Lab grown" : "Mined",
+      stoneTypeSel: STONE_TYPE_OPTIONS.includes(s.stoneType) || GEM_NAMES.includes(s.stoneType) ? s.stoneType : s.diamondMode === "lgd" ? "Lab grown" : "Mined",
+      proposedQuality: GEM_NAMES.includes(s.stoneType) ? s.stoneType : "",
       shapeSel: s.isCustom ? CUSTOM_CODE : s.matchedShape || "",
       sizeCode: s.isCustom ? CUSTOM_CODE : s.sizeCode || "",
       quality: "TW SI1",
@@ -1153,7 +1174,14 @@ function JwyCalculatorApp() {
   rowsRef.current = rows;
   const updateRow = (idx, patch) => {
     if (Object.keys(patch).some((k) => CUSTOM_ROW_KEYS.has(k))) linesDirtyRef.current = true;
-    setRows((prev) => prev.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
+    const regrade = ["sizeCode", "shapeSel", "mode", "stoneTypeSel"].some((k) => k in patch);
+    setRows((prev) =>
+      prev.map((r, i) => {
+        if (i !== idx) return r;
+        const merged = { ...r, ...patch };
+        return regrade && (merged.mode || "natural") === "natural" ? { ...merged, quality: fixQuality(merged) } : merged;
+      })
+    );
   };
 
   const addCustomRow = () => {
@@ -1177,14 +1205,14 @@ function JwyCalculatorApp() {
   const rowCalcs = useMemo(() => {
     return rows.map((row) => {
       const pcs = parseFloat(row.pcs) || 0;
-      const isMount = row.stoneTypeSel === "Mount";
+      const isMount = !row.typeCustom && (row.stoneTypeSel === "Mount" || row.stoneTypeSel === "Semi-Mount");
       // Plain (metal only, no stones): nothing to price.
       if (row.stoneTypeSel === PLAIN_TYPE) {
         return { shape: "", size: "", wtPerPc: 0, totalWt: 0, perCt: 0, total: 0, settingTotal: 0, settingType: "PER PC", priceEditable: false };
       }
       if (row.sizeCode === CUSTOM_CODE) {
         const wtPerPc = parseFloat(row.customWt) || 0;
-        const perCt = parseFloat(row.customRate) || 0;
+        const perCt = isMount ? 0 : parseFloat(row.customRate) || 0;
         const totalWt = wtPerPc * pcs;
         const tier = settingRateFor(wtPerPc, settingTiersLive);
         const settingTotal = isMount ? 0 : pcs > 0 ? (tier.type === "PER CT" ? tier.rate * totalWt : tier.rate * pcs) : 0;
@@ -1198,7 +1226,7 @@ function JwyCalculatorApp() {
           total: Math.round(totalWt * perCt),
           settingTotal,
           settingType: tier.type,
-          priceEditable: true,
+          priceEditable: !isMount,
         };
       }
       const sizeEntry = DIA_SIZE.find((d) => d.key === row.sizeCode);
@@ -1212,7 +1240,9 @@ function JwyCalculatorApp() {
 
       let perCt = 0;
       let priceEditable = false;
-      if (isOtherType) {
+      if (isMount) {
+        perCt = 0; // Mount / Semi-Mount carry no value: left null, not editable
+      } else if (isOtherType) {
         perCt = parseFloat(row.manualRate) || 0;
         priceEditable = true;
       } else if (isNatural) {
@@ -1229,8 +1259,15 @@ function JwyCalculatorApp() {
             priceEditable = true;
           }
         } else {
-          perCt = parseFloat(row.manualRate) || 0;
-          priceEditable = true;
+          // Fancy shapes: price comes from the fancy table (by size code + grade).
+          const fancyRow = (liveData.fancyPrices || FANCY_PRICES)[sizeEntry.key];
+          const fancyPrice = fancyRow ? fancyRow[fixQuality(row)] : 0;
+          if (fancyPrice) {
+            perCt = fancyPrice;
+          } else {
+            perCt = parseFloat(row.manualRate) || 0;
+            priceEditable = true;
+          }
         }
       } else {
         const wtPerPc = sizeEntry.wt;
@@ -1261,7 +1298,7 @@ function JwyCalculatorApp() {
         priceEditable,
       };
     });
-  }, [rows, settingTiersLive, liveData.naturalPrices, liveData.labGrownPrices]);
+  }, [rows, settingTiersLive, liveData.naturalPrices, liveData.fancyPrices, liveData.labGrownPrices]);
 
   const totals = useMemo(() => {
     const totalWt = rowCalcs.reduce((s, r) => s + r.totalWt, 0);
@@ -1429,9 +1466,14 @@ function JwyCalculatorApp() {
     // redrawn from the imported CAD data; any other CAD renders and then the
     // client reference images follow it. A quote with no CAD import has no
     // stone table to draw, so it keeps the plain CAD render as before.
+    // A quote that did not come from a fresh CAD import (an older saved quote, or
+    // one built by hand) has no CAD stone table stored; its table is then built from
+    // the stone schedule on screen so Image1 still carries render + stone details.
+    const sheetForImage =
+      cadSheet && cadSheet.stones && cadSheet.stones.length ? cadSheet : sheetFromRows(rowsWithCalcs);
     let page1Image = null;
     try {
-      page1Image = await composePage1Image((cadImages || [])[0], cadSheet);
+      page1Image = await composePage1Image((cadImages || [])[0], sheetForImage);
     } catch {
       page1Image = null;
     }
@@ -2350,6 +2392,31 @@ function wrapCellText(ctx, text, maxW, maxLines = 3) {
   return lines.slice(0, maxLines);
 }
 
+// Stone table for Image1 built from the Calculator's own stone rows -- used when
+// the quote carries no CAD stone table (see doExportJobTracker). Same columns as
+// the CAD form's page 1; the position names (Center, Halo, ...) are not known
+// here, so the row number is shown instead.
+function sheetFromRows(rowsWithCalcs) {
+  const stones = (rowsWithCalcs || [])
+    .filter(({ r }) => r.stoneTypeSel !== PLAIN_TYPE)
+    .map(({ r, c }, i) => {
+      const wt = Number(c.wtPerPc) || 0;
+      const tot = Number(c.totalWt) || 0;
+      return {
+        pos: String(i + 1),
+        stone: r.stoneTypeSel || (r.mode === "lgd" ? "Lab grown" : "Mined"),
+        shape: c.shape || r.customShape || "",
+        dims: cleanSize(c.size).replace(/mm$/i, "").trim(),
+        avgWt: wt > 0 ? wt.toFixed(4) : "",
+        qty: parseFloat(r.pcs) || 0,
+        totalWt: tot > 0 ? tot.toFixed(3) : "",
+        setting: "Hand",
+        source: r.source || "",
+      };
+    });
+  return { stones };
+}
+
 async function composePage1Image(renderDataUrl, cadSheet) {
   const stones = (cadSheet && cadSheet.stones) || [];
   if (!renderDataUrl || stones.length === 0) return null;
@@ -2465,6 +2532,14 @@ function normalizeRow(r) {
     row.customSizeText = row.customShape;
     row.customShape = "";
   }
+  // The Colour box was removed from the calculator.
+  row.colour = "";
+  // Gemstone names that used to be in the Type list are now Color + gemstone.
+  if (!row.typeCustom && GEM_NAMES.includes(row.stoneTypeSel)) {
+    if (!row.proposedQuality) row.proposedQuality = row.stoneTypeSel;
+    row.stoneTypeSel = "Color";
+  }
+  if ((row.mode || "natural") === "natural") row.quality = fixQuality(row);
   return row;
 }
 
@@ -3540,7 +3615,6 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
               <th style={styles.th}>Shape</th>
               <th style={styles.th}>Size</th>
               <th style={styles.th}>Spec</th>
-              <th style={styles.th}>Colour</th>
               <th style={styles.th}>Quality</th>
               <th style={styles.th}>Proposed Quality</th>
               <th style={styles.thRight}>Wt/pc</th>
@@ -3588,7 +3662,9 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                             focusFirstInput(td);
                           } else {
                             const newMode = val === "Lab grown" ? "lgd" : "natural";
-                            updateRow(i, { typeCustom: false, stoneTypeSel: val, mode: newMode });
+                            // Color stones carry a gemstone as Proposed Quality; any other type uses the diamond list.
+                            const colourChange = (val === "Color") !== (row.stoneTypeSel === "Color");
+                            updateRow(i, { typeCustom: false, stoneTypeSel: val, mode: newMode, ...(colourChange ? { proposedQuality: "" } : {}) });
                           }
                         }}
                       >
@@ -3604,7 +3680,7 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                   {isPlain ? (
                     <td
                       className="jwy-plain"
-                      colSpan={15}
+                      colSpan={14}
                       data-label=""
                       style={{ ...styles.td, fontSize: 12, color: "var(--muted)", fontStyle: "italic" }}
                     >
@@ -3730,26 +3806,16 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                   <td className="jwy-spec jwy-wide" data-label="Spec" style={{ ...styles.td, fontSize: 12, color: "var(--muted)" }}>
                     {row.sizeCode === CUSTOM_CODE ? "" : calc.size}
                   </td>
-                  <td data-label="Colour" style={styles.td}>
-                    <input
-                      style={{ ...styles.inputSm, width: 62 }}
-                      list="jwy-stone-colours"
-                      placeholder="colour"
-                      value={row.colour || ""}
-                      onChange={(e) => updateRow(i, { colour: e.target.value })}
-                      title="Stone colour -- printed on the PO and in Main File stone details (e.g. Black)"
-                    />
-                  </td>
                   <td data-label="Quality" style={styles.td}>
                     {row.typeCustom || (row.stoneTypeSel && row.stoneTypeSel !== "Mined" && row.stoneTypeSel !== "Lab grown") ? (
                       <span style={{ fontSize: 11, color: "var(--muted)", fontStyle: "italic" }}>manual $/ct</span>
                     ) : (row.mode || "natural") === "natural" ? (
                       <select
                         style={styles.inputSm}
-                        value={row.quality}
+                        value={fixQuality(row)}
                         onChange={(e) => updateRow(i, { quality: e.target.value })}
                       >
-                        {NATURAL_GRADES.map((g) => (
+                        {(fancyGradesFor(FANCY_ACTIVE, row.sizeCode).length ? fancyGradesFor(FANCY_ACTIVE, row.sizeCode) : NATURAL_GRADES).map((g) => (
                           <option key={g} value={g}>
                             {g}
                           </option>
@@ -3784,7 +3850,7 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                     <div style={{ minWidth: 108 }} title="Shown to the customer on the Price Only print, instead of the internal quality grade">
                       <DropdownOrOtherField
                         value={row.proposedQuality || ""}
-                        options={PROPOSED_DIA_QUALITIES}
+                        options={!row.typeCustom && row.stoneTypeSel === "Color" ? GEM_NAMES : PROPOSED_DIA_QUALITIES}
                         onChange={(val) => updateRow(i, { proposedQuality: val })}
                         placeholder="Proposed quality"
                       />
@@ -3818,7 +3884,9 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                   </td>
                   <td data-label="Total wt" style={styles.tdRight}>{fmt(calc.totalWt, 3)}</td>
                   <td data-label="$ / ct" style={styles.tdRight}>
-                    {row.sizeCode === CUSTOM_CODE ? (
+                    {!row.typeCustom && (row.stoneTypeSel === "Mount" || row.stoneTypeSel === "Semi-Mount") ? (
+                      "—"
+                    ) : row.sizeCode === CUSTOM_CODE ? (
                       <input
                         style={{ ...styles.inputSm, width: 66, textAlign: "right" }}
                         type="number"
@@ -3861,7 +3929,7 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
           </tbody>
           <tfoot>
             <tr className="jwy-stone-total" style={styles.totalRow}>
-              <td className="jwy-wide" style={styles.td} colSpan={11}>
+              <td className="jwy-wide" style={styles.td} colSpan={10}>
                 Totals
               </td>
               <td data-label="Pcs" style={styles.tdRight}>{fmt(totals.totalPcs, 0)}</td>
@@ -3874,11 +3942,6 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
             </tr>
           </tfoot>
         </table>
-        <datalist id="jwy-stone-colours">
-          {["White", "Black", "Blue", "Pink", "Yellow", "Green", "Red", "Brown", "Champagne", "Orange", "Purple"].map((c) => (
-            <option key={c} value={c} />
-          ))}
-        </datalist>
       </div>
       <button style={{ ...styles.smallBtn, marginTop: 10 }} onClick={onAddRow} type="button">
         + Add custom stone row
@@ -4070,7 +4133,7 @@ function focusFirstInput(td) {
 
 // A dropdown that falls back to a free-text box the moment its options
 // don't cover what's needed -- used for the Vendor/Stamp Logo/Stamp
-// Metal/Stamp Location/Finding1/Finding2/Tag Color fields (option lists
+// Metal/Stamp Location/Finding1/Finding2 fields (option lists
 // live in JOB_TRACKER_DROPDOWN_OPTIONS in jobTrackerExport.js).
 function DropdownOrOtherField({ value, options, onChange, placeholder }) {
   const isKnown = !value || options.includes(value);
@@ -4151,7 +4214,7 @@ function JobTrackerFieldsCard({
     try {
       const { uploadedCount, availableCount, logoLinked, page1 } = await onExportJobTracker();
       const imgPart = availableCount === 0 ? "no images uploaded" : `${uploadedCount}/${availableCount} image URL(s) added`;
-      setExportStatus(`Downloaded -- ${imgPart}${page1 ? " (Image1 = full page 1)" : ""}${logoLinked ? " + stamp logo link in Image3" : ""}`);
+      setExportStatus(`Downloaded -- ${imgPart}${page1 ? " (Image1 = full page 1)" : uploadedCount ? " (Image1 has no stone table -- no CAD render or stone lines to draw it from)" : ""}${logoLinked ? " + stamp logo link in Image3" : ""}`);
       setTimeout(() => setExportStatus(""), 6000);
     } catch (err) {
       setExportStatus((err && err.message) || "Couldn't build the Main File export");
