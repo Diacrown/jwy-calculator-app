@@ -36,3 +36,11 @@ export const SHEET_URLS = {
 
 // How often (ms) the app re-fetches all six sheets while open.
 export const POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+
+// Live precious-metal rates from our own Netlify function
+// (/.netlify/functions/metal-rates): spot from gold-api.com, PM rate from a
+// snapshot of spot taken at each LBMA fix time. When true, those rates replace
+// the Google Sheet's metal rates; if the function is unreachable the app falls
+// back to the sheet and then to the built-in sample rates, exactly as before.
+// Set false to go back to the sheet-only behaviour.
+export const USE_LIVE_METAL_RATES = true;

@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { fetchLiveSheetData } from "./sheetData.js";
-import { POLL_INTERVAL_MS } from "./config.js";
+import { POLL_INTERVAL_MS, USE_LIVE_METAL_RATES } from "./config.js";
 import { parseOrderFormJson, fixShapeSpelling } from "./pdfParser.js";
 import { pdf } from "@react-pdf/renderer";
 import * as XLSX from "xlsx";
@@ -640,6 +640,26 @@ function castingCost(gramWt, alloy, metalRates) {
   return gramWt * rateNet;
 }
 
+// Live metal rates from our own Netlify function (spot from gold-api.com, PM
+// rate = snapshot at the LBMA fix time). Returns { rates, source } or null on
+// any problem, so callers fall back to the Google Sheet / sample rates.
+async function fetchLiveMetalRates() {
+  try {
+    const res = await fetch("/.netlify/functions/metal-rates", { cache: "no-store" });
+    if (!res.ok) return null;
+    const payload = await res.json();
+    const rates = payload && payload.rates;
+    if (!rates || !Object.keys(rates).length) return null;
+    for (const code of Object.keys(rates)) {
+      const r = rates[code];
+      if (!r || !(r.pmRateOz > 0) || !(r.spotOz > 0)) return null;
+    }
+    return { rates, source: payload.source };
+  } catch {
+    return null;
+  }
+}
+
 function JwyCalculatorApp() {
   const [jobInfo, setJobInfo] = useState({
     designer: "",
@@ -824,11 +844,13 @@ function JwyCalculatorApp() {
   const refreshRates = useCallback(async () => {
     setRateLoading(true);
     try {
+      const livePromise = USE_LIVE_METAL_RATES ? fetchLiveMetalRates() : Promise.resolve(null);
       const { data, errors } = await fetchLiveSheetData();
+      const liveMetal = await livePromise;
       const sheetHasMetalRates = data.metalRates && Object.keys(data.metalRates).length > 0;
 
       setLiveData((prev) => ({
-        metalRates: sheetHasMetalRates ? data.metalRates : prev.metalRates,
+        metalRates: liveMetal ? liveMetal.rates : sheetHasMetalRates ? data.metalRates : prev.metalRates,
         alloys: data.alloys && data.alloys.length ? data.alloys : prev.alloys,
         currencyRates:
           data.currencyRates && Object.keys(data.currencyRates.rates || {}).length
@@ -846,7 +868,7 @@ function JwyCalculatorApp() {
       }));
       FANCY_ACTIVE = data.fancyPrices && Object.keys(data.fancyPrices).length ? data.fancyPrices : FANCY_ACTIVE;
       setTableSources({
-        metalRates: sheetHasMetalRates ? "live" : "sample",
+        metalRates: liveMetal ? (liveMetal.source === "cache" ? "live-api-cache" : "live-api") : sheetHasMetalRates ? "live" : "sample",
         alloys: data.alloys ? "live" : "sample",
         currencyRates: data.currencyRates ? "live" : "sample",
         locations: data.locations ? "live" : "sample",
@@ -869,7 +891,7 @@ function JwyCalculatorApp() {
       // source ends up populating metalRates, the rest of the pricing
       // engine reads it identically either way -- no separate handling
       // needed downstream.
-      if (!sheetHasMetalRates) {
+      if (!sheetHasMetalRates && !liveMetal && !USE_LIVE_METAL_RATES) {
         try {
           const res = await fetch("/.netlify/functions/metal-rates");
           if (res.ok) {
