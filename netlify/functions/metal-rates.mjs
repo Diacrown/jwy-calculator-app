@@ -1,12 +1,13 @@
 import { getStore } from "@netlify/blobs";
 import { METALS, londonNow, fetchSpot } from "./_metalPolicy.mjs";
+import { readOverrides, effectiveTables } from "./_appData.mjs";
 
-// Live metal rates for the calculator, in the same shape the Google Sheet's
+// Live metal rates for the calculator, in the same shape the old sheet
 // MetalRates tab produced: { AU: { label, pmRateOz, spotOz, spotSurcharge,
 // wastage, asOf }, ... }.
 //   spotOz   = live spot from gold-api.com (no key needed)
 //   pmRateOz = snapshot of spot taken at the LBMA fix time (metal-pm-snapshot),
-//              unless a developer override exists (see metal-rates-admin);
+//              unless a PM rate was typed in the developer console (dev-admin);
 //              before any snapshot exists it falls back to the live spot.
 // If the live call fails, the last good payload is served from Blob storage.
 const json = (body, status = 200) =>
@@ -18,6 +19,8 @@ export default async () => {
     const snap = (await store.get("pm-snapshot", { type: "json" }).catch(() => null)) || {};
     const override = (await store.get("pm-override", { type: "json" }).catch(() => null)) || {};
     const now = londonNow();
+    // wastage / spot surcharge: built-in values unless changed in the developer console
+    const policy = effectiveTables(await readOverrides(getStore("app-data"))).tables.metalPolicy;
     const rates = {};
     for (const [code, m] of Object.entries(METALS)) {
       const spot = await fetchSpot(m.symbol);
@@ -30,8 +33,8 @@ export default async () => {
         label: m.label,
         pmRateOz: pm,
         spotOz: spot,
-        spotSurcharge: m.spotSurcharge,
-        wastage: m.wastage,
+        spotSurcharge: policy[code].spotSurcharge,
+        wastage: policy[code].wastage,
         asOf,
         pmSource,
       };

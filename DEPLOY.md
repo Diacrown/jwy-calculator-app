@@ -71,21 +71,16 @@ So the loop is just:
 
 ---
 
-## What works right away vs. what needs the sheet
+## Data and the developer console
 
-The demo runs immediately on bundled SAMPLE data — full UI, full math,
-good enough to show people how it works. The "Live data sync" panel will
-show all six tables as "sample".
+All price / rate data is built into the app (`src/defaultData.js`) and served
+by the app's own Netlify functions -- there is no Google Sheet to connect.
 
-To switch on LIVE pricing:
-1. Build the Google Sheet per SHEET_SPEC.md.
-2. Publish each of its 6 tabs to web as CSV.
-3. Paste the 6 URLs into `src/config.js`.
-4. Commit + push. Vercel redeploys; the sync panel turns green per
-   table as each connects.
-
-You can do the live-data step later — it does not block getting a demo
-link up now.
+To change values or rates later: open the site address with `#/developer` on
+the end and enter the developer token. Set the token once in Netlify under
+Site settings > Environment variables as `DEV_ADMIN_TOKEN` (16+ random
+characters; never commit it or paste it in chat). After changing the variable,
+trigger a redeploy so the functions pick it up.
 
 ---
 

@@ -1,46 +1,17 @@
-// Paste your six published-CSV URLs here after building the sheet per
-// SHEET_SPEC.md. Each is File > Share > Publish to web > select tab >
-// CSV > Publish > copy URL. Leave any blank to fall back to the bundled
-// sample data for that table (useful for local dev before the sheet
-// exists, or if you intentionally want a table to stay code-managed).
+// Calculator settings.
 //
-// Once all six are filled in, the app needs zero human interaction to
-// stay current -- it polls these URLs on an interval and recalculates.
+// All price / rate tables now come from the app's own data service
+// (netlify/functions/app-data.mjs) with a permanent built-in copy in
+// src/defaultData.js -- there is no Google Sheet any more. Values are changed
+// from the hidden developer console (open the site with #/developer on the end
+// of the address; it needs the developer token).
 
-// Using Google's gviz/tq endpoint rather than the "Publish to web" /pub
-// CSV links. Both expose the same published data, but /pub frequently
-// omits CORS headers needed for cross-origin fetch() from another site
-// (it works fine opened directly in a browser tab, which is misleading --
-// that's plain navigation, not a fetch, so CORS never applies there).
-// gviz/tq is Google's own endpoint for exactly this use case and reliably
-// supports cross-origin reads. It requires the sheet's general access to
-// be "Anyone with the link — Viewer" (Share button, not just Publish to
-// web) since it reads live off the actual document permissions.
-const SHEET_ID = "1wPI7Ujbc9F4GEarje0BbCnUXVYKwyCa_vyqtB3mbciE";
-const gvizUrl = (gid) => `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&gid=${gid}`;
-
-export const SHEET_URLS = {
-  metalRates: gvizUrl(0), // Tab 1: MetalRates
-  alloys: gvizUrl(1405483371), // Tab 2: Alloys
-  currencyRates: gvizUrl(1536480790), // Tab 3: CurrencyRates
-  locations: gvizUrl(1786149102), // Tab 4: Locations
-  cadFeesAndLabor: gvizUrl(386901877), // Tab 5: CadFeesAndLabor
-  settingTiers: gvizUrl(1907251116), // Tab 6: SettingTiers
-  naturalPrices: gvizUrl(1752109100), // Tab 7: Natural Prices (SizeGroup -> SSP)
-  // Tab 9: Fancy Prices (SizeCode -> $/ct per grade). Create the tab from
-  // FancyPrices_tab_NEW.csv, then paste its gid here: gvizUrl(<gid>). Left
-  // blank, the app uses the built-in copy in fancyPrices.js.
-  fancyPrices: gvizUrl(730108012),
-  labGrownPrices: gvizUrl(1815938036), // Tab 8: Lab Grown Prices (Shape/Min_Ct/Max_Ct bands)
-};
-
-// How often (ms) the app re-fetches all six sheets while open.
+// How often (ms) the app re-fetches the data tables and live rates while open.
 export const POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
 // Live precious-metal rates from our own Netlify function
 // (/.netlify/functions/metal-rates): spot from gold-api.com, PM rate from a
-// snapshot of spot taken at each LBMA fix time. When true, those rates replace
-// the Google Sheet's metal rates; if the function is unreachable the app falls
-// back to the sheet and then to the built-in sample rates, exactly as before.
-// Set false to go back to the sheet-only behaviour.
+// snapshot of spot taken at each LBMA fix time (or a rate typed in the developer
+// console). If the function is unreachable the app keeps the last good rates and
+// then the built-in sample rates. Set false to always use the built-in sample rates.
 export const USE_LIVE_METAL_RATES = true;

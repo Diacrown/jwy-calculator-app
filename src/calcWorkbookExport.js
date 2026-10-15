@@ -22,7 +22,7 @@
 //
 // $/ct per stone line is an INPUT here (taken from whichever price grid
 // the app used, with the source named in "Rate basis") rather than being
-// re-derived -- the price grids themselves live in the Google Sheet, not
+// re-derived -- the price grids themselves live in the app data tables, not
 // in this file. Everything downstream of $/ct is a formula.
 //
 // Every formula cell is also written with its computed value cached, so
@@ -628,7 +628,7 @@ export async function buildCalcWorkbook(ExcelJS, d) {
   rd++;
   section(wsRead, rd++, "What this file does and doesn't re-derive", 2);
   [
-    "• $/ct for each stone line is an INPUT here (the price grids live in the Google Sheet). The 'Rate basis' column says which grid row/band the app used. Everything after $/ct is a formula.",
+    "• $/ct for each stone line is an INPUT here (the price grids live in the app's data tables). The 'Rate basis' column says which grid row/band the app used. Everything after $/ct is a formula.",
     "• Setting rates are looked up from the tier table on Rates using each stone's weight per piece.",
     "• Metal, labor, CAD, duty, currency, rounding (to whole dollars; up to the next 5) all follow the Calculator's own rules.",
   ].forEach((t) => {

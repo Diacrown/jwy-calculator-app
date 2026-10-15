@@ -1,10 +1,15 @@
-// Business settings for metal rates -- NOT market data. Developer-only: change
-// here (and redeploy). Values copied from the Google Sheet's MetalRates tab.
+// Metal definitions. Wastage and spot surcharge are business settings (not market
+// data): their built-in values live in src/defaultData.js and can be changed from
+// the developer console ("metalPolicy" table); this file only adds the market-side
+// facts (feed symbol, LBMA fix time).
+import { DEFAULT_METAL_POLICY } from "../../src/defaultData.js";
+
+const P = DEFAULT_METAL_POLICY;
 export const METALS = {
-  AU: { symbol: "XAU", label: "Gold", wastage: 1.1, spotSurcharge: 1.05, fixLondon: "15:00" }, // LBMA Gold PM
-  PT: { symbol: "XPT", label: "Platinum", wastage: 1.22, spotSurcharge: 1.05, fixLondon: "14:00" }, // LBMA Platinum PM
-  PD: { symbol: "XPD", label: "Palladium", wastage: 0.215, spotSurcharge: 1.05, fixLondon: "14:00" }, // LBMA Palladium PM
-  AG: { symbol: "XAG", label: "Silver", wastage: 1.25, spotSurcharge: 1.05, fixLondon: "12:00" }, // LBMA Silver price
+  AU: { symbol: "XAU", label: "Gold", wastage: P.AU.wastage, spotSurcharge: P.AU.spotSurcharge, fixLondon: "15:00" }, // LBMA Gold PM
+  PT: { symbol: "XPT", label: "Platinum", wastage: P.PT.wastage, spotSurcharge: P.PT.spotSurcharge, fixLondon: "14:00" }, // LBMA Platinum PM
+  PD: { symbol: "XPD", label: "Palladium", wastage: P.PD.wastage, spotSurcharge: P.PD.spotSurcharge, fixLondon: "14:00" }, // LBMA Palladium PM
+  AG: { symbol: "XAG", label: "Silver", wastage: P.AG.wastage, spotSurcharge: P.AG.spotSurcharge, fixLondon: "12:00" }, // LBMA Silver price
 };
 
 // Free spot feed (no key). Returns { price } in USD per troy ounce.

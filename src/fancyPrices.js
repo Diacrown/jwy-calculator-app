@@ -1,7 +1,7 @@
 // Natural FANCY-shape diamond $/ct, keyed by size code, then by calculator grade.
 // Source: RND / FANCY price file 13-10-26 (quality mapping: F-G / VS and F-G / VVS-VS -> TW VS,
-// FGH / SI -> TW SI, F-G / SI -> TW SI3). This is only the BUILT-IN copy: when the "Fancy Prices"
-// Google Sheet tab is connected (see config.js) the sheet wins, so prices can be updated there.
+// FGH / SI -> TW SI, F-G / SI -> TW SI3). This is the BUILT-IN copy; prices can be changed from the
+// developer console (Fancy tab), which then takes precedence over these values.
 // OVL040W, MQS040W and EME4530M are priced here but not yet in the size list (sizes to be added).
 export const FANCY_PRICES = {
   "PRN1.4M": { "TW VS": 600, "TW SI3": 470 },

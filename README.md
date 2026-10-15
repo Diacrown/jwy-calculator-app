@@ -22,33 +22,26 @@ Opens at http://localhost:5173
 Netlify works the same way (drag-and-drop the `dist/` folder after
 `npm run build`, or connect the GitHub repo for auto-deploys on push).
 
-## Wiring live data (fully automatic, no manual refresh needed)
+## Where the data comes from (no Google Sheet any more)
 
-This app reads all of its business data (metal rates, alloys, currency
-rates, locations/duty, labor/CAD fees, setting tiers) from a Google
-Sheet -- see `SHEET_SPEC.md` for the exact tab layout to build.
+Every price / rate table (alloys, currency, locations & duty, labor/CAD fees,
+setting tiers, natural / fancy / lab-grown prices, metal wastage & surcharge)
+lives in `src/defaultData.js` as a permanent built-in copy. Changes are made
+in the hidden **developer console**: open the site with `#/developer` on the
+end of the address (it is not linked anywhere) and enter the developer token.
+Stored changes are validated on the server, kept with a full change history
+(with "put back"), and "Reset to built-in" removes them. If the data service
+is ever unreachable the calculator simply keeps working on the built-in copy.
 
-Once the sheet is built:
+Set up once in Netlify (Site settings > Environment variables):
 
-1. Publish each of its 6 tabs individually to the web as CSV
-   (File > Share > Publish to web > select tab > CSV > Publish).
-2. Paste the 6 resulting URLs into `src/config.js`.
-3. Deploy. From then on the app polls all 6 sheets every 5 minutes
-   (`POLL_INTERVAL_MS` in config.js) with zero human interaction --
-   nobody needs to open the sheet, click refresh, or touch the app.
-   The sheet's own IMPORTHTML/GOOGLEFINANCE formulas keep its data
-   current on Google's own schedule; the app just reads whatever the
-   sheet currently shows.
+- `DEV_ADMIN_TOKEN` - a long random secret (16+ characters). Without it the
+  console refuses everything. Never put it in the code or share it in chat.
 
-Each of the 6 tables falls back independently to bundled sample data if
-its URL is left blank or its fetch fails (e.g. a typo in one tab's URL
-doesn't take down the whole calculator) -- the "Live data sync" panel
-in the app shows which tables are live vs sample at a glance, with a
-manual "Sync now" button for on-demand refresh too.
-
-This will not work from inside a claude.ai artifact preview (sandboxed,
-no outbound network) but works normally once deployed to Vercel/Netlify
-or any other real host.
+Live feeds (all free, no keys): metal spot from gold-api.com with a PM
+snapshot taken at each LBMA fix time (typed PM rates in the console override
+it), and exchange rates from the European Central Bank via frankfurter.dev
+(switch to "Manual" on the console's Currency tab to use fixed rates).
 
 ## Known gaps / TODO
 
