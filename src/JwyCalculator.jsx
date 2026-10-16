@@ -1,6 +1,13 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { fetchAppData } from "./appData.js";
 import {
+  ALT_COLUMNS,
+  NATURAL_GRADES as ALT_NATURAL_GRADES,
+  LGD_GRADES as ALT_LGD_GRADES,
+  altMetalColumn,
+  altStoneColumn,
+} from "./alternatePricing.js";
+import {
   SAMPLE_METAL_RATES,
   SAMPLE_CURRENCY_RATES,
   CURRENCY_MARKUP,
@@ -572,6 +579,24 @@ async function fetchLiveMetalRates() {
   }
 }
 
+// ---- Alternate pricing (see alternatePricing.js): choices are saved with the quote ----
+const emptyAlternates = () => ({
+  metal: Array.from({ length: ALT_COLUMNS }, () => ({ primary: "", secondary: "" })),
+  stones: Array.from({ length: ALT_COLUMNS }, () => ({ kind: "none", grade: "", manualTotal: "", label: "" })),
+  showMetalInPdf: false,
+  showStonesInPdf: false,
+});
+function normalizeAlternates(a) {
+  const e = emptyAlternates();
+  if (!a || typeof a !== "object") return e;
+  return {
+    metal: e.metal.map((d, i) => ({ ...d, ...((a.metal || [])[i] || {}) })),
+    stones: e.stones.map((d, i) => ({ ...d, ...((a.stones || [])[i] || {}) })),
+    showMetalInPdf: !!a.showMetalInPdf,
+    showStonesInPdf: !!a.showStonesInPdf,
+  };
+}
+
 function JwyCalculatorApp() {
   const [jobInfo, setJobInfo] = useState({
     designer: "",
@@ -613,6 +638,7 @@ function JwyCalculatorApp() {
   // the JSON import so the full page-1 picture can be redrawn for Main File.
   const [cadSheet, setCadSheet] = useState(null);
   const [turntableLink, setTurntableLink] = useState("");
+  const [alternates, setAlternates] = useState(emptyAlternates);
 
   const [liveData, setLiveData] = useState({
     metalRates: SAMPLE_METAL_RATES,
@@ -805,6 +831,7 @@ function JwyCalculatorApp() {
   }, [refreshRates]);
 
   const applyImportResult = async (fileName, resultData) => {
+    setAlternates(emptyAlternates()); // a new CAD job starts with no alternates
     const { jobInfo: ji, metals, metalWarnings, stones, cadSheet: importedSheet, cadImageDataUrls, clientRefImageDataUrls, derivedSummary } = resultData;
     setCadSheet(importedSheet && importedSheet.stones && importedSheet.stones.length ? importedSheet : null);
     if (cadImageDataUrls?.length) {
@@ -951,6 +978,7 @@ function JwyCalculatorApp() {
     setClientRefImages([]);
     setCadSheet(null);
     setTurntableLink("");
+    setAlternates(emptyAlternates());
     setManualPriceOverride("");
     setAdditionalChargeName("");
     setAdditionalChargeAmount("");
@@ -989,6 +1017,7 @@ function JwyCalculatorApp() {
     clientRefImages,
     cadSheet,
     turntableLink,
+    alternates,
     calculatedTotalWithDutyUSD: totalWithDutyUSD,
     calculatedTotalWithDutyLocal: totalWithDutyLocal,
     quotedTotalLocal: effectiveTotalLocal,
@@ -1026,6 +1055,7 @@ function JwyCalculatorApp() {
     setClientRefImages(q.clientRefImages || []);
     setCadSheet(q.cadSheet || null);
     setTurntableLink(q.turntableLink || "");
+    setAlternates(normalizeAlternates(q.alternates));
   };
 
   const deleteQuote = (id) => {
@@ -1241,6 +1271,50 @@ function JwyCalculatorApp() {
   const effectiveTotalLocal = hasOverride ? overrideNum : totalWithDutyLocal;
   const breakupPct = (val) => (grossTotalUSD > 0 ? (val / grossTotalUSD) * 100 : 0);
 
+  // Alternate metal / alternate stones (calculated prices only -- a manual price override is not applied).
+  const altBase = {
+    primaryAlloy,
+    primaryGramWt,
+    secondaryAlloy: secondaryAlloyShort && (parseFloat(secondaryGramWt) || 0) > 0 ? secondaryAlloy : null,
+    secondaryGramWt,
+  };
+  const altResults = useMemo(() => {
+    const money = { duty: locInfo.duty, fxRate, roundUp5, encodeSsp };
+    const metal = alternates.metal.map((col) =>
+      altMetalColumn(col, altBase, {
+        ...money,
+        alloys: alloyList,
+        metalRates,
+        castingCost,
+        laborPerGm: liveData.laborPerGm,
+        laborMinFlat: liveData.laborMinFlat,
+        cadFee,
+        diamondTotal: totals.diamondTotal,
+        settingTotal: totals.settingTotal,
+        additionalChargeUSD,
+      })
+    );
+    const tables = {
+      diaSize: DIA_SIZE,
+      naturalPrices: liveData.naturalPrices || SAMPLE_NATURAL_PRICES,
+      fancyPrices: liveData.fancyPrices || FANCY_PRICES,
+      lgdBands: liveData.labGrownPrices || SAMPLE_LGD_BANDS,
+      customCode: CUSTOM_CODE,
+    };
+    const stones = alternates.stones.map((col) =>
+      altStoneColumn(col, rows, rowCalcs, tables, {
+        ...money,
+        casting,
+        labor,
+        cadFee,
+        settingTotal: totals.settingTotal,
+        additionalChargeUSD,
+      })
+    );
+    return { metal, stones };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [alternates, primaryAlloy, primaryGramWt, secondaryAlloy, secondaryAlloyShort, secondaryGramWt, alloyList, metalRates, liveData, cadFee, totals, additionalChargeUSD, rows, rowCalcs, casting, labor, locInfo, fxRate]);
+
   const [pdfGenerating, setPdfGenerating] = useState(null);
 
   const generatePdfBlob = async (variant) => {
@@ -1276,6 +1350,11 @@ function JwyCalculatorApp() {
         effectiveTotalLocal={effectiveTotalLocal}
         logoBlack="/logoblack.PNG"
         printDate={printDate}
+        alternates={{
+          metal: alternates.showMetalInPdf ? altResults.metal : [],
+          stones: alternates.showStonesInPdf ? altResults.stones : [],
+          totalWithDutyLocal,
+        }}
       />
     ).toBlob();
   };
@@ -1888,6 +1967,29 @@ function JwyCalculatorApp() {
           hasAdditionalCharge={hasAdditionalCharge}
           additionalChargeUSD={additionalChargeUSD}
           effectiveTotalLocal={effectiveTotalLocal}
+        />
+
+        <AlternatePricingCard
+          alternates={alternates}
+          setAlternates={setAlternates}
+          alloyList={alloyList}
+          altBase={altBase}
+          altResults={altResults}
+          rows={rows}
+          locInfo={locInfo}
+          quoted={{
+            primaryG: parseFloat(primaryGramWt) || 0,
+            secondaryG: altBase.secondaryAlloy ? parseFloat(secondaryGramWt) || 0 : 0,
+            casting,
+            labor,
+            diamondTotal: totals.diamondTotal,
+            settingTotal: totals.settingTotal,
+            cadFee,
+            grossTotalUSD,
+            totalWithDutyUSD,
+            totalWithDutyLocal,
+          }}
+          hasOverride={hasOverride}
         />
 
         <RemarksCard jobInfo={jobInfo} setJobInfo={setJobInfo} />
@@ -3984,6 +4086,241 @@ function BreakupSummary({
         </div>
       </div>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Alternate pricing: (1) same piece in another metal, (2) same piece with other
+// stone qualities. Separate tables; stones/metal never mix. See alternatePricing.js.
+// ---------------------------------------------------------------------------
+function AlternatePricingCard({ alternates, setAlternates, alloyList, altBase, altResults, rows, locInfo, quoted, hasOverride }) {
+  const cur = locInfo.currency;
+  const setMetal = (i, patch) => setAlternates((a) => ({ ...a, metal: a.metal.map((c, j) => (j === i ? { ...c, ...patch } : c)) }));
+  const setStone = (i, patch) => setAlternates((a) => ({ ...a, stones: a.stones.map((c, j) => (j === i ? { ...c, ...patch } : c)) }));
+  const hasSecondary = !!altBase.secondaryAlloy;
+  const noMetalYet = !(quoted.primaryG + quoted.secondaryG > 0);
+  const pct = (local) => (quoted.totalWithDutyLocal > 0 ? ((local - quoted.totalWithDutyLocal) / quoted.totalWithDutyLocal) * 100 : 0);
+  const pctText = (local) => {
+    const p = pct(local);
+    return `${p > 0 ? "+" : ""}${p.toFixed(1)}%`;
+  };
+  const quotedSsp = encodeSsp(quoted.totalWithDutyUSD);
+  const th = { ...styles.thRight, minWidth: 118 };
+  const labelTd = { ...styles.td, fontWeight: 600, color: MUTED, fontSize: 12, whiteSpace: "nowrap" };
+  const selStyle = { ...styles.inputSm, width: "100%", minWidth: 108 };
+  const dash = <span style={{ color: MUTED }}>—</span>;
+
+  // Suggestions: other karats in the same colour first, then the same karat in yellow gold,
+  // then other yellow-gold karats -- only alloys that exist in the Alloys table.
+  const quickFillMetal = () => {
+    const m = /^(\d+)KT (.+)$/.exec(altBase.primaryAlloy.short || "");
+    if (!m) return;
+    const karats = [18, 14, 10, 9];
+    const wanted = [
+      ...karats.filter((k) => String(k) !== m[1]).map((k) => `${k}KT ${m[2]}`),
+      ...(m[2] !== "YG" ? [`${m[1]}KT YG`] : []),
+      ...karats.filter((k) => String(k) !== m[1]).map((k) => `${k}KT YG`),
+    ];
+    const found = [...new Set(wanted)].filter((n) => n !== altBase.primaryAlloy.short && alloyList.some((a) => a.short === n)).slice(0, ALT_COLUMNS);
+    setAlternates((a) => ({ ...a, metal: a.metal.map((c, i) => ({ primary: found[i] || "", secondary: "" })) }));
+  };
+  const resetMetal = () => setAlternates((a) => ({ ...a, metal: a.metal.map(() => ({ primary: "", secondary: "" })) }));
+  const resetStones = () => setAlternates((a) => ({ ...a, stones: a.stones.map(() => ({ kind: "none", grade: "", manualTotal: "", label: "" })) }));
+
+  const stoneChoice = (c) => (c.kind === "none" ? "none" : c.kind === "manual" ? "manual" : `${c.kind}|${c.grade}`);
+  const onStoneChoice = (i, v) => {
+    if (v === "none") return setStone(i, { kind: "none", grade: "" });
+    if (v === "manual") return setStone(i, { kind: "manual", grade: "" });
+    const [kind, grade] = v.split("|");
+    setStone(i, { kind, grade });
+  };
+
+  const R = (label, cells, opts = {}) => (
+    <tr style={{ ...styles.tr, ...(opts.strong ? { background: ROSE_TINT, fontWeight: 600 } : {}) }}>
+      <td style={labelTd}>{label}</td>
+      {cells.map((c, i) => (
+        <td key={i} style={{ ...styles.tdRight, ...(i === 0 ? { color: MUTED } : {}) }}>{c}</td>
+      ))}
+    </tr>
+  );
+
+  /* ---------- metal ---------- */
+  const mr = altResults.metal;
+  const metalTable = (
+    <div style={{ overflowX: "auto" }}>
+      <table style={{ ...styles.table, width: "100%", borderCollapse: "collapse" }}>
+        <thead>
+          <tr style={styles.theadRow}>
+            <th style={{ ...styles.th, textAlign: "left" }} />
+            <th style={th}>As quoted</th>
+            {alternates.metal.map((_, i) => <th key={i} style={th}>Option {i + 1}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          <tr style={styles.tr}>
+            <td style={labelTd}>Primary metal</td>
+            <td style={{ ...styles.tdRight, color: MUTED }}>{altBase.primaryAlloy.short}</td>
+            {alternates.metal.map((c, i) => (
+              <td key={i} style={styles.td}>
+                <select style={selStyle} value={c.primary} onChange={(e) => setMetal(i, { primary: e.target.value })}>
+                  <option value="">— none —</option>
+                  {alloyList.filter((a) => a.metal !== "WX").map((a) => <option key={a.short} value={a.short}>{a.short}</option>)}
+                </select>
+              </td>
+            ))}
+          </tr>
+          {hasSecondary && (
+            <tr style={styles.tr}>
+              <td style={labelTd}>Secondary metal</td>
+              <td style={{ ...styles.tdRight, color: MUTED }}>{altBase.secondaryAlloy.short}</td>
+              {alternates.metal.map((c, i) => (
+                <td key={i} style={styles.td}>
+                  <select style={selStyle} value={c.secondary} disabled={!c.primary} onChange={(e) => setMetal(i, { secondary: e.target.value })}>
+                    <option value="">Same as primary</option>
+                    {alloyList.filter((a) => a.metal !== "WX").map((a) => <option key={a.short} value={a.short}>{a.short}</option>)}
+                  </select>
+                </td>
+              ))}
+            </tr>
+          )}
+          {R("Primary metal (g)", [fmt(quoted.primaryG, 2), ...mr.map((r) => (r ? fmt(r.primaryG, 2) : dash))])}
+          {hasSecondary && R("Secondary metal (g)", [fmt(quoted.secondaryG, 2), ...mr.map((r) => (r ? fmt(r.secondaryG, 2) : dash))])}
+          {R("Casting (USD)", [fmt(quoted.casting, 0), ...mr.map((r) => (r ? fmt(r.casting, 0) : dash))])}
+          {R("Labor (USD)", [fmt(quoted.labor, 0), ...mr.map((r) => (r ? fmt(r.labor, 0) : dash))])}
+          {R("Gross total (USD)", [fmt(quoted.grossTotalUSD, 0), ...mr.map((r) => (r ? fmt(r.grossUSD, 0) : dash))])}
+          {R("With duty (USD)", [fmt(quoted.totalWithDutyUSD, 0), ...mr.map((r) => (r ? fmt(r.withDutyUSD, 0) : dash))])}
+          {R(`Total (${cur})`, [fmt(quoted.totalWithDutyLocal, 0), ...mr.map((r) => (r ? fmt(r.local, 0) : dash))], { strong: true })}
+          {R("vs as quoted", ["", ...mr.map((r) => (r ? pctText(r.local) : dash))])}
+          {R("SSP", [quotedSsp || dash, ...mr.map((r) => (r ? r.ssp || dash : dash))])}
+        </tbody>
+      </table>
+    </div>
+  );
+
+  /* ---------- stones ---------- */
+  const sr = altResults.stones;
+  const stoneCol = (c, i) => {
+    const r = sr[i];
+    return r && !r.empty ? r : null;
+  };
+  const stoneTable = (
+    <div style={{ overflowX: "auto" }}>
+      <table style={{ ...styles.table, width: "100%", borderCollapse: "collapse" }}>
+        <thead>
+          <tr style={styles.theadRow}>
+            <th style={{ ...styles.th, textAlign: "left" }} />
+            <th style={th}>As quoted</th>
+            {alternates.stones.map((_, i) => <th key={i} style={th}>Option {i + 1}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          <tr style={styles.tr}>
+            <td style={labelTd}>Stone quality</td>
+            <td style={{ ...styles.tdRight, color: MUTED }}>As quoted</td>
+            {alternates.stones.map((c, i) => (
+              <td key={i} style={styles.td}>
+                <select style={selStyle} value={stoneChoice(c)} onChange={(e) => onStoneChoice(i, e.target.value)}>
+                  <option value="none">— none —</option>
+                  <optgroup label="Mined (price grid)">
+                    {ALT_NATURAL_GRADES.map((g) => <option key={g} value={`natural|${g}`}>Mined · {g}</option>)}
+                  </optgroup>
+                  <optgroup label="Lab grown (price bands)">
+                    {ALT_LGD_GRADES.map((g) => <option key={g} value={`lgd|${g}`}>Lab grown · {g}</option>)}
+                  </optgroup>
+                  <option value="manual">Type diamond total manually</option>
+                </select>
+              </td>
+            ))}
+          </tr>
+          <tr style={styles.tr}>
+            <td style={labelTd}>Diamond total typed (USD)</td>
+            <td style={styles.tdRight} />
+            {alternates.stones.map((c, i) => (
+              <td key={i} style={styles.td}>
+                {c.kind === "manual" ? (
+                  <input style={{ ...selStyle, textAlign: "right" }} inputMode="decimal" placeholder="USD" value={c.manualTotal} onChange={(e) => setStone(i, { manualTotal: e.target.value })} />
+                ) : (
+                  <div style={{ textAlign: "right" }}>{dash}</div>
+                )}
+              </td>
+            ))}
+          </tr>
+          <tr style={styles.tr}>
+            <td style={labelTd}>Name on customer PDF</td>
+            <td style={styles.tdRight} />
+            {alternates.stones.map((c, i) => (
+              <td key={i} style={styles.td}>
+                <input style={selStyle} placeholder="(automatic)" value={c.label} disabled={c.kind === "none"} onChange={(e) => setStone(i, { label: e.target.value })} />
+              </td>
+            ))}
+          </tr>
+          {R("Diamonds (USD)", [fmt(quoted.diamondTotal, 0), ...alternates.stones.map((c, i) => { const r = stoneCol(c, i); return r ? fmt(r.diamondTotal, 0) : dash; })])}
+          {R("Setting (USD)", [fmt(quoted.settingTotal, 0), ...alternates.stones.map((c, i) => (stoneCol(c, i) ? fmt(quoted.settingTotal, 0) : dash))])}
+          {R("Casting + labor + CAD (USD)", [fmt(quoted.casting + quoted.labor + quoted.cadFee, 0), ...alternates.stones.map((c, i) => (stoneCol(c, i) ? fmt(quoted.casting + quoted.labor + quoted.cadFee, 0) : dash))])}
+          {R("Gross total (USD)", [fmt(quoted.grossTotalUSD, 0), ...alternates.stones.map((c, i) => { const r = stoneCol(c, i); return r ? fmt(r.grossUSD, 0) : dash; })])}
+          {R("With duty (USD)", [fmt(quoted.totalWithDutyUSD, 0), ...alternates.stones.map((c, i) => { const r = stoneCol(c, i); return r ? fmt(r.withDutyUSD, 0) : dash; })])}
+          {R(`Total (${cur})`, [fmt(quoted.totalWithDutyLocal, 0), ...alternates.stones.map((c, i) => { const r = stoneCol(c, i); return r ? fmt(r.local, 0) : dash; })], { strong: true })}
+          {R("vs as quoted", ["", ...alternates.stones.map((c, i) => { const r = stoneCol(c, i); return r ? pctText(r.local) : dash; })])}
+          {R("SSP", [quotedSsp || dash, ...alternates.stones.map((c, i) => { const r = stoneCol(c, i); return r ? r.ssp || dash : dash; })])}
+        </tbody>
+      </table>
+      {sr.map((r, i) => {
+        const c = alternates.stones[i];
+        if (!r || c.kind === "none") return null;
+        if (c.kind === "manual") return null;
+        const lines = r.lines.length;
+        const items = r.kept.map((k) => `line ${k.index + 1}: ${k.note}`);
+        return (
+          <div key={i} style={{ fontSize: 11.5, color: r.empty ? "#B5651D" : MUTED, marginTop: 4 }}>
+            Option {i + 1}:{" "}
+            {r.empty
+              ? `no diamond line has a ${c.grade} price in the tables - pick another quality or type the total manually.`
+              : `${r.changed} of ${lines} stone line${lines === 1 ? "" : "s"} re-priced from the price tables${items.length > 0 ? `; kept as quoted - ${items.join("; ")}` : ""}.`}
+          </div>
+        );
+      })}
+    </div>
+  );
+
+  const pdfBox = (key, label) => (
+    <label style={{ fontSize: 12, color: MUTED, display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+      <input type="checkbox" checked={alternates[key]} onChange={(e) => setAlternates((a) => ({ ...a, [key]: e.target.checked }))} />
+      {label}
+    </label>
+  );
+
+  return (
+    <>
+      <div style={styles.card}>
+        <div style={styles.rowBetween}>
+          <SectionLabel eyebrow="A" title="Alternate metal pricing" noMargin />
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            {pdfBox("showMetalInPdf", "Show on customer PDF")}
+            <button type="button" style={styles.smallBtn} onClick={quickFillMetal} disabled={noMetalYet}>Suggest options</button>
+            <button type="button" style={styles.smallBtn} onClick={resetMetal}>Clear options</button>
+          </div>
+        </div>
+        <div style={{ fontSize: 12, color: MUTED, margin: "2px 0 6px" }}>
+          Same piece and same stones, made in another metal. Weights are converted by density (e.g. 14KT → 18KT is heavier for the same shape), then casting and labor are worked out exactly as for the quote.
+          {hasOverride ? " A manual price override on the main quote is not applied here." : ""}
+        </div>
+        {noMetalYet ? <div style={{ fontSize: 12.5, color: "#B5651D" }}>Enter the metal weight above to see alternates.</div> : metalTable}
+      </div>
+
+      <div style={styles.card}>
+        <div style={styles.rowBetween}>
+          <SectionLabel eyebrow="B" title="Alternate stones pricing" noMargin />
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            {pdfBox("showStonesInPdf", "Show on customer PDF")}
+            <button type="button" style={styles.smallBtn} onClick={resetStones}>Clear options</button>
+          </div>
+        </div>
+        <div style={{ fontSize: 12, color: MUTED, margin: "2px 0 6px" }}>
+          Same piece and metal, with the diamonds quoted at another quality or type. Each diamond line is re-priced from the price tables where a price exists; other lines (CZ, colour stones, custom or hand-priced sizes) keep their quoted price. Or type the diamond total yourself.
+        </div>
+        {rows.some((r) => (parseFloat(r.pcs) || 0) > 0) ? stoneTable : <div style={{ fontSize: 12.5, color: "#B5651D" }}>Add stone lines above to see alternates.</div>}
+      </div>
+    </>
   );
 }
 

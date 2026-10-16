@@ -169,6 +169,86 @@ function ReferenceImages({ images }) {
   );
 }
 
+// Alternate metal / alternate stones options. The customer copy shows only what
+// the option is and its price; the internal "full" copy also shows the breakdown.
+const alt = StyleSheet.create({
+  block: { marginTop: 12, marginBottom: 6 },
+  title: { fontSize: 8.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, color: ROSE, marginBottom: 2 },
+  sub: { fontSize: 7.5, color: MUTED, marginBottom: 4 },
+  head: { flexDirection: "row", backgroundColor: ROSE },
+  row: { flexDirection: "row", borderBottom: `0.5pt solid ${HAIRLINE}` },
+});
+function AltTable({ title, sub, cols, rows }) {
+  return (
+    <View style={alt.block} wrap={false}>
+      <Text style={alt.title}>{title}</Text>
+      {sub ? <Text style={alt.sub}>{sub}</Text> : null}
+      <View style={alt.head}>
+        {cols.map((c, i) => (
+          <Text key={i} style={[s.th, { width: c.w, textAlign: c.right ? "right" : "left" }]}>{c.label}</Text>
+        ))}
+      </View>
+      {rows.map((r, ri) => (
+        <View key={ri} style={[alt.row, ri % 2 ? s.trAlt : {}]}>
+          {cols.map((c, i) => (
+            <Text key={i} style={[c.right ? s.tdR : s.td, { width: c.w }, c.bold ? { fontWeight: 700 } : {}]}>{r[i]}</Text>
+          ))}
+        </View>
+      ))}
+    </View>
+  );
+}
+function AlternateTables({ alternates, locInfo, detailed }) {
+  const cur = locInfo.currency;
+  const metal = (alternates.metal || []).filter(Boolean);
+  const stones = (alternates.stones || []).filter((r) => r && !r.empty);
+  if (!metal.length && !stones.length) return null;
+  const metalName = (r) => (r.secondaryShort && r.secondaryShort !== r.primaryShort ? `${r.primaryShort} + ${r.secondaryShort}` : r.primaryShort);
+  return (
+    <View>
+      {metal.length > 0 && (
+        <AltTable
+          title="Alternate metal options"
+          sub="Same design and same stones, made in a different metal."
+          cols={
+            detailed
+              ? [
+                  { label: "Metal", w: "22%" }, { label: "Weight (g)", w: "11%", right: true }, { label: "Casting", w: "11%", right: true },
+                  { label: "Labor", w: "9%", right: true }, { label: "Gross", w: "12%", right: true }, { label: "With duty", w: "12%", right: true },
+                  { label: `Total (${cur})`, w: "14%", right: true, bold: true }, { label: "SSP", w: "9%", right: true },
+                ]
+              : [{ label: "Metal", w: "46%" }, { label: "Approx. weight", w: "24%", right: true }, { label: `Total (${cur})`, w: "30%", right: true, bold: true }]
+          }
+          rows={metal.map((r) =>
+            detailed
+              ? [metalName(r), fmt(r.totalG, 2), fmtC(r.casting, 0), fmtC(r.labor, 0), fmtC(r.grossUSD, 0), fmtC(r.withDutyUSD, 0), fmtL(r.local, cur, 0), r.ssp || ""]
+              : [metalName(r), `${fmt(r.totalG, 2)} g`, fmtL(r.local, cur, 0)]
+          )}
+        />
+      )}
+      {stones.length > 0 && (
+        <AltTable
+          title="Alternate stone options"
+          sub="Same design and metal, with the diamonds at a different quality."
+          cols={
+            detailed
+              ? [
+                  { label: "Stones", w: "30%" }, { label: "Diamonds", w: "14%", right: true }, { label: "Gross", w: "14%", right: true },
+                  { label: "With duty", w: "14%", right: true }, { label: `Total (${cur})`, w: "18%", right: true, bold: true }, { label: "SSP", w: "10%", right: true },
+                ]
+              : [{ label: "Stones", w: "60%" }, { label: `Total (${cur})`, w: "40%", right: true, bold: true }]
+          }
+          rows={stones.map((r) =>
+            detailed
+              ? [r.label, fmtC(r.diamondTotal, 0), fmtC(r.grossUSD, 0), fmtC(r.withDutyUSD, 0), fmtL(r.local, cur, 0), r.ssp || ""]
+              : [r.label, fmtL(r.local, cur, 0)]
+          )}
+        />
+      )}
+    </View>
+  );
+}
+
 export function QuotePdfDocument({
   variant,
   jobInfo,
@@ -196,6 +276,7 @@ export function QuotePdfDocument({
   effectiveTotalLocal,
   logoBlack,
   printDate,
+  alternates,
 }) {
   // Three print modes:
   //  "full"     -- every cost line + grand total (internal/back-office copy)
@@ -400,6 +481,9 @@ export function QuotePdfDocument({
           </View>
         ) : null}
         {/* variant === "noPrice" -- no price block rendered at all */}
+
+        {/* ---- Alternate options (only when switched on for the customer PDF) ---- */}
+        {showAnyPrice && alternates ? <AlternateTables alternates={alternates} locInfo={locInfo} detailed={showPrices} /> : null}
 
         {/* ---- Reference images ---- */}
         <ReferenceImages images={clientRefImages} />
