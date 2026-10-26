@@ -23,6 +23,9 @@ import {
   resolveRhodium,
   stoneTypeLabel,
   PLAIN_STONE_FIELDS,
+  isStonelessRow,
+  combinedStoneType,
+  resolveAlloyType,
 } from "./jobTrackerExport.js";
 
 export const ORDER_QTY_EARRING = "1 Pcs";
@@ -58,9 +61,10 @@ export function describePoStone(r, c) {
   return [shape, colour, size, wt, count].filter(Boolean).join(" ");
 }
 
-function metalLabel(primaryAlloy, secondaryAlloy) {
+function metalLabel(primaryAlloy, secondaryAlloy, jobInfo) {
   if (!primaryAlloy || !primaryAlloy.short) return "";
-  const { metalType, metalColor, alloyType } = splitMetal(primaryAlloy);
+  const { metalType, metalColor, alloyType: derivedAlloyType } = splitMetal(primaryAlloy);
+  const alloyType = resolveAlloyType(jobInfo, derivedAlloyType);
   if (primaryAlloy.metal !== "AU") return primaryAlloy.short; // PT950 / AG925 / etc. read fine as-is
   const combined = resolveMetalColor(primaryAlloy, secondaryAlloy);
   const colour = combined && !String(combined).startsWith("RECHECK:") ? combined : metalColor;
@@ -83,14 +87,16 @@ export function mapQuoteToPo(quote) {
   const secondaryUsed = secondaryAlloy && (parseFloat(secondaryGramWt) || 0) > 0 ? secondaryAlloy : null;
   const metalColorCode = resolveMetalColor(primaryAlloy, secondaryUsed);
 
-  const stoneRows = rowsWithCalcs.filter(({ r }) => r.stoneTypeSel !== "Plain");
-  const isPlain = stoneRows.length === 0 && rowsWithCalcs.some(({ r }) => r.stoneTypeSel === "Plain");
+  const stoneRows = rowsWithCalcs.filter(({ r }) => !isStonelessRow(r));
+  const stonelessRows = rowsWithCalcs.filter(({ r }) => isStonelessRow(r));
+  const isPlain = stoneRows.length === 0 && stonelessRows.length > 0;
 
   let stoneType = "";
   let suppliedBy = "";
   const stoneLines = []; // [{ text, quality }]
   if (isPlain) {
-    stoneType = PLAIN_STONE_FIELDS.StoneType;
+    const kept = combinedStoneType(stonelessRows.map(({ r }) => r));
+    stoneType = stonelessRows.some(({ r }) => r.stoneTypeSel === "Plain") || !kept ? PLAIN_STONE_FIELDS.StoneType : kept;
   } else {
     stoneType = uniqueJoined(stoneRows.map(({ r }) => stoneTypeLabel(r)));
     suppliedBy = uniqueJoined(stoneRows.map(({ r }) => r.source));
@@ -112,7 +118,7 @@ export function mapQuoteToPo(quote) {
     yourStyle: (manualFields.vendorItemNo || "").trim(),
     itemType: (jobInfo.itemType || "").trim(),
     itemSize: (jobInfo.itemSize || "").trim(),
-    metal: metalLabel(primaryAlloy, secondaryUsed),
+    metal: metalLabel(primaryAlloy, secondaryUsed, jobInfo),
     metalColorCode: String(metalColorCode || "").startsWith("RECHECK:") ? "" : metalColorCode,
     rhodium: resolveRhodium(jobInfo, metalColorCode),
     findings: [manualFields.finding1, manualFields.finding2].map((v) => (v || "").trim()).filter(Boolean).join(", "),
