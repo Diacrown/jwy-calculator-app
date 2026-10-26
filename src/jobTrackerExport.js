@@ -49,12 +49,45 @@ function blankRow() {
   return row;
 }
 
-// Main File writes dates day-month-year with no zero padding, e.g.
-// "8-8-2025". The date pickers in the Calculator hand over "2025-08-08",
-// which is converted here; anything that isn't in that shape is left alone.
-export function formatDmy(value) {
+// Main File dates are written the way the sheet shows them, which differs
+// by column (no zero padding on the day or month):
+//   Approval Date, Stone Issue Date (and QC pass / Ship Date) -> 17-6-26   (d-m-yy)
+//   PODate, DueDate                                           -> 22-Jun-2026 (d-Mmm-yyyy)
+// The date pickers in the Calculator hand over "2026-06-22"; anything that is
+// not in that shape is left exactly as typed.
+const MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function isoParts(value) {
   const m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(String(value || "").trim());
-  return m ? `${Number(m[3])}-${Number(m[2])}-${m[1]}` : value;
+  if (!m) return null;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  return mo >= 1 && mo <= 12 && d >= 1 && d <= 31 ? { y, mo, d } : null;
+}
+/** "2026-06-17" -> "17-6-2026" (kept for anything that still wants the long numeric form). */
+export function formatDmy(value) {
+  const p = isoParts(value);
+  return p ? `${p.d}-${p.mo}-${p.y}` : value;
+}
+/** "2026-06-17" -> "17-6-26" */
+export function formatDmyShort(value) {
+  const p = isoParts(value);
+  return p ? `${p.d}-${p.mo}-${String(p.y).slice(-2)}` : value;
+}
+/** "2026-06-22" -> "22-Jun-2026" */
+export function formatDayMonYear(value) {
+  const p = isoParts(value);
+  return p ? `${p.d}-${MONTH_ABBR[p.mo - 1]}-${p.y}` : value;
+}
+export const MAIN_FILE_DATE_FORMATS = {
+  "Approval Date": formatDmyShort,
+  PODate: formatDayMonYear,
+  DueDate: formatDayMonYear,
+  "Stone Issue Date": formatDmyShort,
+  "QC pass Date": formatDmyShort,
+  "Ship Date": formatDmyShort,
+};
+/** The date as that Main File column shows it. */
+export function formatMainFileDate(column, value) {
+  return (MAIN_FILE_DATE_FORMATS[column] || formatDmyShort)(value);
 }
 
 // Main File text is Google Sans, size 8. SheetJS can't style cells, so after
@@ -115,6 +148,11 @@ export function splitMetal(alloy) {
     else alloyType = "Standard";
   }
   return { metalType, metalColor, alloyType };
+}
+
+export function resolveAlloyType(jobInfo, derived) {
+  const fromCad = String((jobInfo && jobInfo.alloyType) || "").trim();
+  return fromCad || derived || "";
 }
 
 // ============================================================
@@ -236,7 +274,11 @@ export const PLAIN_STONE_FIELDS = {
   StoneSource: "",
   SettingType: "",
 };
-const isPlainRow = (r) => r && r.stoneTypeSel === "Plain";
+// "No stones" rows: a Plain row, or a Mount / Semi-Mount that the CAD form listed
+// without any stone (the import marks that row `bare`). Neither needs stone
+// details; the item is priced as metal only.
+export const isStonelessRow = (r) => !!r && (r.stoneTypeSel === "Plain" || (!!r.bare && !r.typeCustom));
+const isPlainRow = isStonelessRow;
 export function stoneTypeLabel(r) {
   const raw = r.stoneTypeSel || (r.mode === "lgd" ? "Lab grown" : "Mined");
   return STONE_TYPE_SHEET_LABELS[raw] || raw;
@@ -525,7 +567,10 @@ export function mapQuoteToJobTrackerRow(quote) {
   const row = blankRow();
 
   const split = splitMetal(primaryAlloy);
-  const { alloyType } = split;
+  // The CAD Order Form's own "Alloy type" (Standard / Palladium / Nickel Free /
+  // Platinum / SS925 / ...) goes out exactly as the form has it. Only when the
+  // form gave none (hand-built quote, older form) is it worked out from the alloy.
+  const alloyType = resolveAlloyType(jobInfo, split.alloyType);
   // Main File writes single-digit karats with a leading zero: 9KT -> "09KT".
   const metalType = String(split.metalType || "").replace(/^(\d)KT\b/i, "0$1KT");
   // Secondary alloy counts only when chosen and actually weighed in.
@@ -534,13 +579,19 @@ export function mapQuoteToJobTrackerRow(quote) {
   // Plain rows are ignored whenever the quote also has real stones; a quote
   // that is Plain rows only is a metal-only item and takes PLAIN_STONE_FIELDS.
   const realStoneRows = rowsWithCalcs.filter(({ r }) => !isPlainRow(r));
-  const isPlainItem = realStoneRows.length === 0 && rowsWithCalcs.some(({ r }) => isPlainRow(r));
+  const stonelessRows = rowsWithCalcs.filter(({ r }) => isPlainRow(r));
+  const isPlainItem = realStoneRows.length === 0 && stonelessRows.length > 0;
   const mountLines = realStoneRows.filter(({ r }) => isMountRow(r)).map(({ r, c }) => describeMountRow(r, c));
   const stoneLines = realStoneRows.filter(({ r }) => !isMountRow(r)).map(({ r, c }) => describeStoneRow(r, c));
   const stoneDetails = isPlainItem
     ? PLAIN_STONE_FIELDS.StoneDetails
     : [mountLines.join("; "), stoneLines.join("; ")].filter(Boolean).join("\n");
-  const stoneType = isPlainItem ? PLAIN_STONE_FIELDS.StoneType : combinedStoneType(realStoneRows.map(({ r }) => r));
+  // A metal-only item is "Plain"; a bare Mount / Semi-Mount keeps its own label.
+  const stoneType = isPlainItem
+    ? stonelessRows.some(({ r }) => r.stoneTypeSel === "Plain") || !combinedStoneType(stonelessRows.map(({ r }) => r))
+      ? PLAIN_STONE_FIELDS.StoneType
+      : combinedStoneType(stonelessRows.map(({ r }) => r))
+    : combinedStoneType(realStoneRows.map(({ r }) => r));
   // Each stone's Source from the CAD form; when the rows carry none, the CAD
   // form's own source list for the job (stoneSourcesFallback) is used instead.
   const stoneSource = isPlainItem
@@ -576,7 +627,7 @@ export function mapQuoteToJobTrackerRow(quote) {
   for (const f of JOB_TRACKER_MANUAL_FIELDS) {
     if (f.poOnly) continue; // PO-only fields (e.g. Set By) have no Main File column
     const val = (manualFields || {})[f.key];
-    if (val) row[f.column] = f.type === "date" ? formatDmy(val) : val;
+    if (val) row[f.column] = f.type === "date" ? formatMainFileDate(f.column, val) : val;
   }
 
   // A Stamp Logo that has a link on file goes straight into Image3. This
