@@ -26,6 +26,7 @@ import {
   JOB_TRACKER_MANUAL_FIELDS,
   JOB_TRACKER_DROPDOWN_OPTIONS,
   stampLogoUrl,
+  isStonelessRow,
   EMPTY_JOB_TRACKER_MANUAL_FIELDS,
   pickJobTrackerImages,
   dataUrlImageExtension,
@@ -97,6 +98,8 @@ const ITEM_TYPE_OPTIONS = [
 const CUSTOM_TYPE_OPTION = "__CUSTOM_TYPE__";
 // "Plain" = a metal-only piece with no stones. Priced as $0 stones.
 const PLAIN_TYPE = "Plain";
+// The CAD Order Form's "Alloy type" choices -- shown in Job Tracker details so a value can be corrected.
+const CAD_ALLOY_TYPES = ["Standard", "Palladium", "Nickel Free", "Platinum", "SS925", "Gold Plated", "Nickel Safe"];
 
 // Size of the "Made with Love" logo window in the top banner (px).
 const LOGO_BOX_W = 104;
@@ -584,6 +587,7 @@ function JwyCalculatorApp() {
     itemType: "",
     subCategory: "",
     rhodium: "",
+    alloyType: "",
   });
   const [location, setLocation] = useState("WSSY");
   const [quoteStage, setQuoteStage] = useState("Q1");
@@ -805,7 +809,7 @@ function JwyCalculatorApp() {
   }, [refreshRates]);
 
   const applyImportResult = async (fileName, resultData) => {
-    const { jobInfo: ji, metals, metalWarnings, stones, cadSheet: importedSheet, cadImageDataUrls, clientRefImageDataUrls, derivedSummary } = resultData;
+    const { jobInfo: ji, metals, metalWarnings, stones, stoneless, cadSheet: importedSheet, cadImageDataUrls, clientRefImageDataUrls, derivedSummary } = resultData;
     setCadSheet(importedSheet && importedSheet.stones && importedSheet.stones.length ? importedSheet : null);
     if (cadImageDataUrls?.length) {
       const compressed = await Promise.all(cadImageDataUrls.map((u) => compressDataUrl(u)));
@@ -826,6 +830,8 @@ function JwyCalculatorApp() {
       itemType: ji.itemType || prev.itemType,
       subCategory: ji.subCategory || prev.subCategory,
       rhodium: ji.rhodium || prev.rhodium,
+      // The CAD form's own Alloy type (Standard / Palladium / ...) -- goes to Main File as it is.
+      alloyType: ji.alloyType || "",
     }));
     if (ji.itemNo) {
       const mappedLoc = ITEM_LETTER_TO_LOCATION[ji.itemNo.trim().charAt(0).toUpperCase()];
@@ -871,7 +877,16 @@ function JwyCalculatorApp() {
       srcKey: stoneSrcKey(s),
     }));
     linesDirtyRef.current = false;
-    setRows(newRows.length ? newRows : Array.from({ length: 5 }, emptyRow));
+    // A Plain / Mount / Semi-Mount piece with no stones on the CAD form gets one
+    // "no stones" line instead of an empty stone schedule: the metal is priced
+    // straight away and nothing has to be filled in under Stone schedule.
+    setRows(
+      stoneless
+        ? [{ ...emptyRow(), stoneTypeSel: stoneless.kind, bare: true }]
+        : newRows.length
+        ? newRows
+        : Array.from({ length: 5 }, emptyRow)
+    );
     // Put back anything that was set to "Custom entry…" on this job's lines earlier.
     const importedJobKey = jobFieldsKey(ji.jobNo || jobInfoRef.current.jobNo);
     if (importedJobKey && newRows.length) {
@@ -886,6 +901,7 @@ function JwyCalculatorApp() {
       metalWarnings,
       metals,
       stones,
+      stoneless: stoneless || null,
       derivedSummary,
     });
     setPdfStatus("done");
@@ -938,7 +954,7 @@ function JwyCalculatorApp() {
   };
 
   const clearAll = () => {
-    setJobInfo({ designer: "", jobNo: "", itemNo: "", itemSize: "", customer: "", cadType: "Medium", remarks: "", itemType: "", subCategory: "", rhodium: "" });
+    setJobInfo({ designer: "", jobNo: "", itemNo: "", itemSize: "", customer: "", cadType: "Medium", remarks: "", itemType: "", subCategory: "", rhodium: "", alloyType: "" });
     setPrimaryAlloyShort("");
     setPrimaryGramWt("");
     setSecondaryAlloyShort("");
@@ -1107,8 +1123,8 @@ function JwyCalculatorApp() {
     return rows.map((row) => {
       const pcs = parseFloat(row.pcs) || 0;
       const isMount = !row.typeCustom && (row.stoneTypeSel === "Mount" || row.stoneTypeSel === "Semi-Mount");
-      // Plain (metal only, no stones): nothing to price.
-      if (row.stoneTypeSel === PLAIN_TYPE) {
+      // Plain / bare Mount / bare Semi-Mount (metal only, no stones): nothing to price.
+      if (row.stoneTypeSel === PLAIN_TYPE || row.bare) {
         return { shape: "", size: "", wtPerPc: 0, totalWt: 0, perCt: 0, total: 0, settingTotal: 0, settingType: "PER PC", priceEditable: false };
       }
       if (row.sizeCode === CUSTOM_CODE) {
@@ -1291,7 +1307,7 @@ function JwyCalculatorApp() {
       .filter(({ r, c }) => (r.sizeCode || r.customShape) && c.totalWt > 0);
 
     if (rowsWithCalcs.length === 0) {
-      throw new Error("Add at least one stone row before exporting.");
+      throw new Error(rows.some(isStonelessRow) ? "This item has no stones, so there is nothing to export to GATI." : "Add at least one stone row before exporting.");
     }
 
     const gatiRows = mapQuoteToGatiRows({
@@ -1334,7 +1350,7 @@ function JwyCalculatorApp() {
     // so plain jewellery can be exported; the mapper decides what it fills.
     const rowsWithCalcs = rows
       .map((r, i) => ({ r, c: rowCalcs[i] }))
-      .filter(({ r, c }) => r.stoneTypeSel === PLAIN_TYPE || hasStoneLine(r, c));
+      .filter(({ r, c }) => isStonelessRow(r) || hasStoneLine(r, c));
 
     if (rowsWithCalcs.length === 0) {
       throw new Error("Add at least one stone row (or choose Plain for a metal-only item) before exporting.");
@@ -1425,7 +1441,7 @@ function JwyCalculatorApp() {
   const doGeneratePO = async () => {
     const rowsWithCalcs = rows
       .map((r, i) => ({ r, c: rowCalcs[i] }))
-      .filter(({ r, c }) => r.stoneTypeSel === PLAIN_TYPE || hasStoneLine(r, c));
+      .filter(({ r, c }) => isStonelessRow(r) || hasStoneLine(r, c));
 
     if (rowsWithCalcs.length === 0) {
       throw new Error("Add at least one stone row (or choose Plain for a metal-only item) before generating the PO.");
@@ -1470,7 +1486,7 @@ function JwyCalculatorApp() {
       .filter(({ r, c }) => hasStoneLine(r, c));
 
     if (lines.length === 0) {
-      throw new Error("Add at least one stone row before downloading the stone schedule (Plain items have no stones to list).");
+      throw new Error("Add at least one stone row before downloading the stone schedule (items with no stones -- Plain, Mount, Semi-Mount -- have nothing to list).");
     }
     const blob = await buildStoneScheduleXlsx(XLSX, jobInfo, lines);
     downloadBlob(blob, `${quoteFilenameBase()}_StoneSchedule.xlsx`);
@@ -1896,6 +1912,7 @@ function JwyCalculatorApp() {
           jobTrackerFields={jobTrackerFields}
           setJobTrackerFields={editJobTrackerFields}
           onRhodiumChange={editRhodium}
+          onAlloyTypeChange={(v) => setJobInfo((prev) => ({ ...prev, alloyType: v }))}
           savedNote={jobFieldsNote}
           jobInfo={jobInfo}
           setJobInfo={setJobInfo}
@@ -2062,8 +2079,18 @@ function PdfImportReview({ pdfImport }) {
             Secondary: {metals.secondary.short} · {fmt(metals.secondary.wt, 2)}g
           </span>
         )}
-        <span style={styles.importChip}>{stones.length} stone row(s)</span>
+        <span style={styles.importChip}>
+          {pdfImport.stoneless ? `No stones · ${pdfImport.stoneless.kind} · metal only` : `${stones.length} stone row(s)`}
+        </span>
       </div>
+      {pdfImport.stoneless && (
+        <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
+          {pdfImport.stoneless.listed
+            ? `The CAD form lists this as ${pdfImport.stoneless.kind} with no stones.`
+            : "The CAD form's stone table is empty."}{" "}
+          It is priced as metal only — nothing needs to be added in the stone schedule.
+        </div>
+      )}
 
       {hasDerivedSummary && (
         <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 8 }}>
@@ -2299,7 +2326,7 @@ function wrapCellText(ctx, text, maxW, maxLines = 3) {
 // here, so the row number is shown instead.
 function sheetFromRows(rowsWithCalcs) {
   const stones = (rowsWithCalcs || [])
-    .filter(({ r }) => r.stoneTypeSel !== PLAIN_TYPE)
+    .filter(({ r }) => !isStonelessRow(r))
     .map(({ r, c }, i) => {
       const wt = Number(c.wtPerPc) || 0;
       const tot = Number(c.totalWt) || 0;
@@ -3540,7 +3567,7 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
           <tbody>
             {rows.map((row, i) => {
               const calc = rowCalcs[i];
-              const isPlain = row.stoneTypeSel === PLAIN_TYPE;
+              const isPlain = isStonelessRow(row);
               const active = isPlain || (!!row.sizeCode && (parseFloat(row.pcs) || 0) > 0);
               return (
                 <tr key={i} className="jwy-stone-row" style={{ ...styles.tr, ...(active ? styles.trActive : {}) }}>
@@ -3574,7 +3601,7 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                             const newMode = val === "Lab grown" ? "lgd" : "natural";
                             // Color stones carry a gemstone as Proposed Quality; any other type uses the diamond list.
                             const colourChange = (val === "Color") !== (row.stoneTypeSel === "Color");
-                            updateRow(i, { typeCustom: false, stoneTypeSel: val, mode: newMode, ...(colourChange ? { proposedQuality: "" } : {}) });
+                            updateRow(i, { typeCustom: false, bare: false, stoneTypeSel: val, mode: newMode, ...(colourChange ? { proposedQuality: "" } : {}) });
                           }
                         }}
                       >
@@ -3594,7 +3621,18 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                       data-label=""
                       style={{ ...styles.td, fontSize: 12, color: "var(--muted)", fontStyle: "italic" }}
                     >
-                      Plain item — metal only, no stones to price. Export to Main File marks it as Plain.
+                      {row.bare
+                        ? `${row.stoneTypeSel} item — no stones on the CAD form, so there is no stone schedule to fill in. The metal price is calculated below. `
+                        : "Plain item — metal only, no stones to price. Export to Main File marks it as Plain."}
+                      {row.bare && row.stoneTypeSel !== PLAIN_TYPE && (
+                        <button
+                          type="button"
+                          style={{ ...styles.smallBtn, marginLeft: 6, fontStyle: "normal" }}
+                          onClick={() => updateRow(i, { bare: false })}
+                        >
+                          Add {row.stoneTypeSel === "Semi-Mount" ? "semi-mount" : "mount"} details
+                        </button>
+                      )}
                     </td>
                   ) : (
                     <>
@@ -4104,6 +4142,7 @@ function JobTrackerFieldsCard({
   jobTrackerFields,
   setJobTrackerFields,
   onRhodiumChange,
+  onAlloyTypeChange,
   savedNote,
   jobInfo,
   setJobInfo,
@@ -4114,7 +4153,7 @@ function JobTrackerFieldsCard({
   const [open, setOpen] = useState(false);
   const [exportStatus, setExportStatus] = useState("");
   const [poStatus, setPoStatus] = useState("");
-  const filledCount = Object.values(jobTrackerFields).filter(Boolean).length + (jobInfo.rhodium ? 1 : 0);
+  const filledCount = Object.values(jobTrackerFields).filter(Boolean).length + (jobInfo.rhodium ? 1 : 0) + (jobInfo.alloyType ? 1 : 0);
   const setField = (key, value) => setJobTrackerFields((prev) => ({ ...prev, [key]: value }));
   const groups = [...new Set(JOB_TRACKER_MANUAL_FIELDS.map((f) => f.group))];
 
@@ -4209,6 +4248,26 @@ function JobTrackerFieldsCard({
             </div>
 
             <div style={{ maxWidth: 200 }}>
+              <Field label="Alloy type">
+                <select
+                  style={{ ...styles.inputSm, width: "100%" }}
+                  value={jobInfo.alloyType || ""}
+                  onChange={(e) => onAlloyTypeChange(e.target.value)}
+                >
+                  <option value="">— from alloy —</option>
+                  {[...CAD_ALLOY_TYPES, ...(jobInfo.alloyType && !CAD_ALLOY_TYPES.includes(jobInfo.alloyType) ? [jobInfo.alloyType] : [])].map((t) => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  ))}
+                </select>
+                <span style={{ fontSize: 10, color: MUTED }}>
+                  Comes from the CAD Order Form; goes to Main File as it is. Blank = worked out from the alloy.
+                </span>
+              </Field>
+            </div>
+
+            <div style={{ maxWidth: 200 }}>
               <Field label="SSP">
                 <input
                   style={{ ...styles.inputSm, width: "100%" }}
@@ -4265,6 +4324,9 @@ function JobTrackerFieldsCard({
                     )}
                     {f.key === "stampLogo" && stampLogoUrl(jobTrackerFields.stampLogo) && (
                       <span style={{ fontSize: 10, color: MUTED }}>Logo link will be placed in Image3.</span>
+                    )}
+                    {f.key === "stampLogo" && jobTrackerFields.stampLogo && !stampLogoUrl(jobTrackerFields.stampLogo) && (
+                      <span style={{ fontSize: 10, color: MUTED }}>No image link on file for this logo yet — Image3 keeps the job's own picture.</span>
                     )}
                   </Field>
                 ))}

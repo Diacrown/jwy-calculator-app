@@ -97,6 +97,9 @@ function isExactlyRoundShape(shapeRaw) {
   return ROUND_SHAPE_VALUES.has((shapeRaw || "").toLowerCase().trim());
 }
 
+// Stone types that mean "the setting only, no stone to price".
+const STONELESS_TYPE_RX = /^(mount|plain|semi[\s-]?mount)$/i;
+
 function bridgeStone(stone, diaSize) {
   const shapeRaw = (stone.Shape || "").toLowerCase();
   const isRound = isExactlyRoundShape(shapeRaw);
@@ -253,6 +256,19 @@ function bridgeStone(stone, diaSize) {
     };
   }
 
+  // A Mount / Semi-Mount / Plain row is the setting itself, not a stone that is
+  // sold by the carat -- there is no $/ct to enter, so it is not flagged.
+  if (STONELESS_TYPE_RX.test(stoneTypeRaw) && !modeIsCustom) {
+    return {
+      diamondMode: "natural",
+      isCustom: true,
+      customShape: stone.Shape || "",
+      customWt: avgWt,
+      priced: true,
+      flag: "",
+    };
+  }
+
   // Explicit custom-mode rows, and any stone type without pricing data
   // (CZ, Zircon, Color, Mount, Plain, Semi variants, "Mined+LGD" and
   // other combos). Always lands as an editable custom row. Mode is
@@ -355,6 +371,28 @@ function mapFormDataToCalculator(data, { alloys = [], diaSize = [] } = {}) {
       };
     });
 
+  // --- Items with no stones (Plain / Mount / Semi-Mount) ---
+  // A piece whose CAD stone table lists no counted stone -- empty, or only a
+  // Plain / Mount / Semi-Mount line with no shape or quantity -- is priced as
+  // metal only: there is no stone schedule to fill in. A row with a real stone
+  // type (Mined, LGD, CZ, ...) but no shape/quantity is an unfinished stone
+  // table, not a stoneless item, so it is NOT treated this way.
+  const listedStoneRows = rawStones.filter((s) => s && (s.Stone || s.Shape || num(s.Qty) > 0));
+  const stonelessKindOf = (t) => {
+    const v = String(t || "").trim();
+    if (/semi/i.test(v)) return "Semi-Mount";
+    if (/mount/i.test(v)) return "Mount";
+    if (/^plain$/i.test(v)) return "Plain";
+    return "";
+  };
+  const hasRealStoneType = listedStoneRows.some((s) => s.Stone && !stonelessKindOf(s.Stone));
+  let stoneless = null;
+  if (stones.length === 0 && !hasRealStoneType) {
+    const kinds = listedStoneRows.map((s) => stonelessKindOf(s.Stone)).filter(Boolean);
+    const kind = kinds.includes("Semi-Mount") ? "Semi-Mount" : kinds.includes("Mount") ? "Mount" : "Plain";
+    stoneless = { kind, listed: kinds.length > 0 };
+  }
+
   // --- Images (best-effort) ---
   // _VERSIONS and _CLIENT_REF_IMAGES are the largest fields in the JSON
   // (full base64 image data) and sit near the end of the key order, so
@@ -409,7 +447,7 @@ function mapFormDataToCalculator(data, { alloys = [], diaSize = [] } = {}) {
     cadSheet.stones.forEach((st) => { if (!st.source) st.source = summarySources[0]; });
   }
 
-  return { jobInfo, metals, metalWarnings, stones, cadSheet, cadImageDataUrls, clientRefImageDataUrls, derivedSummary, rawJson: data };
+  return { jobInfo, metals, metalWarnings, stones, stoneless, cadSheet, cadImageDataUrls, clientRefImageDataUrls, derivedSummary, rawJson: data };
 }
 
 export function parseOrderFormJson(input, { alloys = [], diaSize = [] } = {}) {

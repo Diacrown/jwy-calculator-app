@@ -288,7 +288,9 @@ export function QuotePdfDocument({
           </View>
         </View>
 
-        {/* ---- Stone schedule ---- */}
+        {/* ---- Stone schedule ---- (left out for a piece with no stones: Plain / Mount / Semi-Mount) */}
+        {rowsWithCalcs.length > 0 && (
+          <View>
         <Text style={s.sectionLabel}>Stone Schedule</Text>
         <View style={s.tableHeaderRow}>
           <Text style={[s.th, { width: showPrices ? "5%" : "6%" }]}>Sr.No</Text>
@@ -322,6 +324,8 @@ export function QuotePdfDocument({
           {showPrices && <Text style={[s.tdFooterR, { width: "14%" }]}></Text>}
           {showPrices && <Text style={[s.tdFooterR, { width: "14%" }]}>{fmtC(totals.diamondTotal)}</Text>}
         </View>
+          </View>
+        )}
 
         {showPrices ? (
           <View wrap={false}>
@@ -343,18 +347,22 @@ export function QuotePdfDocument({
                 <Text style={s.totalsValue}>{fmtC(cadFee)}</Text>
               </View>
             </View>
-            <View style={s.totalsRow}>
-              <View style={s.totalsLine}>
-                <Text style={s.totalsLabel}>Diamonds</Text>
-                <Text style={s.totalsValue}>{fmtC(totals.diamondTotal)}</Text>
-              </View>
-            </View>
-            <View style={s.totalsRow}>
-              <View style={s.totalsLine}>
-                <Text style={s.totalsLabel}>Setting</Text>
-                <Text style={s.totalsValue}>{fmtC(totals.settingTotal)}</Text>
-              </View>
-            </View>
+            {rowsWithCalcs.length > 0 && (
+              <>
+                <View style={s.totalsRow}>
+                  <View style={s.totalsLine}>
+                    <Text style={s.totalsLabel}>Diamonds</Text>
+                    <Text style={s.totalsValue}>{fmtC(totals.diamondTotal)}</Text>
+                  </View>
+                </View>
+                <View style={s.totalsRow}>
+                  <View style={s.totalsLine}>
+                    <Text style={s.totalsLabel}>Setting</Text>
+                    <Text style={s.totalsValue}>{fmtC(totals.settingTotal)}</Text>
+                  </View>
+                </View>
+              </>
+            )}
             {hasAdditionalCharge && (
               <View style={s.totalsRow}>
                 <View style={s.totalsLine}>
