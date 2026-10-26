@@ -256,7 +256,7 @@ export function PurchaseOrderPdf({ data, logo, cadImage, extraImages = [] }) {
                   </Text>
                 ))
               ) : (
-                <Text style={s.empty}>{d.isPlain ? "Plain — no stones" : "—"}</Text>
+                <Text style={s.empty}>{d.isPlain ? `${d.stoneType || "Plain"} — no stones` : "—"}</Text>
               )}
             </Cell>
           </View>
