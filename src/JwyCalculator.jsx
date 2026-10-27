@@ -37,8 +37,8 @@ import {
 import { mapQuoteToPo } from "./poExport.js";
 import { PurchaseOrderPdf } from "./poDocument.jsx";
 import {
-  STONE_ITEM_TYPES,
   STONE_LABS,
+  NO_LAB,
   buildStoneScheduleXlsx,
   downloadBlob,
   qualityGrade,
@@ -67,7 +67,9 @@ const SHAPE_ORDER = [
   "Tapered Baguette", "Triangle", "Trilliant",
 ];
 
+// Every type a row can carry (CAD imports can bring Mount / Semi-Mount / Plain), and the ones offered in the Type dropdown.
 const STONE_TYPE_OPTIONS = ["Mined", "Lab grown", "CZ", "Mount", "Semi-Mount", "Plain", "Color"];
+const STONE_TYPE_DROPDOWN = ["Mined", "Lab grown", "CZ", "Color"];
 // Proposed Quality choices when the Type is "Color" (replace the diamond qualities).
 // Saved quotes / CAD imports that carry one of these as the stone type come in as
 // Color with that gemstone as the Proposed Quality.
@@ -519,7 +521,7 @@ const roundUp5 = (n) => (isFinite(n) ? Math.ceil(n / 5) * 5 : 0);
 const roundUpMetalWt = (n) => (isFinite(n) ? Math.round(Math.ceil(n / 0.05) * 0.05 * 100) / 100 : n);
 
 function emptyRow() {
-  return { mode: "natural", stoneTypeSel: "Mined", typeCustom: false, customType: "", shapeSel: "", sizeCode: "", quality: "TW SI1", lgdGrade: "Non-cert", lgdShape: "RND", pcs: "", customShape: "", customSizeText: "", customWt: "", customRate: "", manualRate: "", proposedQuality: "", colour: "", setting: "", source: "", itemType: "", lab: "", srcKey: "" };
+  return { mode: "natural", stoneTypeSel: "Mined", typeCustom: false, customType: "", shapeSel: "", sizeCode: "", quality: "TW SI1", lgdGrade: "Non-cert", lgdShape: "RND", pcs: "", customShape: "", customSizeText: "", customWt: "", customRate: "", manualRate: "", proposedQuality: "", colour: "", setting: "", source: "", lab: "", srcKey: "" };
 }
 
 
@@ -745,6 +747,22 @@ function JwyCalculatorApp() {
   // can be matched up again, via the row's srcKey.
   const linesDirtyRef = useRef(false); // a custom field was changed by hand since the last save
   const rowsRef = useRef(null);
+  // Studded (Yes / No). Not stored on its own: an item is "not studded" when every stone line is a
+  // metal-only line (CAD import of a Plain / Mount / Semi-Mount, or picking No here), so it can never
+  // disagree with the stone schedule. Picking No parks the stone lines and shows one metal-only line;
+  // picking Yes brings them back.
+  const studdedBackupRef = useRef(null);
+  const studded = rows.length > 0 && rows.every(isStonelessRow) ? "No" : "Yes";
+  const changeStudded = (val) => {
+    if (val === "No" && studded === "Yes") {
+      studdedBackupRef.current = rows;
+      setRows([{ ...emptyRow(), stoneTypeSel: PLAIN_TYPE }]);
+    } else if (val === "Yes" && studded === "No") {
+      const back = studdedBackupRef.current;
+      studdedBackupRef.current = null;
+      setRows(back && back.length ? back : Array.from({ length: 5 }, emptyRow));
+    }
+  };
 
   useEffect(() => {
     if (!linesDirtyRef.current) return undefined;
@@ -872,11 +890,11 @@ function JwyCalculatorApp() {
       manualRate: "",
       setting: s.setting || "",
       source: s.source || "",
-      itemType: "",
       lab: "",
       srcKey: stoneSrcKey(s),
     }));
     linesDirtyRef.current = false;
+    studdedBackupRef.current = null;
     // A Plain / Mount / Semi-Mount piece with no stones on the CAD form gets one
     // "no stones" line instead of an empty stone schedule: the metal is priced
     // straight away and nothing has to be filled in under Stone schedule.
@@ -959,6 +977,7 @@ function JwyCalculatorApp() {
     setPrimaryGramWt("");
     setSecondaryAlloyShort("");
     setSecondaryGramWt("");
+    studdedBackupRef.current = null;
     setRows(Array.from({ length: 5 }, emptyRow));
     setPdfImport(null);
     setPdfStatus("");
@@ -1473,7 +1492,7 @@ function JwyCalculatorApp() {
   };
 
   // Order-stage Stone Schedule download: one Excel line per stone row,
-  // with the per-line Item Type / Lab dropdown choices (also dropdowns
+  // with the per-line Lab dropdown choice (also a dropdown
   // inside the Excel itself). See stoneScheduleExport.js.
   const doExportStoneSchedule = async () => {
     const lines = rows
@@ -1819,6 +1838,8 @@ function JwyCalculatorApp() {
           printDate={printDate}
           setPrintDate={setPrintDate}
           loadFromCloud={loadFromCloud}
+          studded={studded}
+          onStuddedChange={changeStudded}
         />
 
         <ImagesCard
@@ -2165,7 +2186,7 @@ function PdfImportReview({ pdfImport }) {
   );
 }
 
-function JobInfoCard({ jobInfo, setJobInfo, location, setLocation, locationList, cadFees, turntableLink, setTurntableLink, printDate, setPrintDate, loadFromCloud }) {
+function JobInfoCard({ jobInfo, setJobInfo, location, setLocation, locationList, cadFees, turntableLink, setTurntableLink, printDate, setPrintDate, loadFromCloud, studded, onStuddedChange }) {
   return (
     <div style={styles.card}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
@@ -2219,6 +2240,17 @@ function JobInfoCard({ jobInfo, setJobInfo, location, setLocation, locationList,
               placeholder="Item type"
             />
           </div>
+        </Field>
+        <Field label="Studded">
+          <select
+            style={{ ...styles.input, minWidth: 90 }}
+            value={studded}
+            onChange={(e) => onStuddedChange(e.target.value)}
+            title="No = metal-only item (no stones): the metal price is calculated and the stone schedule is not needed"
+          >
+            <option value="Yes">Yes</option>
+            <option value="No">No</option>
+          </select>
         </Field>
         <Field label="Date">
           <input
@@ -3535,7 +3567,7 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
             type="button"
             disabled={scheduleStatus === "building"}
             onClick={downloadSchedule}
-            title="Order stage: download these stone lines as an Excel sheet, with Item Type and Lab dropdowns"
+            title="Order stage: download these stone lines as an Excel sheet, with a Lab dropdown"
           >
             {scheduleStatus === "building" ? "Building…" : "Download stone schedule"}
           </button>
@@ -3547,7 +3579,6 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
             <tr style={styles.theadRow}>
               <th style={styles.th}>Pos</th>
               <th style={styles.th}>Type</th>
-              <th style={styles.th}>Item</th>
               <th style={styles.th}>Lab</th>
               <th style={styles.th}>Shape</th>
               <th style={styles.th}>Size</th>
@@ -3605,7 +3636,8 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                           }
                         }}
                       >
-                        {STONE_TYPE_OPTIONS.map((t) => (
+                        {/* A row that came in as Mount / Semi-Mount / Plain still shows its own type. */}
+                        {[...STONE_TYPE_DROPDOWN, ...(row.stoneTypeSel && !STONE_TYPE_DROPDOWN.includes(row.stoneTypeSel) ? [row.stoneTypeSel] : [])].map((t) => (
                           <option key={t} value={t}>
                             {t}
                           </option>
@@ -3617,13 +3649,13 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                   {isPlain ? (
                     <td
                       className="jwy-plain"
-                      colSpan={14}
+                      colSpan={13}
                       data-label=""
                       style={{ ...styles.td, fontSize: 12, color: "var(--muted)", fontStyle: "italic" }}
                     >
                       {row.bare
                         ? `${row.stoneTypeSel} item — no stones on the CAD form, so there is no stone schedule to fill in. The metal price is calculated below. `
-                        : "Plain item — metal only, no stones to price. Export to Main File marks it as Plain."}
+                        : "Not studded — metal only, no stones to price. Export to Main File marks it as Plain."}
                       {row.bare && row.stoneTypeSel !== PLAIN_TYPE && (
                         <button
                           type="button"
@@ -3636,29 +3668,14 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                     </td>
                   ) : (
                     <>
-                  <td data-label="Item" style={styles.td}>
-                    <select
-                      style={{ ...styles.inputSm, width: 56 }}
-                      value={row.itemType || ""}
-                      onChange={(e) => updateRow(i, { itemType: e.target.value })}
-                      title="Item Type -- goes into the downloaded stone schedule"
-                    >
-                      <option value="">—</option>
-                      {STONE_ITEM_TYPES.map((t) => (
-                        <option key={t} value={t}>
-                          {t}
-                        </option>
-                      ))}
-                    </select>
-                  </td>
                   <td data-label="Lab" style={styles.td}>
                     <select
                       style={{ ...styles.inputSm, width: 76 }}
-                      value={row.lab || ""}
+                      value={STONE_LABS.includes(row.lab) ? row.lab : ""}
                       onChange={(e) => updateRow(i, { lab: e.target.value })}
                       title="Lab -- goes into the downloaded stone schedule"
                     >
-                      <option value="">—</option>
+                      <option value="">{NO_LAB}</option>
                       {STONE_LABS.map((t) => (
                         <option key={t} value={t}>
                           {t}
