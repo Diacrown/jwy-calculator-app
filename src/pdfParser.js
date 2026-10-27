@@ -480,4 +480,3 @@ export function parseOrderFormJson(input, { alloys = [], diaSize = [] } = {}) {
   }
   return { ok: true, data: mapFormDataToCalculator(data, { alloys, diaSize }) };
 }
-
