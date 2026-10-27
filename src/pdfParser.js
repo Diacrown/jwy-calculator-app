@@ -23,6 +23,16 @@ function isOddShape(shape) {
   return LGD_ODD_SHAPES.some((k) => s.includes(k));
 }
 
+/**
+ * The lab-grown price band a shape falls in, worked out from the Shape itself:
+ * Round -> "RND", the rare / odd cuts in LGD_ODD_SHAPES -> "ODD", every other shape -> "FANCY".
+ */
+export function lgdBandShape(shape) {
+  const s = (shape || "").toLowerCase().trim();
+  if (s === "round" || s === "rnd" || s.startsWith("round ")) return "RND";
+  return isOddShape(s) ? "ODD" : "FANCY";
+}
+
 // The CAD Order Form spells this shape "Tappered Bagguette"; the correct
 // trade spelling is "Tapered Baguette". Every shape name coming in from the
 // form (or from a quote saved before this fix) goes through here so the

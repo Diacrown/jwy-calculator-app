@@ -14,7 +14,7 @@ import {
   SAMPLE_LGD_BANDS,
 } from "./defaultData.js";
 import { POLL_INTERVAL_MS, USE_LIVE_METAL_RATES } from "./config.js";
-import { parseOrderFormJson, fixShapeSpelling } from "./pdfParser.js";
+import { parseOrderFormJson, fixShapeSpelling, lgdBandShape } from "./pdfParser.js";
 import { pdf } from "@react-pdf/renderer";
 import * as XLSX from "xlsx";
 import { QuotePdfDocument } from "./pdfDocument.jsx";
@@ -50,8 +50,11 @@ import { FANCY_PRICES, fancyGradesFor } from "./fancyPrices.js";
 // A row can still hold any other typed value via "Other (type manually)".
 const PROPOSED_DIA_QUALITIES = [
   "FG/VS2", "FG/SI1", "FG/SI2", "FG/SI3", "FGH/I1", "H/SI2", "IJ/SI2", "IJ/I1",
-  "F/VS2 (LG)", "D/VS 1", "D/VVS1", "D/VVS2", "FG/VS2(LG)",
+  "F/VS2 (LG)", "D/VS 1", "D/VVS1", "D/VVS2",
 ];
+// "FG/VS2(LG)" was the same value as "FG/VS2" -- Lab grown is already the row's Type -- so it is no longer offered
+// (rows saved with it are read as "FG/VS2").
+const RETIRED_PROPOSED_QUALITIES = { "FG/VS2(LG)": "FG/VS2" };
 
 // Local Quotes (this-device save/load/delete via localStorage) is
 // stripped from the UI per request, since Sync to DB + cloud search
@@ -1208,8 +1211,10 @@ function JwyCalculatorApp() {
       } else {
         const wtPerPc = sizeEntry.wt;
         const lgdBands = liveData.labGrownPrices || SAMPLE_LGD_BANDS;
+        // The price band (RND / FANCY / ODD) follows from the Shape: Round = RND, rare cuts = ODD, everything else = FANCY.
+        const bandShape = lgdBandShape(sizeEntry.shape);
         const band = lgdBands.find(
-          (b) => (b.shape === row.lgdShape || b.shape === "RND & FANCY") && wtPerPc >= b.minCt && wtPerPc <= b.maxCt
+          (b) => (b.shape === bandShape || b.shape === "RND & FANCY") && wtPerPc >= b.minCt && wtPerPc <= b.maxCt
         );
         if (band) {
           if (row.lgdGrade === "D/VVS2") perCt = band.dvvs2 || 0;
@@ -2499,6 +2504,7 @@ function normalizeRow(r) {
     if (!row.proposedQuality) row.proposedQuality = row.stoneTypeSel;
     row.stoneTypeSel = "Color";
   }
+  if (RETIRED_PROPOSED_QUALITIES[row.proposedQuality]) row.proposedQuality = RETIRED_PROPOSED_QUALITIES[row.proposedQuality];
   if ((row.mode || "natural") === "natural") row.quality = fixQuality(row);
   return row;
 }
@@ -3787,28 +3793,18 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                         ))}
                       </select>
                     ) : (
-                      <div style={{ display: "flex", gap: 4 }}>
-                        <select
-                          style={{ ...styles.inputSm, width: 64 }}
-                          value={row.lgdShape}
-                          onChange={(e) => updateRow(i, { lgdShape: e.target.value })}
-                        >
-                          <option value="RND">RND</option>
-                          <option value="FANCY">FANCY</option>
-                          <option value="ODD">ODD</option>
-                        </select>
-                        <select
-                          style={styles.inputSm}
-                          value={row.lgdGrade}
-                          onChange={(e) => updateRow(i, { lgdGrade: e.target.value })}
-                        >
-                          {LGD_GRADES.map((g) => (
-                            <option key={g} value={g}>
-                              {g}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
+                      <select
+                        style={styles.inputSm}
+                        value={row.lgdGrade}
+                        onChange={(e) => updateRow(i, { lgdGrade: e.target.value })}
+                        title={calc.shape ? `Price band: ${lgdBandShape(calc.shape)} (from the Shape)` : "Price band follows the Shape"}
+                      >
+                        {LGD_GRADES.map((g) => (
+                          <option key={g} value={g}>
+                            {g}
+                          </option>
+                        ))}
+                      </select>
                     )}
                   </td>
                   <td data-label="Proposed quality" style={styles.td}>

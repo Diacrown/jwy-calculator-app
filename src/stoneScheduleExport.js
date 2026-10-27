@@ -20,6 +20,7 @@
 // order to fill in. The combined grade goes in "Quality Grade".
 
 import JSZip from "jszip";
+import { lgdBandShape } from "./pdfParser.js";
 
 // Edit this list to change the dropdown choices -- both the in-app
 // per-line dropdown and the Excel dropdown read from here. No lab is
@@ -43,10 +44,11 @@ const DROPDOWN_LAST_ROW = 200;
 
 const STONE_TYPE_SHEET_LABELS = { "Lab grown": "LGD" };
 
-export function qualityGrade(r) {
+// shape: the row's Shape -- a lab-grown line is written "<band> <grade>" where the band (RND / FANCY / ODD) follows from it.
+export function qualityGrade(r, shape) {
   const type = r.stoneTypeSel || (r.mode === "lgd" ? "Lab grown" : "Mined");
   if (type !== "Mined" && type !== "Lab grown") return ""; // CZ/Mount/etc. -- priced by hand, no grade
-  return r.mode === "lgd" ? [r.lgdShape, r.lgdGrade].filter(Boolean).join(" ") : r.quality || "";
+  return r.mode === "lgd" ? [lgdBandShape(shape || r.customShape), r.lgdGrade].filter(Boolean).join(" ") : r.quality || "";
 }
 
 const round3 = (n) => (isFinite(n) ? Number(Number(n).toFixed(3)) : "");
@@ -67,7 +69,7 @@ export function buildStoneScheduleAoa(jobInfo, lines) {
       c.shape || r.customShape || "",
       c.size && c.size !== "manual entry" ? c.size : "",
       code || "",
-      qualityGrade(r),
+      qualityGrade(r, c.shape || r.customShape),
       (r.colour || "").trim(), "", "", "", "", // Color (typed in the Calculator, if any), Clarity, Cut, Pol, Sym -- see header comment
       labValue(r.lab),
       round3(c.wtPerPc),
