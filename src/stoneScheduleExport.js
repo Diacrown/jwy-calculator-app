@@ -4,12 +4,11 @@
 // Stone schedule section and downloads this sheet: one Excel line per
 // stone row, everything the Calculator already knows about that line
 // (shape, size, quality grade, weights, pcs, source, setting) plus two
-// extra dropdown columns captured per line:
-//   Item Type -- SS / PP
-//   Lab       -- GIA / HRD / IGI / AGL / Non-Cert
-// Both are also dropdowns inside the downloaded Excel itself (real
-// Excel data validation), so lines can still be changed or filled in
-// there after download.
+// extra dropdown column captured per line:
+//   Lab -- GIA / HRD / IGI / AGL, or "-" when there is no lab
+// It is also a dropdown inside the downloaded Excel itself (real Excel
+// data validation), so lines can still be changed or filled in there
+// after download.
 //
 // Prices ($/ct, totals, setting cost) are deliberately NOT in this
 // sheet -- it's an ordering/procurement document, not a quote.
@@ -22,19 +21,21 @@
 
 import JSZip from "jszip";
 
-// Edit these two lists to change the dropdown choices -- both the
-// in-app per-line dropdowns and the Excel dropdowns read from here.
-export const STONE_ITEM_TYPES = ["SS", "PP"];
-export const STONE_LABS = ["GIA", "HRD", "IGI", "AGL", "Non-Cert"];
+// Edit this list to change the dropdown choices -- both the in-app
+// per-line dropdown and the Excel dropdown read from here. No lab is
+// written "-" (an older saved "Non-Cert" also reads as no lab).
+export const STONE_LABS = ["GIA", "HRD", "IGI", "AGL"];
+export const NO_LAB = "-";
+export const labValue = (v) => (STONE_LABS.includes(v) ? v : NO_LAB);
 
 export const STONE_SCHEDULE_COLUMNS = [
-  "Job No", "Item No", "Style Code", "Pos", "Item Type", "Stone Type", "Shape", "Size", "Size Code",
+  "Job No", "Item No", "Style Code", "Pos", "Stone Type", "Shape", "Size", "Size Code",
   "Quality Grade", "Color", "Clarity", "Cut", "Pol", "Sym", "Lab", "Wt/pc (ct)", "Pcs", "Total Wt (ct)",
   "Source", "Setting",
 ];
 
 // Columns that get an Excel dropdown, and the list each one uses.
-const DROPDOWN_COLUMNS = { "Item Type": STONE_ITEM_TYPES, Lab: STONE_LABS };
+const DROPDOWN_COLUMNS = { Lab: [...STONE_LABS, NO_LAB] };
 
 // How many rows down the Excel dropdowns are applied (header is row 1),
 // so lines added by hand after download still get the dropdown.
@@ -62,14 +63,13 @@ export function buildStoneScheduleAoa(jobInfo, lines) {
       ji.itemNo || "",
       ji.styleCode || "",
       pos,
-      r.itemType || "",
       STONE_TYPE_SHEET_LABELS[stoneType] || stoneType,
       c.shape || r.customShape || "",
       c.size && c.size !== "manual entry" ? c.size : "",
       code || "",
       qualityGrade(r),
       (r.colour || "").trim(), "", "", "", "", // Color (typed in the Calculator, if any), Clarity, Cut, Pol, Sym -- see header comment
-      r.lab || "",
+      labValue(r.lab),
       round3(c.wtPerPc),
       parseFloat(r.pcs) || 0,
       round3(c.totalWt),
