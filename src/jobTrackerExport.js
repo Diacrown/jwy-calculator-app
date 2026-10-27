@@ -313,12 +313,12 @@ export function describeStoneRow(r, c) {
 // A Mount or Semi-Mount row is the setting itself, not a counted stone: it is
 // written first as "Mount Oval 12x10mm" / "Semi-Mount Oval 12x10mm", then a
 // line break, then the remaining stone lines.
-// StoneType combines the kinds present, in the order Color, Mined, LGD, CZ,
-// joined with "+" (e.g. "Color+Mined", "Mined+LGD", "Color+LGD+CZ"). A Color
-// row whose Proposed Quality is Zircon (all of them) is written "Zircon".
-// Semi-Mount anywhere appends " Semi" ("Mined Semi", "Zircon Semi"); a plain
-// Mount is written "Mount" only when it is the whole item, otherwise it adds
-// nothing (the other kinds already describe the stones).
+// StoneType is one combined label for the whole item: the setting first
+// ("Mount" / "Semi Mount"), then every stone kind in the order the stone lines
+// appear, each once, joined with " + " -- e.g. "Semi Mount + LGD + Mined",
+// "Mount + Mined", "LGD + CZ". A Color row whose Proposed Quality is Zircon
+// (all of them) is written "Zircon". A Mount / Semi-Mount on its own is just
+// "Mount" / "Semi Mount".
 // ============================================================
 const isMountRow = (r) => r && !r.typeCustom && (r.stoneTypeSel === "Mount" || r.stoneTypeSel === "Semi-Mount");
 export function describeMountRow(r, c) {
@@ -328,29 +328,20 @@ export function describeMountRow(r, c) {
   return [label, shape, size].filter(Boolean).join(" ");
 }
 export function combinedStoneType(rows) {
-  const has = { color: false, mined: false, lgd: false, cz: false };
-  let zirconOnly = true, anyColor = false, semi = false, mount = false, other = [];
+  const colourRows = rows.filter((r) => !r.typeCustom && r.stoneTypeSel === "Color");
+  const zircon = colourRows.length > 0 && colourRows.every((r) => /^zircon$/i.test((r.proposedQuality || "").trim()));
+  let semi = false, mount = false;
+  const parts = [];
+  const add = (label) => { if (label && !parts.includes(label)) parts.push(label); };
   rows.forEach((r) => {
     if (r.stoneTypeSel === "Semi-Mount" && !r.typeCustom) { semi = true; return; }
     if (r.stoneTypeSel === "Mount" && !r.typeCustom) { mount = true; return; }
-    if (r.typeCustom) { if (r.customType && !other.includes(r.customType)) other.push(r.customType); return; }
+    if (r.typeCustom) { add(r.customType); return; }
     const t = r.stoneTypeSel || (r.mode === "lgd" ? "Lab grown" : "Mined");
-    if (t === "Color") { has.color = true; anyColor = true; if (!/^zircon$/i.test((r.proposedQuality || "").trim())) zirconOnly = false; }
-    else if (t === "Lab grown") has.lgd = true;
-    else if (t === "CZ") has.cz = true;
-    else if (t === "Mined") has.mined = true;
-    else if (!other.includes(t)) other.push(t);
+    if (t === "Color") add(zircon ? "Zircon" : "Color");
+    else add(STONE_TYPE_SHEET_LABELS[t] || t);
   });
-  const parts = [];
-  if (has.color) parts.push(anyColor && zirconOnly ? "Zircon" : "Color");
-  if (has.mined) parts.push("Mined");
-  if (has.lgd) parts.push("LGD");
-  if (has.cz) parts.push("CZ");
-  parts.push(...other);
-  let out = parts.join("+");
-  if (!out && (mount || semi)) out = semi ? "Semi" : "Mount";
-  else if (semi) out += " Semi";
-  return out;
+  return [semi ? "Semi Mount" : mount ? "Mount" : "", ...parts].filter(Boolean).join(" + ");
 }
 
 // ============================================================
@@ -591,7 +582,7 @@ export function mapQuoteToJobTrackerRow(quote) {
     ? stonelessRows.some(({ r }) => r.stoneTypeSel === "Plain") || !combinedStoneType(stonelessRows.map(({ r }) => r))
       ? PLAIN_STONE_FIELDS.StoneType
       : combinedStoneType(stonelessRows.map(({ r }) => r))
-    : combinedStoneType(realStoneRows.map(({ r }) => r));
+    : combinedStoneType(rowsWithCalcs.filter(({ r }) => r.stoneTypeSel !== PLAIN_STONE_FIELDS.StoneType).map(({ r }) => r)); // bare Mount / Semi-Mount lines count: the setting leads the label
   // Each stone's Source from the CAD form; when the rows carry none, the CAD
   // form's own source list for the job (stoneSourcesFallback) is used instead.
   const stoneSource = isPlainItem

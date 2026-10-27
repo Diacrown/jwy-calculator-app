@@ -104,6 +104,10 @@ const ITEM_TYPE_OPTIONS = [
 const CUSTOM_TYPE_OPTION = "__CUSTOM_TYPE__";
 // "Plain" = a metal-only piece with no stones. Priced as $0 stones.
 const PLAIN_TYPE = "Plain";
+// Studded per stone line. Yes = a counted stone line (Mined / Lab grown / CZ / Color / custom).
+// No = the setting itself, metal only: Mount, Semi-Mount or Plain -- the Type then says which.
+const UNSTUDDED_TYPES = ["Mount", "Semi-Mount", PLAIN_TYPE];
+const isStuddedRow = (row) => !!row.typeCustom || !UNSTUDDED_TYPES.includes(row.stoneTypeSel);
 // The CAD Order Form's "Alloy type" choices -- shown in Job Tracker details so a value can be corrected.
 const CAD_ALLOY_TYPES = ["Standard", "Palladium", "Nickel Free", "Platinum", "SS925", "Gold Plated", "Nickel Safe"];
 
@@ -757,23 +761,6 @@ function JwyCalculatorApp() {
   // can be matched up again, via the row's srcKey.
   const linesDirtyRef = useRef(false); // a custom field was changed by hand since the last save
   const rowsRef = useRef(null);
-  // Studded (Yes / No). Not stored on its own: an item is "not studded" when every stone line is a
-  // metal-only line (CAD import of a Plain / Mount / Semi-Mount, or picking No here), so it can never
-  // disagree with the stone schedule. Picking No parks the stone lines and shows one metal-only line;
-  // picking Yes brings them back.
-  const studdedBackupRef = useRef(null);
-  const studded = rows.length > 0 && rows.every(isStonelessRow) ? "No" : "Yes";
-  const changeStudded = (val) => {
-    if (val === "No" && studded === "Yes") {
-      studdedBackupRef.current = rows;
-      setRows([{ ...emptyRow(), stoneTypeSel: PLAIN_TYPE }]);
-    } else if (val === "Yes" && studded === "No") {
-      const back = studdedBackupRef.current;
-      studdedBackupRef.current = null;
-      setRows(back && back.length ? back : Array.from({ length: 5 }, emptyRow));
-    }
-  };
-
   useEffect(() => {
     if (!linesDirtyRef.current) return undefined;
     const key = jobFieldsKey(jobInfo.jobNo);
@@ -904,7 +891,6 @@ function JwyCalculatorApp() {
       srcKey: stoneSrcKey(s),
     }));
     linesDirtyRef.current = false;
-    studdedBackupRef.current = null;
     // A Plain / Mount / Semi-Mount piece with no stones on the CAD form gets one
     // "no stones" line instead of an empty stone schedule: the metal is priced
     // straight away and nothing has to be filled in under Stone schedule.
@@ -987,7 +973,6 @@ function JwyCalculatorApp() {
     setPrimaryGramWt("");
     setSecondaryAlloyShort("");
     setSecondaryGramWt("");
-    studdedBackupRef.current = null;
     setRows(Array.from({ length: 5 }, emptyRow));
     setPdfImport(null);
     setPdfStatus("");
@@ -1251,9 +1236,10 @@ function JwyCalculatorApp() {
         const lgdBands = liveData.labGrownPrices || SAMPLE_LGD_BANDS;
         // The price band (RND / FANCY / ODD) follows from the Shape: Round = RND, rare cuts = ODD, everything else = FANCY.
         const bandShape = lgdBandShape(sizeEntry.shape);
-        const band = lgdBands.find(
-          (b) => (b.shape === bandShape || b.shape === "RND & FANCY") && wtPerPc >= b.minCt && wtPerPc <= b.maxCt
-        );
+        const findBand = (shape) =>
+          lgdBands.find((b) => (b.shape === shape || b.shape === "RND & FANCY") && wtPerPc >= b.minCt && wtPerPc <= b.maxCt);
+        // The table has no FANCY rows below 0.5 ct, so a small fancy stone is priced from the RND band of that same size.
+        const band = findBand(bandShape) || (bandShape === "FANCY" ? findBand("RND") : undefined);
         if (band) {
           if (row.lgdGrade === "D/VVS2") perCt = band.dvvs2 || 0;
           else if (row.lgdGrade === "D/VS1") perCt = band.dvs1 || 0;
@@ -1896,8 +1882,6 @@ function JwyCalculatorApp() {
           printDate={printDate}
           setPrintDate={setPrintDate}
           loadFromCloud={loadFromCloud}
-          studded={studded}
-          onStuddedChange={changeStudded}
         />
 
         <ImagesCard
@@ -2247,7 +2231,7 @@ function PdfImportReview({ pdfImport }) {
   );
 }
 
-function JobInfoCard({ jobInfo, setJobInfo, location, setLocation, locationList, cadFees, turntableLink, setTurntableLink, printDate, setPrintDate, loadFromCloud, studded, onStuddedChange }) {
+function JobInfoCard({ jobInfo, setJobInfo, location, setLocation, locationList, cadFees, turntableLink, setTurntableLink, printDate, setPrintDate, loadFromCloud }) {
   return (
     <div style={styles.card}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
@@ -2301,17 +2285,6 @@ function JobInfoCard({ jobInfo, setJobInfo, location, setLocation, locationList,
               placeholder="Item type"
             />
           </div>
-        </Field>
-        <Field label="Studded">
-          <select
-            style={{ ...styles.input, minWidth: 90 }}
-            value={studded}
-            onChange={(e) => onStuddedChange(e.target.value)}
-            title="No = metal-only item (no stones): the metal price is calculated and the stone schedule is not needed"
-          >
-            <option value="Yes">Yes</option>
-            <option value="No">No</option>
-          </select>
         </Field>
         <Field label="Date">
           <input
@@ -3685,6 +3658,7 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
             <tr style={styles.theadRow}>
               <th style={styles.th}>Pos</th>
               <th style={styles.th}>Type</th>
+              <th style={styles.th}>Studded</th>
               <th style={styles.th}>Lab</th>
               <th style={styles.th}>Shape</th>
               <th style={styles.th}>Size</th>
@@ -3712,7 +3686,25 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                     <span style={{ ...styles.posBadge, ...(active ? styles.posBadgeActive : {}) }}>{i + 1}</span>
                   </td>
                   <td data-label="Type" style={styles.td}>
-                    {row.typeCustom ? (
+                    {!isStuddedRow(row) ? (
+                      // Studded = No: the line is the setting, and the Type says which one.
+                      <select
+                        style={{ ...styles.inputSm, width: 100 }}
+                        value={row.stoneTypeSel}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          // Mount / Semi-Mount keep the "no stones" line a bare setting has; Plain is its own metal-only type.
+                          updateRow(i, { stoneTypeSel: val, bare: val === PLAIN_TYPE ? false : row.stoneTypeSel === PLAIN_TYPE ? true : !!row.bare });
+                        }}
+                        title="Which setting this line is -- Mount, Semi-Mount, or Plain (metal only)"
+                      >
+                        {UNSTUDDED_TYPES.map((t) => (
+                          <option key={t} value={t}>
+                            {t}
+                          </option>
+                        ))}
+                      </select>
+                    ) : row.typeCustom ? (
                       // "Custom entry…" turns this field itself into a text box (no dropdown left
                       // on screen); the arrow goes back to the list.
                       <CustomFieldBox
@@ -3752,6 +3744,41 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                       </select>
                     )}
                   </td>
+                  <td data-label="Studded" style={styles.td}>
+                    <select
+                      style={{ ...styles.inputSm, width: 58 }}
+                      value={isStuddedRow(row) ? "Yes" : "No"}
+                      onChange={(e) => {
+                        const toNo = e.target.value === "No";
+                        if (toNo === !isStuddedRow(row)) return;
+                        if (toNo) {
+                          // Remember what the line was, so Yes brings it straight back.
+                          updateRow(i, {
+                            studdedPrev: { stoneTypeSel: row.stoneTypeSel, mode: row.mode, typeCustom: !!row.typeCustom, customType: row.customType || "" },
+                            typeCustom: false,
+                            customType: "",
+                            stoneTypeSel: "Mount",
+                            mode: "natural",
+                            bare: true,
+                          });
+                        } else {
+                          const prev = row.studdedPrev;
+                          updateRow(i, {
+                            studdedPrev: null,
+                            bare: false,
+                            typeCustom: !!prev?.typeCustom,
+                            customType: prev?.customType || "",
+                            stoneTypeSel: prev?.stoneTypeSel && !UNSTUDDED_TYPES.includes(prev.stoneTypeSel) ? prev.stoneTypeSel : "Mined",
+                            mode: prev?.mode || "natural",
+                          });
+                        }
+                      }}
+                      title="Yes = stones are set on this line. No = the line is the setting only (Mount / Semi-Mount / Plain) -- metal only, nothing to price."
+                    >
+                      <option value="Yes">Yes</option>
+                      <option value="No">No</option>
+                    </select>
+                  </td>
                   {isPlain ? (
                     <td
                       className="jwy-plain"
@@ -3760,7 +3787,7 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                       style={{ ...styles.td, fontSize: 12, color: "var(--muted)", fontStyle: "italic" }}
                     >
                       {row.bare
-                        ? `${row.stoneTypeSel} item — no stones on the CAD form, so there is no stone schedule to fill in. The metal price is calculated below. `
+                        ? `${row.stoneTypeSel} — the setting only, no stones on this line, so nothing to price here. `
                         : "Not studded — metal only, no stones to price. Export to Main File marks it as Plain."}
                       {row.bare && row.stoneTypeSel !== PLAIN_TYPE && (
                         <button
