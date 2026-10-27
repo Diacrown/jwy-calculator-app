@@ -14,7 +14,8 @@ import {
   SAMPLE_LGD_BANDS,
 } from "./defaultData.js";
 import { POLL_INTERVAL_MS, USE_LIVE_METAL_RATES } from "./config.js";
-import { parseOrderFormJson, fixShapeSpelling } from "./pdfParser.js";
+import { parseOrderFormJson, fixShapeSpelling, lgdBandShape } from "./pdfParser.js";
+import { QUOTE_STAGES, stageLabel, highestVersion, stageOnly } from "./quoteVersions.js";
 import { pdf } from "@react-pdf/renderer";
 import * as XLSX from "xlsx";
 import { QuotePdfDocument } from "./pdfDocument.jsx";
@@ -50,8 +51,11 @@ import { FANCY_PRICES, fancyGradesFor } from "./fancyPrices.js";
 // A row can still hold any other typed value via "Other (type manually)".
 const PROPOSED_DIA_QUALITIES = [
   "FG/VS2", "FG/SI1", "FG/SI2", "FG/SI3", "FGH/I1", "H/SI2", "IJ/SI2", "IJ/I1",
-  "F/VS2 (LG)", "D/VS 1", "D/VVS1", "D/VVS2", "FG/VS2(LG)",
+  "F/VS2 (LG)", "D/VS 1", "D/VVS1", "D/VVS2",
 ];
+// "FG/VS2(LG)" was the same value as "FG/VS2" -- Lab grown is already the row's Type -- so it is no longer offered
+// (rows saved with it are read as "FG/VS2").
+const RETIRED_PROPOSED_QUALITIES = { "FG/VS2(LG)": "FG/VS2" };
 
 // Local Quotes (this-device save/load/delete via localStorage) is
 // stripped from the UI per request, since Sync to DB + cloud search
@@ -593,6 +597,12 @@ function JwyCalculatorApp() {
   });
   const [location, setLocation] = useState("WSSY");
   const [quoteStage, setQuoteStage] = useState("Q1");
+  // Version (V1, V2 ...) within the stage. Always the next unused number for this Job / Item / Stage:
+  // the saved ones are looked up and the next one is selected for the user, who can only continue from there.
+  const [quoteVersion, setQuoteVersion] = useState(1);
+  const [versionCheck, setVersionCheck] = useState({ max: 0, state: "idle" }); // idle | checking | ok | unavailable
+  const [versionsTick, setVersionsTick] = useState(0); // bumped after a save so the next number is looked up again
+  const quoteLabel = stageLabel(quoteStage, quoteVersion);
   const [printDate, setPrintDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [manualPriceOverride, setManualPriceOverride] = useState("");
   const [additionalChargeName, setAdditionalChargeName] = useState("");
@@ -1004,12 +1014,42 @@ function JwyCalculatorApp() {
     } catch {}
   };
 
+  useEffect(() => {
+    const job = (jobInfo.jobNo || "").trim();
+    const item = (jobInfo.itemNo || "").trim();
+    if (!job || !item) {
+      setVersionCheck({ max: 0, state: "idle" });
+      setQuoteVersion(1);
+      return undefined;
+    }
+    let cancelled = false;
+    setVersionCheck((v) => ({ ...v, state: "checking" }));
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(`/.netlify/functions/search-quotes?job=${encodeURIComponent(job)}&item=${encodeURIComponent(item)}`);
+        if (!res.ok) throw new Error("lookup failed");
+        const { results = [] } = await res.json();
+        if (cancelled) return;
+        const max = highestVersion(results.map((r) => r.quote_stage), quoteStage);
+        setVersionCheck({ max, state: "ok" });
+        setQuoteVersion(max + 1);
+      } catch {
+        if (!cancelled) setVersionCheck({ max: 0, state: "unavailable" }); // cannot check (offline / no database): the server still refuses a repeat
+      }
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [jobInfo.jobNo, jobInfo.itemNo, quoteStage, versionsTick]);
+
   const buildSnapshot = () => ({
     id: Date.now(),
-    label: `${jobInfo.jobNo || "no-job"} · ${quoteStage} · ${new Date().toLocaleString()}`,
+    label: `${jobInfo.jobNo || "no-job"} · ${quoteLabel} · ${new Date().toLocaleString()}`,
     jobInfo,
     location,
     quoteStage,
+    quoteVersion,
     printDate,
     primaryAlloyShort,
     primaryGramWt,
@@ -1042,7 +1082,8 @@ function JwyCalculatorApp() {
   const applySnapshot = (q) => {
     setJobInfo({ itemNo: "", itemSize: "", remarks: "", ...q.jobInfo });
     setLocation(q.location);
-    setQuoteStage(q.quoteStage || "Q1");
+    // The version is not restored: the next save of this job continues from the highest saved version.
+    setQuoteStage(stageOnly(q.quoteStage));
     setPrintDate(q.printDate || new Date().toISOString().slice(0, 10));
     setPrimaryAlloyShort(q.primaryAlloyShort);
     setPrimaryGramWt(q.primaryGramWt);
@@ -1075,7 +1116,7 @@ function JwyCalculatorApp() {
   };
 
   const quoteFilenameBase = () => {
-    const parts = [jobInfo.jobNo, jobInfo.itemNo, quoteStage].filter(Boolean);
+    const parts = [jobInfo.jobNo, jobInfo.itemNo, quoteLabel].filter(Boolean);
     const base = parts.length ? parts.join("_") : "quote";
     const now = new Date();
     const pad = (n) => String(n).padStart(2, "0");
@@ -1208,8 +1249,10 @@ function JwyCalculatorApp() {
       } else {
         const wtPerPc = sizeEntry.wt;
         const lgdBands = liveData.labGrownPrices || SAMPLE_LGD_BANDS;
+        // The price band (RND / FANCY / ODD) follows from the Shape: Round = RND, rare cuts = ODD, everything else = FANCY.
+        const bandShape = lgdBandShape(sizeEntry.shape);
         const band = lgdBands.find(
-          (b) => (b.shape === row.lgdShape || b.shape === "RND & FANCY") && wtPerPc >= b.minCt && wtPerPc <= b.maxCt
+          (b) => (b.shape === bandShape || b.shape === "RND & FANCY") && wtPerPc >= b.minCt && wtPerPc <= b.maxCt
         );
         if (band) {
           if (row.lgdGrade === "D/VVS2") perCt = band.dvvs2 || 0;
@@ -1303,7 +1346,7 @@ function JwyCalculatorApp() {
         cadImages={cadImages}
         clientRefImages={clientRefImages}
         turntableLink={turntableLink}
-        quoteStage={quoteStage}
+        quoteStage={quoteLabel}
         hasOverride={hasOverride}
         additionalChargeName={additionalChargeName}
         hasAdditionalCharge={hasAdditionalCharge}
@@ -1622,9 +1665,8 @@ function JwyCalculatorApp() {
   // through a session, since these tokens last about an hour) --
   // clears the stale token, re-authenticates, and retries once, so
   // nobody needs to manually refresh the page and sign in again.
-  const doSaveToDrive = async () => {
-    const filenameBase = quoteFilenameBase();
-    const pdfBlob = await generatePdfBlob("full");
+  const doSaveToDrive = async (filenameBase = quoteFilenameBase(), existingPdf = null) => {
+    const pdfBlob = existingPdf || (await generatePdfBlob("full"));
 
     let token = await ensureDriveToken();
     try {
@@ -1659,7 +1701,7 @@ function JwyCalculatorApp() {
     const refLine = [
       jobInfo.jobNo ? `Job ${jobInfo.jobNo}` : null,
       jobInfo.itemNo ? `Item ${jobInfo.itemNo}` : null,
-      quoteStage || null,
+      quoteLabel || null,
     ]
       .filter(Boolean)
       .join(" · ");
@@ -1754,7 +1796,7 @@ function JwyCalculatorApp() {
           filenameBase,
           jobNo: jobInfo.jobNo,
           itemNo: jobInfo.itemNo,
-          quoteStage,
+          quoteStage: quoteLabel,
           pdfBase64,
           jsonText,
           overwrite,
@@ -1780,9 +1822,8 @@ function JwyCalculatorApp() {
     return { res, data };
   };
 
-  const doSyncToDb = async () => {
-    const filenameBase = quoteFilenameBase();
-    const pdfBlob = await generatePdfBlob("full");
+  const doSyncToDb = async (filenameBase = quoteFilenameBase(), existingPdf = null) => {
+    const pdfBlob = existingPdf || (await generatePdfBlob("full"));
     const jsonBlob = buildSnapshotJsonBlob();
     const pdfBase64 = await blobToBase64(pdfBlob);
     const jsonText = await jsonBlob.text();
@@ -1797,7 +1838,7 @@ function JwyCalculatorApp() {
     if (res.status === 409 && data.conflict) {
       const savedWhen = data.existing?.createdAt ? new Date(data.existing.createdAt).toLocaleString() : "an earlier time";
       const confirmed = confirm(
-        `A quote already exists for Job ${jobInfo.jobNo} / Item ${jobInfo.itemNo} / ${quoteStage}, saved ${savedWhen}.\n\nOverwrite it with this version?`
+        `A quote already exists for Job ${jobInfo.jobNo} / Item ${jobInfo.itemNo} / ${quoteLabel}, saved ${savedWhen}.\n\nOverwrite it with this version?`
       );
       if (!confirmed) throw new Error("Save cancelled -- existing quote was not changed.");
 
@@ -1810,6 +1851,23 @@ function JwyCalculatorApp() {
     // response, etc.) -- must throw, not silently return as if it
     // succeeded.
     throw new Error(data.error || `Couldn't save to the database (status ${res.status})`);
+  };
+
+  // The one Save button: the database + blob storage first (the record of truth; a version already
+  // taken or a cancelled overwrite stops everything here), then the PDF into the Drive folder.
+  // If only the Drive step fails, the quote is still saved -- the PDF is kept so "Retry Drive" can
+  // upload that same file under the same name.
+  const doSave = async () => {
+    const filenameBase = quoteFilenameBase();
+    const pdfBlob = await generatePdfBlob("full");
+    await doSyncToDb(filenameBase, pdfBlob);
+    setVersionsTick((t) => t + 1); // the version just used is taken; the next one is offered
+    try {
+      await doSaveToDrive(filenameBase, pdfBlob);
+      return { filenameBase, pdfBlob, driveError: "" };
+    } catch (err) {
+      return { filenameBase, pdfBlob, driveError: (err && err.message) || "Couldn't save to Drive" };
+    }
   };
 
   return (
@@ -1894,11 +1952,14 @@ function JwyCalculatorApp() {
           onPrint={doPrint}
           onPreview={doPreview}
           onEmail={doEmail}
-          onSyncToDb={doSyncToDb}
+          onSaveAll={doSave}
+          onRetryDrive={doSaveToDrive}
           onExportGati={doExportGati}
-          onSaveToDrive={doSaveToDrive}
           quoteStage={quoteStage}
           setQuoteStage={setQuoteStage}
+          quoteVersion={quoteVersion}
+          setQuoteVersion={setQuoteVersion}
+          versionCheck={versionCheck}
           pdfGenerating={pdfGenerating}
         />
 
@@ -2499,6 +2560,7 @@ function normalizeRow(r) {
     if (!row.proposedQuality) row.proposedQuality = row.stoneTypeSel;
     row.stoneTypeSel = "Color";
   }
+  if (RETIRED_PROPOSED_QUALITIES[row.proposedQuality]) row.proposedQuality = RETIRED_PROPOSED_QUALITIES[row.proposedQuality];
   if ((row.mode || "natural") === "natural") row.quality = fixQuality(row);
   return row;
 }
@@ -3287,20 +3349,23 @@ function QuotesToolbar({
   onPrint,
   onPreview,
   onEmail,
-  onSyncToDb,
+  onSaveAll,
+  onRetryDrive,
   onExportGati,
-  onSaveToDrive,
   quoteStage,
   setQuoteStage,
+  quoteVersion,
+  setQuoteVersion,
+  versionCheck,
   pdfGenerating,
 }) {
   const [selected, setSelected] = useState("");
   const [emailTo, setEmailTo] = useState("");
   const [emailVariant, setEmailVariant] = useState("full");
   const [emailStatus, setEmailStatus] = useState("");
-  const [syncStatus, setSyncStatus] = useState("");
+  const [saveStatus, setSaveStatus] = useState(""); // "" | saving | saved | <error text>
+  const [driveProblem, setDriveProblem] = useState(null); // { filenameBase, pdfBlob, message } when only the Drive step failed
   const [gatiExportStatus, setGatiExportStatus] = useState("");
-  const [driveSaveStatus, setDriveSaveStatus] = useState("");
   const [emailOpen, setEmailOpen] = useState(false);
   const [printVariant, setPrintVariant] = useState("full");
   const [localOpen, setLocalOpen] = useState(false); // "Local quotes" is de-emphasized/legacy now that Sync to DB + search covers the same need -- collapsed by default
@@ -3317,16 +3382,38 @@ function QuotesToolbar({
     }
   };
 
-  const syncToDb = async () => {
-    setSyncStatus("syncing");
+  const saveAll = async () => {
+    setSaveStatus("saving");
+    setDriveProblem(null);
     try {
-      await onSyncToDb();
-      setSyncStatus("synced");
-      setTimeout(() => setSyncStatus(""), 3000);
+      const { filenameBase, pdfBlob, driveError } = await onSaveAll();
+      if (driveError) {
+        setDriveProblem({ filenameBase, pdfBlob, message: driveError });
+        setSaveStatus("saved-no-drive");
+      } else {
+        setSaveStatus("saved");
+        setTimeout(() => setSaveStatus((cur) => (cur === "saved" ? "" : cur)), 6000);
+      }
     } catch (err) {
-      setSyncStatus((err && err.message) || "Couldn't save");
+      setSaveStatus((err && err.message) || "Couldn't save");
     }
   };
+
+  const retryDrive = async () => {
+    if (!driveProblem) return;
+    setSaveStatus("saving");
+    try {
+      await onRetryDrive(driveProblem.filenameBase, driveProblem.pdfBlob);
+      setDriveProblem(null);
+      setSaveStatus("saved");
+      setTimeout(() => setSaveStatus((cur) => (cur === "saved" ? "" : cur)), 6000);
+    } catch (err) {
+      setDriveProblem({ ...driveProblem, message: (err && err.message) || "Couldn't save to Drive" });
+      setSaveStatus("saved-no-drive");
+    }
+  };
+
+  const driveFolderId = import.meta.env.VITE_DRIVE_FOLDER_ID;
 
   const exportGati = () => {
     setGatiExportStatus("exporting");
@@ -3341,33 +3428,45 @@ function QuotesToolbar({
     }
   };
 
-  // One click, start to finish -- authorizes with Drive first if this
-  // session hasn't yet, then uploads immediately, no separate "Connect"
-  // step for the user to click through.
-  const saveToDrive = async () => {
-    setDriveSaveStatus("saving");
-    try {
-      await onSaveToDrive();
-      setDriveSaveStatus("✓ Saved to Drive");
-      setTimeout(() => setDriveSaveStatus(""), 4000);
-    } catch (err) {
-      setDriveSaveStatus((err && err.message) || "Couldn't save to Drive");
-    }
-  };
-
   const Divider = () => <div style={styles.toolbarDivider} />;
 
   return (
     <div style={styles.card}>
       <div style={styles.toolbarRow}>
         <SectionLabel eyebrow="04" title="Quotes" noMargin />
-        <input
-          style={{ ...styles.inputSm, width: 44, textAlign: "center", fontWeight: 600 }}
+        <select
+          style={{ ...styles.inputSm, width: 58, fontWeight: 600 }}
           value={quoteStage}
           onChange={(e) => setQuoteStage(e.target.value)}
-          placeholder="Q1"
-          title="Quote stage (Q1, Q2, Revised, etc.) -- used in filenames and every save action below."
-        />
+          title="Quote stage -- used in filenames and every save action below."
+          aria-label="Quote stage"
+        >
+          {[...QUOTE_STAGES, ...(QUOTE_STAGES.includes(quoteStage) ? [] : [quoteStage])].map((q) => (
+            <option key={q} value={q}>
+              {q}
+            </option>
+          ))}
+        </select>
+        <select
+          style={{ ...styles.inputSm, width: 64, fontWeight: 600 }}
+          value={quoteVersion}
+          onChange={(e) => setQuoteVersion(Number(e.target.value))}
+          title={
+            versionCheck.state === "ok"
+              ? `Version -- V1${versionCheck.max > 1 ? `–V${versionCheck.max}` : versionCheck.max === 1 ? "" : ""} already saved for this job; the next one is selected and is the only one that can be used.`
+              : "Version -- the next unused number is selected automatically once a Job # and Item # are entered."
+          }
+          aria-label="Quote version"
+        >
+          {Array.from(
+            { length: versionCheck.state === "ok" ? Math.max(versionCheck.max + 1, quoteVersion) : Math.max(9, quoteVersion) },
+            (_, k) => k + 1
+          ).map((v) => (
+            <option key={v} value={v} disabled={versionCheck.state === "ok" && v !== versionCheck.max + 1}>
+              V{v}
+            </option>
+          ))}
+        </select>
 
         <Divider />
 
@@ -3403,32 +3502,39 @@ function QuotesToolbar({
         <Divider />
 
         <button
-          style={{ ...styles.smallBtn, ...styles.smallBtnAccent, padding: "4px 7px" }}
+          style={{ ...styles.smallBtn, ...styles.smallBtnAccent, padding: "4px 12px" }}
           type="button"
-          disabled={syncStatus === "syncing"}
-          onClick={syncToDb}
+          disabled={saveStatus === "saving"}
+          onClick={saveAll}
+          title="Saves the quote to the database + blob storage, then puts the PDF in the Drive folder"
         >
-          {syncStatus === "syncing" ? "Saving…" : "Sync to DB"}
+          {saveStatus === "saving" ? "Saving…" : "Save"}
         </button>
-        {syncStatus === "synced" && <span style={styles.statusOk}>✓</span>}
-        {syncStatus && syncStatus !== "syncing" && syncStatus !== "synced" && (
-          <span style={styles.statusWarn} title={syncStatus}>
-            {syncStatus.length > 24 ? syncStatus.slice(0, 24) + "…" : syncStatus}
+        {saveStatus === "saved" && <span style={styles.statusOk}>✓ Saved</span>}
+        {saveStatus === "saved-no-drive" && driveProblem && (
+          <>
+            <span style={styles.statusWarn} title={driveProblem.message}>
+              Saved · Drive: {driveProblem.message.length > 30 ? driveProblem.message.slice(0, 30) + "…" : driveProblem.message}
+            </span>
+            <button style={{ ...styles.smallBtn, padding: "4px 7px" }} type="button" onClick={retryDrive}>
+              Retry Drive
+            </button>
+          </>
+        )}
+        {saveStatus && !["saving", "saved", "saved-no-drive"].includes(saveStatus) && (
+          <span style={styles.statusWarn} title={saveStatus}>
+            {saveStatus.length > 34 ? saveStatus.slice(0, 34) + "…" : saveStatus}
           </span>
         )}
-
-        <button
-          style={{ ...styles.smallBtn, ...styles.smallBtnAccent, padding: "4px 7px" }}
-          type="button"
-          disabled={driveSaveStatus === "saving"}
-          onClick={saveToDrive}
-        >
-          {driveSaveStatus === "saving" ? "Saving…" : "Save to Drive"}
-        </button>
-        {driveSaveStatus && driveSaveStatus !== "saving" && (
-          <span style={driveSaveStatus.startsWith("✓") ? styles.statusOk : styles.statusWarn} title={driveSaveStatus}>
-            {driveSaveStatus.startsWith("✓") ? "✓" : driveSaveStatus.slice(0, 24) + "…"}
-          </span>
+        {driveFolderId && (saveStatus === "saved" || saveStatus === "saved-no-drive") && (
+          <a
+            href={`https://drive.google.com/drive/folders/${driveFolderId}`}
+            target="_blank"
+            rel="noreferrer"
+            style={{ fontSize: 11, color: "var(--muted)" }}
+          >
+            Open Drive folder ↗
+          </a>
         )}
 
         <button
@@ -3787,28 +3893,18 @@ function StoneGrid({ rows, updateRow, rowCalcs, totals, onAddRow, onRemoveRow, o
                         ))}
                       </select>
                     ) : (
-                      <div style={{ display: "flex", gap: 4 }}>
-                        <select
-                          style={{ ...styles.inputSm, width: 64 }}
-                          value={row.lgdShape}
-                          onChange={(e) => updateRow(i, { lgdShape: e.target.value })}
-                        >
-                          <option value="RND">RND</option>
-                          <option value="FANCY">FANCY</option>
-                          <option value="ODD">ODD</option>
-                        </select>
-                        <select
-                          style={styles.inputSm}
-                          value={row.lgdGrade}
-                          onChange={(e) => updateRow(i, { lgdGrade: e.target.value })}
-                        >
-                          {LGD_GRADES.map((g) => (
-                            <option key={g} value={g}>
-                              {g}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
+                      <select
+                        style={styles.inputSm}
+                        value={row.lgdGrade}
+                        onChange={(e) => updateRow(i, { lgdGrade: e.target.value })}
+                        title={calc.shape ? `Price band: ${lgdBandShape(calc.shape)} (from the Shape)` : "Price band follows the Shape"}
+                      >
+                        {LGD_GRADES.map((g) => (
+                          <option key={g} value={g}>
+                            {g}
+                          </option>
+                        ))}
+                      </select>
                     )}
                   </td>
                   <td data-label="Proposed quality" style={styles.td}>
