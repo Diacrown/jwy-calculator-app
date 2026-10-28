@@ -334,6 +334,8 @@ function mapFormDataToCalculator(data, { alloys = [], diaSize = [] } = {}) {
     rhodium: data["Rhodium"] || "",
     alloyType: data["Alloy Type"] || "",
     clientNotes: data["Client Notes"] || "",
+    // Optional link to the 3D render / viewer typed on the CAD form ("Render Link").
+    renderLink: /^https?:\/\/\S+$/i.test(String(data["Render Link"] || "").trim()) ? String(data["Render Link"]).trim() : "",
   };
 
   // --- Metals (assign by weight, heavier = primary) ---

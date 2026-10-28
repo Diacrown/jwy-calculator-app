@@ -15,6 +15,7 @@ import {
 } from "./defaultData.js";
 import { POLL_INTERVAL_MS, USE_LIVE_METAL_RATES } from "./config.js";
 import { parseOrderFormJson, fixShapeSpelling, lgdBandShape } from "./pdfParser.js";
+import { listCadJobs, fetchCadJobFile, getSavedReadKey, saveReadKey, clearReadKey } from "./cadJobsClient.js";
 import { QUOTE_STAGES, stageLabel, highestVersion, stageOnly } from "./quoteVersions.js";
 import { pdf } from "@react-pdf/renderer";
 import * as XLSX from "xlsx";
@@ -848,6 +849,8 @@ function JwyCalculatorApp() {
       // The CAD form's own Alloy type (Standard / Palladium / ...) -- goes to Main File as it is.
       alloyType: ji.alloyType || "",
     }));
+    // The CAD form's "Render Link" fills the 3D render link (only if that is still empty).
+    if (ji.renderLink) setTurntableLink((prev) => prev || ji.renderLink);
     if (ji.itemNo) {
       const mappedLoc = ITEM_LETTER_TO_LOCATION[ji.itemNo.trim().charAt(0).toUpperCase()];
       if (mappedLoc) setLocation(mappedLoc);
@@ -943,6 +946,15 @@ function JwyCalculatorApp() {
       setPdfStatus("error");
       setPdfImport({ error: (err && err.message) || String(err) });
     }
+  };
+
+  // ---- CAD jobs saved by the CAD team (the "CAD jobs" button in the top bar) ----
+  // The CAD Order Form stores every exported job in the cloud; picking one here runs it through the exact same
+  // import as "Load order data" (handleJsonUpload), so nothing about the import itself is different.
+  const [cadJobsOpen, setCadJobsOpen] = useState(false);
+  const loadCadJobFile = (file) => {
+    setCadJobsOpen(false);
+    handleJsonUpload({ target: { files: [file], value: "" } });
   };
 
   const handleSavedQuoteUpload = async (e) => {
@@ -1866,8 +1878,10 @@ function JwyCalculatorApp() {
         pdfImport={pdfImport}
         onJsonUpload={handleJsonUpload}
         onSavedQuoteUpload={handleSavedQuoteUpload}
+        onOpenCadJobs={() => setCadJobsOpen(true)}
         onClear={clearAll}
       />
+      {cadJobsOpen && <CadJobsDialog onClose={() => setCadJobsOpen(false)} onPick={loadCadJobFile} />}
 
       <div className="jwy-shell" style={styles.shell}>
         <JobInfoCard
@@ -2047,7 +2061,7 @@ function GlobalStyles() {
   );
 }
 
-function TopBar({ jobInfo, pdfFileName, pdfStatus, pdfImport, onJsonUpload, onSavedQuoteUpload, onClear }) {
+function TopBar({ jobInfo, pdfFileName, pdfStatus, pdfImport, onJsonUpload, onSavedQuoteUpload, onOpenCadJobs, onClear }) {
   // Logo cropped to its artwork so it shows at a proper size; until it's ready
   // (or if it can't be cropped) the original file is shown in a cropping window.
   const [logo, setLogo] = useState(null);
@@ -2092,6 +2106,10 @@ function TopBar({ jobInfo, pdfFileName, pdfStatus, pdfImport, onJsonUpload, onSa
             </span>
             <input type="file" accept="application/json,.json" style={{ display: "none" }} onChange={onSavedQuoteUpload} />
           </label>
+          <button style={styles.uploadBtn} onClick={onOpenCadJobs} type="button" title="Jobs the CAD team has already exported: pick one to load it">
+            <i className="ti ti-cloud-download" aria-hidden="true" style={{ fontSize: 15, marginRight: 6 }} />
+            CAD jobs
+          </button>
           <label style={styles.uploadBtn}>
             <i className="ti ti-file-upload" aria-hidden="true" style={{ fontSize: 15, marginRight: 6 }} />
             Load order data
@@ -2880,6 +2898,183 @@ function blobToBase64(blob) {
     r.onerror = reject;
     r.readAsDataURL(blob);
   });
+}
+
+// ---- "CAD jobs": jobs the CAD team exported from the CAD Order Form (stored by netlify/functions/cad-jobs.mjs) ----
+function CadJobsDialog({ onClose, onPick }) {
+  const [key, setKey] = useState(() => getSavedReadKey());
+  const [keyDraft, setKeyDraft] = useState("");
+  const [query, setQuery] = useState("");
+  const [rows, setRows] = useState(null);
+  const [error, setError] = useState("");
+  const [busyId, setBusyId] = useState(null);
+  const [note, setNote] = useState("");
+
+  useEffect(() => {
+    if (!key) return undefined;
+    let alive = true;
+    const t = setTimeout(async () => {
+      setError("");
+      try {
+        const results = await listCadJobs(key, query.trim());
+        if (alive) setRows(results);
+      } catch (err) {
+        if (!alive) return;
+        if (err && err.status === 401) {
+          clearReadKey();
+          setKey("");
+          setError("That key was not accepted. Please enter it again.");
+        } else {
+          setError((err && err.message) || "Couldn't load the CAD jobs.");
+        }
+        setRows(null);
+      }
+    }, query ? 300 : 0);
+    return () => {
+      alive = false;
+      clearTimeout(t);
+    };
+  }, [key, query]);
+
+  const pick = async (r) => {
+    setBusyId(r.id);
+    setError("");
+    setNote("");
+    try {
+      const { file, missingImages } = await fetchCadJobFile(key, r.id);
+      if (missingImages) setNote(`${missingImages} picture(s) of this job were not saved by the CAD team.`);
+      onPick(file);
+    } catch (err) {
+      setError((err && err.message) || "Couldn't load that job.");
+      setBusyId(null);
+    }
+  };
+
+  const th = { ...styles.th, textAlign: "left" };
+  const td = { padding: "6px 5px", fontSize: 12.5, borderTop: `1px solid ${ROSE_TINT_STRONG}` };
+  return (
+    <div
+      onClick={onClose}
+      style={{ position: "fixed", inset: 0, background: "rgba(20,14,17,0.55)", zIndex: 900, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "6vh 12px", overflowY: "auto" }}
+    >
+      <div onClick={(e) => e.stopPropagation()} style={{ ...styles.card, width: "min(900px, 100%)", margin: 0 }} role="dialog" aria-label="CAD jobs">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 16 }}>CAD jobs</div>
+            <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>
+              Saved automatically when the CAD team clicks Download ZIP. Pick one to load it, same as “Load order data”.
+            </div>
+          </div>
+          <button type="button" onClick={onClose} aria-label="Close" style={{ border: "none", background: "transparent", fontSize: 22, cursor: "pointer", color: "var(--muted)" }}>
+            ×
+          </button>
+        </div>
+
+        {!key ? (
+          <form
+            style={{ marginTop: 14, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (keyDraft.trim()) {
+                saveReadKey(keyDraft.trim());
+                setKey(keyDraft.trim());
+                setKeyDraft("");
+              }
+            }}
+          >
+            <input
+              style={{ ...styles.inputSm, width: 260, height: 32 }}
+              type="password"
+              autoComplete="off"
+              placeholder="CAD jobs access key"
+              value={keyDraft}
+              onChange={(e) => setKeyDraft(e.target.value)}
+              autoFocus
+            />
+            <button type="submit" style={{ ...styles.uploadBtn, color: ROSE_DARK, border: `1px solid ${ROSE}` }}>
+              Open
+            </button>
+            <span style={{ fontSize: 11.5, color: "var(--muted)" }}>Asked once per browser.</span>
+          </form>
+        ) : (
+          <>
+            <div style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <input
+                style={{ ...styles.inputSm, width: 260, height: 32 }}
+                placeholder="Search Job#, Item#, designer…"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                autoFocus
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  clearReadKey();
+                  setKey("");
+                  setRows(null);
+                }}
+                style={{ border: "none", background: "transparent", color: "var(--muted)", fontSize: 11.5, textDecoration: "underline", cursor: "pointer" }}
+              >
+                Change key
+              </button>
+            </div>
+            {rows === null && !error && <div style={{ padding: "14px 4px", fontSize: 12.5, color: "var(--muted)" }}>Loading…</div>}
+            {rows && rows.length === 0 && <div style={{ padding: "14px 4px", fontSize: 12.5, color: "var(--muted)" }}>{query ? "No matching jobs." : "No jobs have been saved yet."}</div>}
+            {rows && rows.length > 0 && (
+              <div style={{ overflowX: "auto", marginTop: 10 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr>
+                      <th style={th}>Job #</th>
+                      <th style={th}>Item #</th>
+                      <th style={th}>Rev</th>
+                      <th style={th}>Designer</th>
+                      <th style={th}>Type</th>
+                      <th style={th}>Stones</th>
+                      <th style={th}>Pictures</th>
+                      <th style={th}>Saved</th>
+                      <th style={th} />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((r) => {
+                      const incomplete = r.images_saved < r.images_expected;
+                      return (
+                        <tr key={r.id}>
+                          <td style={{ ...td, fontWeight: 600 }}>{r.job_no || "—"}</td>
+                          <td style={td}>{r.item_no || "—"}</td>
+                          <td style={td}>{r.rev}</td>
+                          <td style={td}>{r.designer || "—"}</td>
+                          <td style={td}>{r.item_type || "—"}</td>
+                          <td style={td}>{r.stone_rows}</td>
+                          <td style={{ ...td, color: incomplete ? "#B5651D" : undefined }} title={incomplete ? "Some pictures did not upload from the CAD form" : ""}>
+                            {r.images_saved}/{r.images_expected}
+                          </td>
+                          <td style={td}>{r.created_at ? new Date(r.created_at).toLocaleString() : ""}</td>
+                          <td style={{ ...td, textAlign: "right" }}>
+                            <button
+                              type="button"
+                              disabled={busyId !== null}
+                              onClick={() => pick(r)}
+                              style={{ ...styles.uploadBtn, color: ROSE_DARK, border: `1px solid ${ROSE}`, padding: "4px 12px" }}
+                            >
+                              {busyId === r.id ? "Loading…" : "Load"}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
+        {error && <div style={{ ...styles.warnBanner, marginTop: 10 }}>{error}</div>}
+        {note && <div style={{ marginTop: 8, fontSize: 12, color: "#B5651D" }}>{note}</div>}
+      </div>
+    </div>
+  );
 }
 
 function Lightbox({ src, onClose }) {
