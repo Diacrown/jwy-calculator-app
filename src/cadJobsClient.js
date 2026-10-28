@@ -1,41 +1,50 @@
-// Browser side of the "CAD jobs" list: talks to netlify/functions/cad-jobs.mjs (same site, so no CORS).
-// The access key is typed once per browser and kept in localStorage; it is never part of the code.
+// Browser side of the "CAD jobs" dropdown and Designer Bank: talks to netlify/functions/cad-jobs.mjs.
+// Same site as the calculator, so nothing to type and no CORS; the function only answers this site's own pages.
 
 const ENDPOINT = "/.netlify/functions/cad-jobs";
-const KEY_STORE = "jwyCadJobsReadKey";
 const PICTURE_PARALLEL = 3;
 
-export function getSavedReadKey() {
-  try { return localStorage.getItem(KEY_STORE) || ""; } catch { return ""; }
-}
-export function saveReadKey(key) {
-  try { localStorage.setItem(KEY_STORE, key); } catch { /* storage blocked: asked again next time */ }
-}
-export function clearReadKey() {
-  try { localStorage.removeItem(KEY_STORE); } catch { /* nothing to clear */ }
-}
-
-async function get(key, params) {
-  const res = await fetch(`${ENDPOINT}?${params}`, { headers: { "x-cad-read-key": key }, cache: "no-store" });
+async function call(method, params) {
+  const res = await fetch(`${ENDPOINT}?${params}`, { method, cache: "no-store" });
   let body = null;
   try { body = await res.json(); } catch { body = null; }
   if (!res.ok) {
-    const err = new Error((body && body.error) || (res.status === 404 ? "CAD job storage is not available on this site yet." : `Request failed (${res.status})`));
+    const err = new Error(
+      (body && body.error) ||
+        (res.status === 404 ? "CAD job storage is not available on this site yet." : res.status === 503 ? "CAD job storage is not set up yet." : `Request failed (${res.status})`)
+    );
     err.status = res.status;
     throw err;
   }
   return body;
 }
 
-export async function listCadJobs(key, q) {
-  const body = await get(key, `action=list&limit=50${q ? `&q=${encodeURIComponent(q)}` : ""}`);
-  return Array.isArray(body.results) ? body.results : [];
+// [{ designer, total, unused, last_at }]  (designer "" = jobs saved without a designer)
+export async function listCadDesigners() {
+  const body = await call("GET", "action=designers");
+  return Array.isArray(body.designers) ? body.designers : [];
+}
+
+// view "recent": jobs nobody has loaded yet. view "bank": jobs already used (all: true adds the unused ones).
+// designer: undefined = every designer, "" = no designer, otherwise the name.
+export async function listCadJobs({ view = "recent", designer, q = "", all = false, limit = 30, offset = 0 } = {}) {
+  const p = new URLSearchParams({ action: "list", view, limit: String(limit), offset: String(offset) });
+  if (designer !== undefined && designer !== null) p.set("designer", designer);
+  if (q) p.set("q", q);
+  if (all) p.set("all", "1");
+  const body = await call("GET", p.toString());
+  return { rows: Array.isArray(body.results) ? body.results : [], hasMore: !!body.hasMore };
+}
+
+// Moves the job (and its older revisions) from "recent" into the designer's bank.
+export async function markCadJobUsed(id) {
+  return call("POST", `action=use&id=${encodeURIComponent(id)}`);
 }
 
 // Rebuilds the same .json the CAD form puts in its ZIP (pictures put back in) and returns it as a File,
 // so the existing "Load order data" import can read it unchanged.
-export async function fetchCadJobFile(key, id) {
-  const { meta, job, slots } = await get(key, `action=job&id=${encodeURIComponent(id)}`);
+export async function fetchCadJobFile(id) {
+  const { meta, job, slots } = await call("GET", `action=job&id=${encodeURIComponent(id)}`);
   const lists = { v: Array.isArray(job._VERSIONS) ? job._VERSIONS : [], r: Array.isArray(job._CLIENT_REF_IMAGES) ? job._CLIENT_REF_IMAGES : [] };
   let missingImages = 0;
   const queue = [...(slots || [])];
@@ -43,7 +52,7 @@ export async function fetchCadJobFile(key, id) {
     while (queue.length) {
       const slot = queue.shift();
       try {
-        const { dataUrl } = await get(key, `action=image&id=${encodeURIComponent(id)}&slot=${encodeURIComponent(slot)}`);
+        const { dataUrl } = await call("GET", `action=image&id=${encodeURIComponent(id)}&slot=${encodeURIComponent(slot)}`);
         const entry = lists[slot[0]][Number(slot.slice(1))];
         if (entry && dataUrl) entry.dataUrl = dataUrl; else missingImages++;
       } catch {

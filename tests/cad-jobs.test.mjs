@@ -12,13 +12,13 @@ const store = {
   async setJSON(k, v) { mem.set(k, JSON.stringify(v)); },
 };
 const db = makeDb(sql);
-const ENV = { CAD_JOBS_WRITE_KEY: "write-key-123456", CAD_JOBS_READ_KEY: "read-key-1234567", CAD_FORM_ORIGINS: "https://diacrown.github.io" };
+const ENV = { CAD_JOBS_WRITE_KEY: "write-key-123456", CAD_FORM_ORIGINS: "https://diacrown.github.io" };
 const ORIGIN = "https://diacrown.github.io";
 let t = Date.now();
 const call = (method, qs, { body, headers = {}, env = ENV } = {}) =>
   handler(new Request("https://calc.example/.netlify/functions/cad-jobs?" + qs, { method, headers: { "content-type": "application/json", ...headers }, body: body === undefined ? undefined : JSON.stringify(body) }), { env, store, db, now: t });
 const W = { "x-cad-key": ENV.CAD_JOBS_WRITE_KEY, origin: ORIGIN };
-const R = { "x-cad-read-key": ENV.CAD_JOBS_READ_KEY };
+const R = { "sec-fetch-site": "same-origin" };   // what the browser sends for the calculator page itself
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; console.log("PASS", m); } else { fail++; console.log("FAIL", m); } };
 const j = async (r) => r.json();
@@ -44,9 +44,15 @@ ok(r.status === 503, "no key configured -> 503 (feature off)");
 r = await call("POST", "action=save", { body: { job: job() }, headers: W, env: { CAD_JOBS_WRITE_KEY: "short" } });
 ok(r.status === 503, "too-short key -> 503");
 r = await call("GET", "action=list", {});
-ok(r.status === 401, "list without read key -> 401");
-r = await call("GET", "action=list", { headers: { "x-cad-read-key": ENV.CAD_JOBS_WRITE_KEY } });
-ok(r.status === 401, "write key does not open reads");
+ok(r.status === 403, "read with no browser headers -> 403");
+r = await call("GET", "action=list", { headers: { "sec-fetch-site": "cross-site", origin: "https://evil.example" } });
+ok(r.status === 403, "read from another website -> 403");
+r = await call("GET", "action=list", { headers: { origin: "https://calc.example" } });
+ok(r.status === 200, "older browser: same Origin accepted");
+r = await call("GET", "action=list", { headers: { origin: "https://evil.example" } });
+ok(r.status === 403, "older browser: other Origin refused");
+r = await call("POST", "action=use&id=1", {});
+ok(r.status === 403, "'use' without same-site headers -> 403");
 
 // save
 r = await call("POST", "action=save", { body: { job: job() }, headers: W });
@@ -81,17 +87,30 @@ ok(r.status === 400, "no job/item no -> 400");
 r = await call("POST", "action=save", { body: { job: { JobNo: "X", _VERSIONS: [{ id: 1, junk: "x".repeat(1_600_000) }] } }, headers: W });
 ok(r.status === 413, "huge job json -> 413");
 
-// reads
+// reads: recent = unused only
 r = await call("GET", "action=list", { headers: R }); b = await j(r);
-ok(r.status === 200 && b.results.length === 3 && b.results[0].id === 3, "list: newest first, 3 rows");
+ok(r.status === 200 && b.results.length === 3 && b.results[0].id === 3 && b.results.every((x) => x.used_at === null), "recent: newest first, 3 unused rows");
 r = await call("GET", "action=list&q=j100", { headers: R }); b = await j(r);
 ok(b.results.length === 2 && b.results.every((x) => x.job_no === "J100"), "search by job no (case-insensitive)");
+r = await call("GET", "action=list&q=ma5", { headers: R }); b = await j(r);
+ok(b.results.length === 3, "search by item no");
 r = await call("GET", "action=list&q=som", { headers: R }); b = await j(r);
-ok(b.results.length === 1 && b.results[0].designer === "Som", "search by designer");
+ok(b.results.length === 1 && b.results[0].designer === "Som", "search by designer name");
 r = await call("GET", "action=list&q=" + encodeURIComponent("%"), { headers: R }); b = await j(r);
 ok(b.results.length === 0, "a lone % matches literally (nothing)");
 r = await call("GET", "action=list&q=" + encodeURIComponent("'; DROP TABLE cad_jobs;--"), { headers: R }); b = await j(r);
 ok(r.status === 200 && b.results.length === 0 && (await sql`SELECT count(*)::int AS n FROM cad_jobs`)[0].n === 3, "SQL-injection-style search is just text");
+r = await call("GET", "action=designers", { headers: R }); b = await j(r);
+const des = Object.fromEntries(b.designers.map((d) => [d.designer, d]));
+ok(des.Pritam.total === 2 && des.Pritam.unused === 2 && des.Som.unused === 1, "designers: counts per designer");
+r = await call("GET", "action=list&designer=Pritam", { headers: R }); b = await j(r);
+ok(b.results.length === 2 && b.results.every((x) => x.designer === "Pritam"), "recent filtered to one designer");
+r = await call("GET", "action=list&designer=Nobody", { headers: R }); b = await j(r);
+ok(b.results.length === 0, "unknown designer -> empty");
+r = await call("GET", "action=list&limit=1", { headers: R }); b = await j(r);
+ok(b.results.length === 1 && b.hasMore === true, "limit + hasMore");
+r = await call("GET", "action=list&limit=2&offset=2", { headers: R }); b = await j(r);
+ok(b.results.length === 1 && b.hasMore === false, "offset paging");
 r = await call("GET", "action=job&id=1", { headers: R }); b = await j(r);
 ok(b.job.JobNo === "J100" && b.meta.rev === 1 && b.meta.stone_rows === 1 && b.slots.length === 2, "job returns json + meta (1 stone row)");
 r = await call("GET", "action=image&id=1&slot=v0", { headers: R }); b = await j(r);
@@ -100,15 +119,42 @@ r = await call("GET", "action=job&id=77", { headers: R }); ok(r.status === 404, 
 r = await call("GET", "action=image&id=1&slot=v5", { headers: R }); ok(r.status === 404, "unknown slot -> 404");
 r = await call("GET", "action=job&id=abc", { headers: R }); ok(r.status === 400, "bad id -> 400");
 
-// lock-out
-for (let i = 0; i < MAX_FAILS; i++) await call("GET", "action=list", { headers: { "x-cad-read-key": "wrong-wrong-wrong" } });
-r = await call("GET", "action=list", { headers: R });
-ok(r.status === 429, "after " + MAX_FAILS + " wrong tries even the right read key is locked out");
-t += 16 * 60 * 1000;
-r = await call("GET", "action=list", { headers: R });
-ok(r.status === 200, "lock-out ends after 15 minutes");
+// using a job moves it (and its older revisions) from recent into the bank
+r = await call("GET", "action=list&view=bank", { headers: R }); b = await j(r);
+ok(b.results.length === 0, "bank is empty before anything is used");
+r = await call("POST", "action=use&id=2", { headers: R }); b = await j(r);
+ok(r.status === 200 && b.marked === 2, "using J100 rev 2 marks rev 2 and rev 1 as used");
+r = await call("POST", "action=use&id=99", { headers: R }); ok(r.status === 404, "use unknown job -> 404");
+r = await call("GET", "action=list", { headers: R }); b = await j(r);
+ok(b.results.length === 1 && b.results[0].job_no === "J200", "recent now shows only the unused job");
+r = await call("GET", "action=list&q=j100", { headers: R }); b = await j(r);
+ok(b.results.length === 0, "searching recent no longer finds a used job");
+r = await call("GET", "action=list&view=bank&designer=Pritam", { headers: R }); b = await j(r);
+ok(b.results.length === 2 && b.results.every((x) => x.used_at), "Pritam's bank holds both used revisions");
+r = await call("GET", "action=list&view=bank&designer=Som", { headers: R }); b = await j(r);
+ok(b.results.length === 0, "Som's bank is empty (not used yet)");
+r = await call("GET", "action=list&view=bank&designer=Som&all=1", { headers: R }); b = await j(r);
+ok(b.results.length === 1, "bank with 'include not used yet' lists Som's job");
+r = await call("GET", "action=list&view=bank&q=ma5", { headers: R }); b = await j(r);
+ok(b.results.length === 2, "bank search across designers");
+r = await call("GET", "action=designers", { headers: R }); b = await j(r);
+const des2 = Object.fromEntries(b.designers.map((d) => [d.designer, d]));
+ok(des2.Pritam.unused === 0 && des2.Pritam.total === 2 && des2.Som.unused === 1, "designer counts follow the move");
+// a newer re-export after use shows up as recent again
+r = await call("POST", "action=save", { body: { job: job() }, headers: W }); b = await j(r);
+ok(b.rev === 3, "re-export after use -> rev 3");
+r = await call("GET", "action=list&designer=Pritam", { headers: R }); b = await j(r);
+ok(b.results.length === 1 && b.results[0].rev === 3, "the new revision is recent again; the used ones stay in the bank");
+
+// save lock-out (8 wrong write keys in 15 minutes) and method checks
+for (let i = 0; i < MAX_FAILS; i++) await call("POST", "action=save", { body: { job: job() }, headers: { ...W, "x-cad-key": "wrong-wrong-wrong" } });
 r = await call("POST", "action=save", { body: { job: job() }, headers: W });
-ok(r.status === 200, "write side unaffected by read lock-out");
+ok(r.status === 429, "after " + MAX_FAILS + " wrong tries even the right write key is locked out");
+r = await call("GET", "action=list", { headers: R });
+ok(r.status === 200, "reading is unaffected by the save lock-out");
+t += 16 * 60 * 1000;
+r = await call("POST", "action=save", { body: { job: job() }, headers: W });
+ok(r.status === 200, "lock-out ends after 15 minutes");
 r = await call("PUT", "action=save", { headers: W }); ok(r.status === 405, "other methods -> 405");
 
 console.log(`\n${pass} passed, ${fail} failed`);

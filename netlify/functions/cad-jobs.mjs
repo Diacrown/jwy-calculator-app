@@ -14,18 +14,24 @@ import { getStore } from "@netlify/blobs";
 //   POST ?action=image  body { id, slot, dataUrl } -> { ok, complete }
 //   header x-cad-key must equal the CAD_JOBS_WRITE_KEY environment variable.
 //
-// READ (called by the calculator, same address as this function)
-//   GET ?action=list&q=...   newest first (q = part of Job# / Item# / designer)
-//   GET ?action=job&id=N     { meta, job, slots:[...] }
-//   GET ?action=image&id=N&slot=v0   { dataUrl }
-//   header x-cad-read-key must equal the CAD_JOBS_READ_KEY environment variable.
+// READ + "used" mark (called by the calculator page itself, same address as this function; no key to type)
+//   GET  ?action=designers                        [{ designer, total, unused, last_at }]
+//   GET  ?action=list&view=recent|bank&designer=&q=&limit=&offset=
+//          recent = jobs nobody has loaded into the calculator yet (newest first)
+//          bank   = jobs already used (add &all=1 to include the not-yet-used ones too)
+//   GET  ?action=job&id=N                         { meta, job, slots:[...] }
+//   GET  ?action=image&id=N&slot=v0               { dataUrl }
+//   POST ?action=use&id=N                         marks the job (and its older revisions) as used -> it moves
+//                                                  from "recent" into that designer's bank
 //
 // Safety
-//  * Both keys live only in Netlify environment variables. If a key is missing or shorter than 12
-//    characters that half of the feature is switched off (503), like the developer console.
-//  * Keys are compared in constant time; 8 wrong tries in 15 minutes lock that half for the rest of the window.
-//  * Cross-origin writes are accepted only from the addresses in CAD_FORM_ORIGINS
-//    (comma separated, default https://diacrown.github.io). Replies never use "*".
+//  * Saving needs the write key (Netlify variable CAD_JOBS_WRITE_KEY, >= 12 characters, else 503). Compared in
+//    constant time; 8 wrong tries in 15 minutes lock saving for the rest of the window.
+//  * Reading needs no key, but only the calculator's own page may do it: a browser request must be same-origin
+//    (Sec-Fetch-Site / Origin / Referer). This keeps other websites out; like the rest of this app's functions it
+//    is not a login, so anyone who can reach the calculator site and forge those headers could read.
+//  * Cross-origin saving is accepted only from the addresses in CAD_FORM_ORIGINS (comma separated, default
+//    https://diacrown.github.io). Replies never use "*".
 //  * Size caps on everything; nothing the caller sends is ever used as a file path or in SQL text.
 //  * Storage: Postgres table cad_jobs (created on first use, safe to run repeatedly) holds the list,
 //    Netlify Blobs store "cad-jobs" holds the job JSON and the pictures.
@@ -43,6 +49,18 @@ const IMG_RE = /^data:image\/(png|jpe?g|webp);base64,[A-Za-z0-9+/=]+$/;
 const digest = (s) => crypto.createHash("sha256").update(String(s)).digest();
 const sameKey = (given, expected) => crypto.timingSafeEqual(digest(given || ""), digest(expected));
 const clean = (v, max = 120) => String(v == null ? "" : v).replace(/\s+/g, " ").trim().slice(0, max);
+
+// A read/"use" request is accepted only when the browser says it comes from this very site.
+function isSameSite(req) {
+  const sfs = req.headers.get("sec-fetch-site");
+  if (sfs) return sfs === "same-origin";
+  const host = new URL(req.url).host;
+  for (const h of ["origin", "referer"]) {
+    const v = req.headers.get(h);
+    if (v) { try { return new URL(v).host === host; } catch { return false; } }
+  }
+  return false;
+}
 
 function allowedOrigins(env) {
   return String(env.CAD_FORM_ORIGINS || DEFAULT_ORIGINS).split(",").map((s) => s.trim().replace(/\/+$/, "")).filter(Boolean);
@@ -103,10 +121,13 @@ export function makeDb(sql) {
       stone_rows INTEGER NOT NULL DEFAULT 0,
       images_expected INTEGER NOT NULL DEFAULT 0,
       images_saved INTEGER NOT NULL DEFAULT 0,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      used_at TIMESTAMPTZ
     )`;
+    await sql`ALTER TABLE cad_jobs ADD COLUMN IF NOT EXISTS used_at TIMESTAMPTZ`;
     await sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_cad_jobs_job_item_rev ON cad_jobs (job_no, item_no, rev)`;
     await sql`CREATE INDEX IF NOT EXISTS idx_cad_jobs_created ON cad_jobs (created_at DESC)`;
+    await sql`CREATE INDEX IF NOT EXISTS idx_cad_jobs_designer ON cad_jobs (designer, created_at DESC)`;
     ready = true;
   };
   return {
@@ -137,22 +158,38 @@ export function makeDb(sql) {
     async get(id) {
       await ensure();
       const rows = await sql`SELECT id, job_no, item_no, rev, designer, vendor_item_no, item_type, stone_rows,
-                                    images_expected, images_saved, created_at FROM cad_jobs WHERE id = ${id}`;
+                                    images_expected, images_saved, created_at, used_at FROM cad_jobs WHERE id = ${id}`;
       return rows[0] || null;
     },
-    async list(q, limit) {
+    // view "recent" = not used yet; "bank" = used (all = true adds the unused ones). designer: null = everyone, "" = no designer.
+    async list({ view, designer, q, all, limit, offset }) {
       await ensure();
-      if (!q) {
-        return sql`SELECT id, job_no, item_no, rev, designer, vendor_item_no, item_type, stone_rows,
-                          images_expected, images_saved, created_at
-                   FROM cad_jobs ORDER BY created_at DESC, id DESC LIMIT ${limit}`;
-      }
-      const p = "%" + q.replace(/[\\%_]/g, (c) => "\\" + c) + "%";
+      const mode = view === "bank" ? (all ? "all" : "used") : "unused";
+      const p = q ? "%" + q.replace(/[\\%_]/g, (c) => "\\" + c) + "%" : null;
       return sql`SELECT id, job_no, item_no, rev, designer, vendor_item_no, item_type, stone_rows,
-                        images_expected, images_saved, created_at
+                        images_expected, images_saved, created_at, used_at
                  FROM cad_jobs
-                 WHERE job_no ILIKE ${p} OR item_no ILIKE ${p} OR designer ILIKE ${p} OR vendor_item_no ILIKE ${p}
-                 ORDER BY created_at DESC, id DESC LIMIT ${limit}`;
+                 WHERE (${mode}::text = 'all' OR (${mode}::text = 'unused' AND used_at IS NULL) OR (${mode}::text = 'used' AND used_at IS NOT NULL))
+                   AND (${designer}::text IS NULL OR designer = ${designer}::text)
+                   AND (${p}::text IS NULL OR job_no ILIKE ${p}::text OR item_no ILIKE ${p}::text OR vendor_item_no ILIKE ${p}::text OR designer ILIKE ${p}::text)
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT ${limit} OFFSET ${offset}`;
+    },
+    async designers() {
+      await ensure();
+      return sql`SELECT designer, COUNT(*)::int AS total, COUNT(*) FILTER (WHERE used_at IS NULL)::int AS unused,
+                        MAX(created_at) AS last_at
+                 FROM cad_jobs GROUP BY designer ORDER BY unused DESC, last_at DESC`;
+    },
+    // Using a job also retires its older revisions (same Job + Item); a newer re-export stays "recent".
+    async markUsed(id) {
+      await ensure();
+      const rows = await sql`UPDATE cad_jobs SET used_at = now()
+                             WHERE job_no = (SELECT job_no FROM cad_jobs WHERE id = ${id})
+                               AND item_no = (SELECT item_no FROM cad_jobs WHERE id = ${id})
+                               AND rev <= (SELECT rev FROM cad_jobs WHERE id = ${id})
+                             RETURNING id`;
+      return rows.length;
     },
   };
 }
@@ -181,7 +218,16 @@ export default async (req, ctx = {}) => {
     const store = ctx.store || getStore("cad-jobs");
     const db = ctx.db || makeDb(neon());
 
-    // ---------------- writes ----------------
+    // ---------------- "used" mark (calculator page, same site, no key) ----------------
+    if (req.method === "POST" && action === "use") {
+      if (!isSameSite(req)) return reply(req, env, 403, { error: "Not allowed." });
+      const id = Number(url.searchParams.get("id"));
+      if (!Number.isInteger(id) || id < 1) return reply(req, env, 400, { error: "Bad id." });
+      const n = await db.markUsed(id);
+      return n ? reply(req, env, 200, { ok: true, marked: n }) : reply(req, env, 404, { error: "Job not found." });
+    }
+
+    // ---------------- writes (CAD form) ----------------
     if (req.method === "POST") {
       const origin = req.headers.get("origin");
       if (origin && !allowedOrigins(env).includes(origin)) return reply(req, env, 403, { error: "This address is not allowed to save jobs." });
@@ -233,15 +279,24 @@ export default async (req, ctx = {}) => {
       return reply(req, env, 400, { error: "Unknown action." });
     }
 
-    // ---------------- reads ----------------
+    // ---------------- reads (calculator page, same site, no key) ----------------
     if (req.method === "GET") {
-      const auth = await checkKey("read", req.headers.get("x-cad-read-key"), env.CAD_JOBS_READ_KEY, store, now);
-      if (!auth.ok) return reply(req, env, auth.status, { error: auth.error });
+      if (!isSameSite(req)) return reply(req, env, 403, { error: "Not allowed." });
 
+      if (action === "designers") return reply(req, env, 200, { designers: await db.designers() });
       if (action === "list") {
-        const q = clean(url.searchParams.get("q"), 60);
-        const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get("limit") || "50", 10) || 50));
-        return reply(req, env, 200, { results: await db.list(q, limit) });
+        const sp = url.searchParams;
+        const limit = Math.min(100, Math.max(1, parseInt(sp.get("limit") || "30", 10) || 30));
+        const offset = Math.min(100000, Math.max(0, parseInt(sp.get("offset") || "0", 10) || 0));
+        const rows = await db.list({
+          view: sp.get("view") === "bank" ? "bank" : "recent",
+          designer: sp.has("designer") ? clean(sp.get("designer"), 60) : null,
+          q: clean(sp.get("q"), 60),
+          all: sp.get("all") === "1",
+          limit,
+          offset,
+        });
+        return reply(req, env, 200, { results: rows, hasMore: rows.length === limit });
       }
       const id = Number(url.searchParams.get("id"));
       if (!Number.isInteger(id) || id < 1) return reply(req, env, 400, { error: "Bad id." });

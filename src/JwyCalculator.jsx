@@ -15,7 +15,7 @@ import {
 } from "./defaultData.js";
 import { POLL_INTERVAL_MS, USE_LIVE_METAL_RATES } from "./config.js";
 import { parseOrderFormJson, fixShapeSpelling, lgdBandShape } from "./pdfParser.js";
-import { listCadJobs, fetchCadJobFile, getSavedReadKey, saveReadKey, clearReadKey } from "./cadJobsClient.js";
+import { listCadJobs, listCadDesigners, fetchCadJobFile, markCadJobUsed } from "./cadJobsClient.js";
 import { QUOTE_STAGES, stageLabel, highestVersion, stageOnly } from "./quoteVersions.js";
 import { pdf } from "@react-pdf/renderer";
 import * as XLSX from "xlsx";
@@ -953,9 +953,10 @@ function JwyCalculatorApp() {
   // ---- CAD jobs saved by the CAD team (the "CAD jobs" button in the top bar) ----
   // The CAD Order Form stores every exported job in the cloud; picking one here runs it through the exact same
   // import as "Load order data" (handleJsonUpload), so nothing about the import itself is different.
-  const [cadJobsOpen, setCadJobsOpen] = useState(false);
+  const [cadJobsOpen, setCadJobsOpen] = useState(null); // null | "panel" (dropdown) | "bank" (Designer Bank)
+  const [cadBankQuery, setCadBankQuery] = useState("");
   const loadCadJobFile = (file) => {
-    setCadJobsOpen(false);
+    setCadJobsOpen(null);
     handleJsonUpload({ target: { files: [file], value: "" } });
   };
 
@@ -1880,10 +1881,20 @@ function JwyCalculatorApp() {
         pdfImport={pdfImport}
         onJsonUpload={handleJsonUpload}
         onSavedQuoteUpload={handleSavedQuoteUpload}
-        onOpenCadJobs={() => setCadJobsOpen(true)}
+        onOpenCadJobs={() => setCadJobsOpen("panel")}
         onClear={clearAll}
       />
-      {cadJobsOpen && <CadJobsDialog onClose={() => setCadJobsOpen(false)} onPick={loadCadJobFile} />}
+      {cadJobsOpen === "panel" && (
+        <CadJobsPanel
+          onClose={() => setCadJobsOpen(null)}
+          onPick={loadCadJobFile}
+          onOpenBank={(q) => {
+            setCadBankQuery(q || "");
+            setCadJobsOpen("bank");
+          }}
+        />
+      )}
+      {cadJobsOpen === "bank" && <CadDesignerBank initialQuery={cadBankQuery} onClose={() => setCadJobsOpen(null)} onPick={loadCadJobFile} />}
 
       <div className="jwy-shell" style={styles.shell}>
         <JobInfoCard
@@ -2903,49 +2914,264 @@ function blobToBase64(blob) {
 }
 
 // ---- "CAD jobs": jobs the CAD team exported from the CAD Order Form (stored by netlify/functions/cad-jobs.mjs) ----
-function CadJobsDialog({ onClose, onPick }) {
-  const [key, setKey] = useState(() => getSavedReadKey());
-  const [keyDraft, setKeyDraft] = useState("");
+// Dropdown = search + a tab per designer with their latest jobs nobody has opened yet. Opening a job here moves it
+// (and its older revisions) out of those lists into that designer's Designer Bank, which keeps everything.
+const cadAgo = (iso) => {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const mins = Math.round((Date.now() - d.getTime()) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  if (mins < 60 * 24) return `${Math.round(mins / 60)} h ago`;
+  if (mins < 60 * 24 * 7) return `${Math.round(mins / 1440)} d ago`;
+  return d.toLocaleDateString();
+};
+const cadDesignerLabel = (d) => d || "No designer";
+
+// Fetches one job's file and hands it over; the job is marked used so it leaves the recent lists.
+async function openCadJob(row, onPick) {
+  const { file, missingImages } = await fetchCadJobFile(row.id);
+  markCadJobUsed(row.id).catch(() => {});
+  onPick(file);
+  return missingImages;
+}
+
+function CadJobsPanel({ onClose, onPick, onOpenBank }) {
+  const [designers, setDesigners] = useState([]);
+  const [tab, setTab] = useState("all"); // "all" or a designer's name
   const [query, setQuery] = useState("");
   const [rows, setRows] = useState(null);
   const [error, setError] = useState("");
   const [busyId, setBusyId] = useState(null);
-  const [note, setNote] = useState("");
 
   useEffect(() => {
-    if (!key) return undefined;
+    let alive = true;
+    listCadDesigners()
+      .then((d) => alive && setDesigners(d))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
     let alive = true;
     const t = setTimeout(async () => {
       setError("");
       try {
-        const results = await listCadJobs(key, query.trim());
-        if (alive) setRows(results);
+        const r = await listCadJobs({ view: "recent", designer: tab === "all" ? undefined : tab, q: query.trim(), limit: tab === "all" ? 30 : 15 });
+        if (alive) setRows(r.rows);
       } catch (err) {
         if (!alive) return;
-        if (err && err.status === 401) {
-          clearReadKey();
-          setKey("");
-          setError("That key was not accepted. Please enter it again.");
-        } else {
-          setError((err && err.message) || "Couldn't load the CAD jobs.");
-        }
-        setRows(null);
+        setError((err && err.message) || "Couldn't load the CAD jobs.");
+        setRows([]);
       }
-    }, query ? 300 : 0);
+    }, query ? 250 : 0);
     return () => {
       alive = false;
       clearTimeout(t);
     };
-  }, [key, query]);
+  }, [tab, query]);
+
+  const pick = async (r) => {
+    setBusyId(r.id);
+    setError("");
+    try {
+      await openCadJob(r, onPick);
+    } catch (err) {
+      setError((err && err.message) || "Couldn't load that job.");
+      setBusyId(null);
+    }
+  };
+
+  const withNew = designers.filter((d) => d.unused > 0);
+  const totalNew = withNew.reduce((n, d) => n + d.unused, 0);
+  const tabBtn = (active) => ({
+    border: "none",
+    background: active ? ROSE_TINT_STRONG : "transparent",
+    color: active ? ROSE_DARK : "var(--muted)",
+    fontWeight: active ? 700 : 500,
+    fontSize: 12,
+    padding: "5px 9px",
+    borderRadius: 14,
+    cursor: "pointer",
+    whiteSpace: "nowrap",
+  });
+  const td = { padding: "6px 5px", fontSize: 12.5, borderTop: `1px solid ${ROSE_TINT_STRONG}`, whiteSpace: "nowrap" };
+
+  return (
+    <>
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 890 }} />
+      <div
+        role="dialog"
+        aria-label="CAD jobs"
+        style={{
+          position: "fixed",
+          top: 64,
+          right: 12,
+          width: "min(560px, calc(100vw - 24px))",
+          maxHeight: "78vh",
+          overflowY: "auto",
+          zIndex: 900,
+          background: "#fff",
+          border: `1px solid ${ROSE_TINT_STRONG}`,
+          borderRadius: 10,
+          boxShadow: "0 10px 34px rgba(0,0,0,0.22)",
+          padding: 12,
+        }}
+      >
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <input
+            style={{ ...styles.inputSm, flex: 1, width: "auto", height: 32 }}
+            placeholder="Search Job# or Item#…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            autoFocus
+          />
+          <button type="button" onClick={onClose} aria-label="Close" style={{ border: "none", background: "transparent", fontSize: 20, cursor: "pointer", color: "var(--muted)" }}>
+            ×
+          </button>
+        </div>
+
+        <div style={{ display: "flex", gap: 4, marginTop: 8, overflowX: "auto", paddingBottom: 2, alignItems: "center" }}>
+          <button type="button" style={tabBtn(tab === "all")} onClick={() => setTab("all")}>
+            All recent{totalNew ? ` (${totalNew})` : ""}
+          </button>
+          {withNew.map((d) => (
+            <button key={d.designer || "__none"} type="button" style={tabBtn(tab === d.designer)} onClick={() => setTab(d.designer)}>
+              {cadDesignerLabel(d.designer)} ({d.unused})
+            </button>
+          ))}
+          <span style={{ flex: 1 }} />
+          <button
+            type="button"
+            onClick={() => onOpenBank(query.trim())}
+            style={{ ...tabBtn(false), color: ROSE_DARK, border: `1px solid ${ROSE}`, fontWeight: 600 }}
+            title="Every job each designer has done, including the ones already opened here"
+          >
+            Designer Bank ›
+          </button>
+        </div>
+
+        {rows === null && !error && <div style={{ padding: "12px 4px", fontSize: 12.5, color: "var(--muted)" }}>Loading…</div>}
+        {rows && rows.length === 0 && !error && (
+          <div style={{ padding: "12px 4px", fontSize: 12.5, color: "var(--muted)" }}>
+            {query ? (
+              <>
+                No recent job matches “{query}”. It may already be in the Designer Bank.{" "}
+                <button type="button" onClick={() => onOpenBank(query.trim())} style={{ border: "none", background: "transparent", color: ROSE_DARK, textDecoration: "underline", cursor: "pointer", fontSize: 12.5 }}>
+                  Search the Designer Bank
+                </button>
+              </>
+            ) : tab === "all" ? (
+              "No new CAD jobs waiting. Jobs you have opened are in the Designer Bank."
+            ) : (
+              `No new jobs from ${cadDesignerLabel(tab)}.`
+            )}
+          </div>
+        )}
+        {rows && rows.length > 0 && (
+          <div style={{ overflowX: "auto", marginTop: 6 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <tbody>
+                {rows.map((r) => {
+                  const incomplete = r.images_saved < r.images_expected;
+                  return (
+                    <tr key={r.id}>
+                      <td style={{ ...td, fontWeight: 600 }}>{r.job_no || "—"}</td>
+                      <td style={td}>{r.item_no || "—"}</td>
+                      <td style={{ ...td, color: "var(--muted)" }}>{`rev ${r.rev}`}</td>
+                      {tab === "all" && <td style={{ ...td, color: "var(--muted)" }}>{cadDesignerLabel(r.designer)}</td>}
+                      <td style={{ ...td, color: incomplete ? "#B5651D" : "var(--muted)" }} title={incomplete ? "Some pictures did not upload from the CAD form" : new Date(r.created_at).toLocaleString()}>
+                        {incomplete ? "pictures missing · " : ""}
+                        {cadAgo(r.created_at)}
+                      </td>
+                      <td style={{ ...td, textAlign: "right" }}>
+                        <button
+                          type="button"
+                          disabled={busyId !== null}
+                          onClick={() => pick(r)}
+                          style={{ ...styles.uploadBtn, color: ROSE_DARK, border: `1px solid ${ROSE}`, padding: "3px 12px" }}
+                        >
+                          {busyId === r.id ? "Loading…" : "Load"}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {error && <div style={{ ...styles.warnBanner, marginTop: 8 }}>{error}</div>}
+      </div>
+    </>
+  );
+}
+
+function CadDesignerBank({ initialQuery, onClose, onPick }) {
+  const [designers, setDesigners] = useState([]);
+  const [designer, setDesigner] = useState(undefined); // undefined = all designers
+  const [query, setQuery] = useState(initialQuery || "");
+  const [showAll, setShowAll] = useState(false); // also the jobs nobody has opened yet
+  const [rows, setRows] = useState(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [error, setError] = useState("");
+  const [busyId, setBusyId] = useState(null);
+  const [note, setNote] = useState("");
+  const [reload, setReload] = useState(0);
+
+  useEffect(() => {
+    let alive = true;
+    listCadDesigners()
+      .then((d) => alive && setDesigners(d))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    setRows(null);
+    const t = setTimeout(async () => {
+      setError("");
+      try {
+        const r = await listCadJobs({ view: "bank", designer, q: query.trim(), all: showAll, limit: 40 });
+        if (alive) {
+          setRows(r.rows);
+          setHasMore(r.hasMore);
+        }
+      } catch (err) {
+        if (!alive) return;
+        setError((err && err.message) || "Couldn't load the Designer Bank.");
+        setRows([]);
+        setHasMore(false);
+      }
+    }, query ? 250 : 0);
+    return () => {
+      alive = false;
+      clearTimeout(t);
+    };
+  }, [designer, query, showAll, reload]);
+
+  const loadMore = async () => {
+    try {
+      const r = await listCadJobs({ view: "bank", designer, q: query.trim(), all: showAll, limit: 40, offset: rows.length });
+      setRows((prev) => [...prev, ...r.rows]);
+      setHasMore(r.hasMore);
+    } catch (err) {
+      setError((err && err.message) || "Couldn't load more.");
+    }
+  };
 
   const pick = async (r) => {
     setBusyId(r.id);
     setError("");
     setNote("");
     try {
-      const { file, missingImages } = await fetchCadJobFile(key, r.id);
-      if (missingImages) setNote(`${missingImages} picture(s) of this job were not saved by the CAD team.`);
-      onPick(file);
+      const missing = await openCadJob(r, onPick);
+      if (missing) setNote(`${missing} picture(s) of this job were not saved by the CAD team.`);
     } catch (err) {
       setError((err && err.message) || "Couldn't load that job.");
       setBusyId(null);
@@ -2953,18 +3179,35 @@ function CadJobsDialog({ onClose, onPick }) {
   };
 
   const th = { ...styles.th, textAlign: "left" };
-  const td = { padding: "6px 5px", fontSize: 12.5, borderTop: `1px solid ${ROSE_TINT_STRONG}` };
+  const td = { padding: "6px 5px", fontSize: 12.5, borderTop: `1px solid ${ROSE_TINT_STRONG}`, whiteSpace: "nowrap" };
+  const side = (active) => ({
+    display: "flex",
+    justifyContent: "space-between",
+    gap: 8,
+    width: "100%",
+    textAlign: "left",
+    border: "none",
+    background: active ? ROSE_TINT_STRONG : "transparent",
+    color: active ? ROSE_DARK : INK,
+    fontWeight: active ? 700 : 500,
+    fontSize: 12.5,
+    padding: "6px 8px",
+    borderRadius: 6,
+    cursor: "pointer",
+  });
+  const sumTotal = designers.reduce((n, d) => n + d.total, 0);
+
   return (
     <div
       onClick={onClose}
-      style={{ position: "fixed", inset: 0, background: "rgba(20,14,17,0.55)", zIndex: 900, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "6vh 12px", overflowY: "auto" }}
+      style={{ position: "fixed", inset: 0, background: "rgba(20,14,17,0.55)", zIndex: 900, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "5vh 12px", overflowY: "auto" }}
     >
-      <div onClick={(e) => e.stopPropagation()} style={{ ...styles.card, width: "min(900px, 100%)", margin: 0 }} role="dialog" aria-label="CAD jobs">
+      <div onClick={(e) => e.stopPropagation()} style={{ ...styles.card, width: "min(1000px, 100%)", margin: 0 }} role="dialog" aria-label="Designer Bank">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
           <div>
-            <div style={{ fontWeight: 700, fontSize: 16 }}>CAD jobs</div>
+            <div style={{ fontWeight: 700, fontSize: 16 }}>Designer Bank</div>
             <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>
-              Saved automatically when the CAD team clicks Download ZIP. Pick one to load it, same as “Load order data”.
+              Every CAD job each designer has done that has been opened in the calculator. Pick one to load it again.
             </div>
           </div>
           <button type="button" onClick={onClose} aria-label="Close" style={{ border: "none", background: "transparent", fontSize: 22, cursor: "pointer", color: "var(--muted)" }}>
@@ -2972,69 +3215,56 @@ function CadJobsDialog({ onClose, onPick }) {
           </button>
         </div>
 
-        {!key ? (
-          <form
-            style={{ marginTop: 14, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (keyDraft.trim()) {
-                saveReadKey(keyDraft.trim());
-                setKey(keyDraft.trim());
-                setKeyDraft("");
-              }
-            }}
-          >
-            <input
-              style={{ ...styles.inputSm, width: 260, height: 32 }}
-              type="password"
-              autoComplete="off"
-              placeholder="CAD jobs access key"
-              value={keyDraft}
-              onChange={(e) => setKeyDraft(e.target.value)}
-              autoFocus
-            />
-            <button type="submit" style={{ ...styles.uploadBtn, color: ROSE_DARK, border: `1px solid ${ROSE}` }}>
-              Open
+        <div style={{ display: "flex", gap: 14, marginTop: 12, flexWrap: "wrap", alignItems: "flex-start" }}>
+          <div style={{ flex: "0 0 200px", minWidth: 160, display: "flex", flexDirection: "column", gap: 2 }}>
+            <button type="button" style={side(designer === undefined)} onClick={() => setDesigner(undefined)}>
+              <span>All designers</span>
+              <span style={{ color: "var(--muted)" }}>{sumTotal}</span>
             </button>
-            <span style={{ fontSize: 11.5, color: "var(--muted)" }}>Asked once per browser.</span>
-          </form>
-        ) : (
-          <>
-            <div style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            {designers.map((d) => (
+              <button key={d.designer || "__none"} type="button" style={side(designer === d.designer)} onClick={() => setDesigner(d.designer)} title={`${d.total - d.unused} opened · ${d.unused} not opened yet`}>
+                <span>{cadDesignerLabel(d.designer)}</span>
+                <span style={{ color: "var(--muted)" }}>{d.total - d.unused}/{d.total}</span>
+              </button>
+            ))}
+            <div style={{ fontSize: 11, color: "var(--muted)", padding: "6px 8px" }}>opened / total</div>
+          </div>
+
+          <div style={{ flex: 1, minWidth: 280 }}>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
               <input
-                style={{ ...styles.inputSm, width: 260, height: 32 }}
+                style={{ ...styles.inputSm, width: 240, height: 32 }}
                 placeholder="Search Job#, Item#, designer…"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 autoFocus
               />
-              <button
-                type="button"
-                onClick={() => {
-                  clearReadKey();
-                  setKey("");
-                  setRows(null);
-                }}
-                style={{ border: "none", background: "transparent", color: "var(--muted)", fontSize: 11.5, textDecoration: "underline", cursor: "pointer" }}
-              >
-                Change key
-              </button>
+              <label style={{ fontSize: 12, color: "var(--muted)", display: "inline-flex", gap: 5, alignItems: "center", cursor: "pointer" }}>
+                <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} />
+                Include jobs not opened yet
+              </label>
             </div>
+
             {rows === null && !error && <div style={{ padding: "14px 4px", fontSize: 12.5, color: "var(--muted)" }}>Loading…</div>}
-            {rows && rows.length === 0 && <div style={{ padding: "14px 4px", fontSize: 12.5, color: "var(--muted)" }}>{query ? "No matching jobs." : "No jobs have been saved yet."}</div>}
+            {rows && rows.length === 0 && !error && (
+              <div style={{ padding: "14px 4px", fontSize: 12.5, color: "var(--muted)" }}>
+                {query ? "No matching jobs in the bank." : "Nothing here yet. A job moves into the bank the first time it is loaded into the calculator."}
+              </div>
+            )}
             {rows && rows.length > 0 && (
-              <div style={{ overflowX: "auto", marginTop: 10 }}>
+              <div style={{ overflowX: "auto", marginTop: 8 }}>
                 <table style={{ width: "100%", borderCollapse: "collapse" }}>
                   <thead>
                     <tr>
                       <th style={th}>Job #</th>
                       <th style={th}>Item #</th>
                       <th style={th}>Rev</th>
-                      <th style={th}>Designer</th>
+                      {designer === undefined && <th style={th}>Designer</th>}
                       <th style={th}>Type</th>
                       <th style={th}>Stones</th>
                       <th style={th}>Pictures</th>
-                      <th style={th}>Saved</th>
+                      <th style={th}>Created</th>
+                      <th style={th}>Opened</th>
                       <th style={th} />
                     </tr>
                   </thead>
@@ -3046,19 +3276,20 @@ function CadJobsDialog({ onClose, onPick }) {
                           <td style={{ ...td, fontWeight: 600 }}>{r.job_no || "—"}</td>
                           <td style={td}>{r.item_no || "—"}</td>
                           <td style={td}>{r.rev}</td>
-                          <td style={td}>{r.designer || "—"}</td>
+                          {designer === undefined && <td style={td}>{cadDesignerLabel(r.designer)}</td>}
                           <td style={td}>{r.item_type || "—"}</td>
                           <td style={td}>{r.stone_rows}</td>
-                          <td style={{ ...td, color: incomplete ? "#B5651D" : undefined }} title={incomplete ? "Some pictures did not upload from the CAD form" : ""}>
-                            {r.images_saved}/{r.images_expected}
+                          <td style={{ ...td, color: incomplete ? "#B5651D" : undefined }}>{r.images_saved}/{r.images_expected}</td>
+                          <td style={td} title={r.created_at ? new Date(r.created_at).toLocaleString() : ""}>{r.created_at ? new Date(r.created_at).toLocaleDateString() : ""}</td>
+                          <td style={{ ...td, color: r.used_at ? undefined : "#B5651D" }} title={r.used_at ? new Date(r.used_at).toLocaleString() : ""}>
+                            {r.used_at ? cadAgo(r.used_at) : "not yet"}
                           </td>
-                          <td style={td}>{r.created_at ? new Date(r.created_at).toLocaleString() : ""}</td>
                           <td style={{ ...td, textAlign: "right" }}>
                             <button
                               type="button"
                               disabled={busyId !== null}
                               onClick={() => pick(r)}
-                              style={{ ...styles.uploadBtn, color: ROSE_DARK, border: `1px solid ${ROSE}`, padding: "4px 12px" }}
+                              style={{ ...styles.uploadBtn, color: ROSE_DARK, border: `1px solid ${ROSE}`, padding: "3px 12px" }}
                             >
                               {busyId === r.id ? "Loading…" : "Load"}
                             </button>
@@ -3068,12 +3299,19 @@ function CadJobsDialog({ onClose, onPick }) {
                     })}
                   </tbody>
                 </table>
+                {hasMore && (
+                  <div style={{ textAlign: "center", padding: 10 }}>
+                    <button type="button" onClick={loadMore} style={{ ...styles.uploadBtn, color: ROSE_DARK, border: `1px solid ${ROSE}` }}>
+                      Show more
+                    </button>
+                  </div>
+                )}
               </div>
             )}
-          </>
-        )}
-        {error && <div style={{ ...styles.warnBanner, marginTop: 10 }}>{error}</div>}
-        {note && <div style={{ marginTop: 8, fontSize: 12, color: "#B5651D" }}>{note}</div>}
+            {error && <div style={{ ...styles.warnBanner, marginTop: 10 }}>{error}</div>}
+            {note && <div style={{ marginTop: 8, fontSize: 12, color: "#B5651D" }}>{note}</div>}
+          </div>
+        </div>
       </div>
     </div>
   );
