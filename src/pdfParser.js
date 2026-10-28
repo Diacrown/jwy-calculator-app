@@ -364,8 +364,12 @@ function mapFormDataToCalculator(data, { alloys = [], diaSize = [] } = {}) {
 
   // --- Stones ---
   const rawStones = Array.isArray(data["_RAW_STONES"]) ? data["_RAW_STONES"] : [];
+  // The CAD form's per-line "Studded" column. No = that line is the setting only (nothing to price), exactly what
+  // the calculator's own Studded = No means. Forms saved before the column existed have no value, so they stay Yes.
+  const isUnstudded = (s) => !!s && String(s.Studded || "").trim().toLowerCase() === "no";
+  const unstuddedRows = rawStones.filter(isUnstudded);
   const stones = rawStones
-    .filter((s) => s.Shape && num(s.Qty) > 0)
+    .filter((s) => !isUnstudded(s) && s.Shape && num(s.Qty) > 0)
     .map((raw) => {
       const s = { ...raw, Shape: fixShapeSpelling(raw.Shape) };
       const bridge = bridgeStone(s, diaSize);
@@ -389,7 +393,7 @@ function mapFormDataToCalculator(data, { alloys = [], diaSize = [] } = {}) {
   // metal only: there is no stone schedule to fill in. A row with a real stone
   // type (Mined, LGD, CZ, ...) but no shape/quantity is an unfinished stone
   // table, not a stoneless item, so it is NOT treated this way.
-  const listedStoneRows = rawStones.filter((s) => s && (s.Stone || s.Shape || num(s.Qty) > 0));
+  const listedStoneRows = rawStones.filter((s) => s && !isUnstudded(s) && (s.Stone || s.Shape || num(s.Qty) > 0));
   const stonelessKindOf = (t) => {
     const v = String(t || "").trim();
     if (/semi/i.test(v)) return "Semi-Mount";
@@ -401,9 +405,12 @@ function mapFormDataToCalculator(data, { alloys = [], diaSize = [] } = {}) {
   let stoneless = null;
   if (stones.length === 0 && !hasRealStoneType) {
     const kinds = listedStoneRows.map((s) => stonelessKindOf(s.Stone)).filter(Boolean);
-    const kind = kinds.includes("Semi-Mount") ? "Semi-Mount" : kinds.includes("Mount") ? "Mount" : "Plain";
-    stoneless = { kind, listed: kinds.length > 0 };
+    const kind = kinds.includes("Semi-Mount") ? "Semi-Mount" : kinds.includes("Mount") ? "Mount" : unstuddedRows.length ? "Mount" : "Plain";
+    stoneless = { kind, listed: kinds.length > 0 || unstuddedRows.length > 0 };
   }
+  // Some lines studded and some not: the studded ones import as stones, and the setting-only line is added as one
+  // "Mount" line (the same line the calculator creates when Studded is switched to No).
+  const unstuddedLine = stones.length > 0 && unstuddedRows.length > 0 ? { kind: "Mount", count: unstuddedRows.length } : null;
 
   // --- Images (best-effort) ---
   // _VERSIONS and _CLIENT_REF_IMAGES are the largest fields in the JSON
@@ -459,7 +466,7 @@ function mapFormDataToCalculator(data, { alloys = [], diaSize = [] } = {}) {
     cadSheet.stones.forEach((st) => { if (!st.source) st.source = summarySources[0]; });
   }
 
-  return { jobInfo, metals, metalWarnings, stones, stoneless, cadSheet, cadImageDataUrls, clientRefImageDataUrls, derivedSummary, rawJson: data };
+  return { jobInfo, metals, metalWarnings, stones, stoneless, unstuddedLine, cadSheet, cadImageDataUrls, clientRefImageDataUrls, derivedSummary, rawJson: data };
 }
 
 export function parseOrderFormJson(input, { alloys = [], diaSize = [] } = {}) {

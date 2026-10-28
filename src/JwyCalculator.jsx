@@ -825,7 +825,7 @@ function JwyCalculatorApp() {
   }, [refreshRates]);
 
   const applyImportResult = async (fileName, resultData) => {
-    const { jobInfo: ji, metals, metalWarnings, stones, stoneless, cadSheet: importedSheet, cadImageDataUrls, clientRefImageDataUrls, derivedSummary } = resultData;
+    const { jobInfo: ji, metals, metalWarnings, stones, stoneless, unstuddedLine, cadSheet: importedSheet, cadImageDataUrls, clientRefImageDataUrls, derivedSummary } = resultData;
     setCadSheet(importedSheet && importedSheet.stones && importedSheet.stones.length ? importedSheet : null);
     if (cadImageDataUrls?.length) {
       const compressed = await Promise.all(cadImageDataUrls.map((u) => compressDataUrl(u)));
@@ -901,7 +901,9 @@ function JwyCalculatorApp() {
       stoneless
         ? [{ ...emptyRow(), stoneTypeSel: stoneless.kind, bare: true }]
         : newRows.length
-        ? newRows
+        ? unstuddedLine
+          ? [...newRows, { ...emptyRow(), stoneTypeSel: unstuddedLine.kind, bare: true }]
+          : newRows
         : Array.from({ length: 5 }, emptyRow)
     );
     // Put back anything that was set to "Custom entry…" on this job's lines earlier.
