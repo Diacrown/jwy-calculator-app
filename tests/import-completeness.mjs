@@ -44,4 +44,13 @@ assert.ok(d.importWarnings.length >= 1);
 d = run([{ Pos: "", Stone: "Mount", Shape: "", Qty: "" }, {}], {});
 assert.equal(d.importWarnings.length, 0); assert.ok(d.stoneless);
 
+// 8. job-7938 shape with the form's per-line Studded: Lab grown x5 marked Studded=No, form says 6 pcs
+d = run([row({ Studded: "Yes" }), row({ Pos: "Side", Qty: 5, Source: "HO", Studded: "No" })], { _STONE_QTY: "6" });
+assert.equal(d.stones.length, 1);
+assert.ok(d.importWarnings.some((w) => /Studded = No but still list 5 pcs of Lab grown/.test(w)), "studded-no pcs surfaced");
+assert.ok(d.importWarnings.some((w) => /form says 6 pcs but only 1 pcs/.test(w)));
+// a plain Mount line marked Studded=No is the normal case: no warning
+d = run([row({ Studded: "Yes" }), { Pos: "Setting", Stone: "Mount", Shape: "", Qty: "", Studded: "No" }], { _STONE_QTY: "1" });
+assert.equal(d.importWarnings.length, 0); assert.ok(d.unstuddedLine);
+
 console.log("import-completeness: all checks passed");
