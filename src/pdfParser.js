@@ -334,6 +334,8 @@ function mapFormDataToCalculator(data, { alloys = [], diaSize = [] } = {}) {
     rhodium: data["Rhodium"] || "",
     alloyType: data["Alloy Type"] || "",
     clientNotes: data["Client Notes"] || "",
+    // Optional link to the 3D render / viewer typed on the CAD form ("Render Link").
+    renderLink: /^https?:\/\/\S+$/i.test(String(data["Render Link"] || "").trim()) ? String(data["Render Link"]).trim() : "",
   };
 
   // --- Metals (assign by weight, heavier = primary) ---
@@ -375,11 +377,15 @@ function mapFormDataToCalculator(data, { alloys = [], diaSize = [] } = {}) {
     if (/^plain$/i.test(v)) return "Plain";
     return "";
   };
+  // The CAD form's per-line "Studded" column. No = that line is the setting only (nothing to price), exactly what
+  // the calculator's own Studded = No means. Forms saved before the column existed have no value, so they stay Yes.
+  const isUnstudded = (s) => !!s && String(s.Studded || "").trim().toLowerCase() === "no";
+  const unstuddedRows = rawStones.filter(isUnstudded);
   const hasShape = (s) => !!String(s.Shape || "").trim();
   const qtyOf = (s) => num(String(s.Qty == null ? "" : s.Qty).replace(/,/g, ""));
-  const isCounted = (s) => s && hasShape(s) && qtyOf(s) > 0;
+  const isCounted = (s) => s && !isUnstudded(s) && hasShape(s) && qtyOf(s) > 0;
   const isUnfinished = (s) =>
-    s && !isCounted(s) && (hasShape(s) || qtyOf(s) > 0 || (String(s.Stone || "").trim() && !stonelessKindOf(s.Stone)));
+    s && !isUnstudded(s) && !isCounted(s) && (hasShape(s) || qtyOf(s) > 0 || (String(s.Stone || "").trim() && !stonelessKindOf(s.Stone)));
   const importWarnings = [];
   const stones = rawStones
     .filter((s) => isCounted(s) || isUnfinished(s))
@@ -426,14 +432,17 @@ function mapFormDataToCalculator(data, { alloys = [], diaSize = [] } = {}) {
   // metal only: there is no stone schedule to fill in. A row with a real stone
   // type (Mined, LGD, CZ, ...) but no shape/quantity is an unfinished stone
   // table, not a stoneless item, so it is NOT treated this way.
-  const listedStoneRows = rawStones.filter((s) => s && (s.Stone || s.Shape || num(s.Qty) > 0));
+  const listedStoneRows = rawStones.filter((s) => s && !isUnstudded(s) && (s.Stone || s.Shape || num(s.Qty) > 0));
   const hasRealStoneType = listedStoneRows.some((s) => s.Stone && !stonelessKindOf(s.Stone));
   let stoneless = null;
   if (stones.length === 0 && !hasRealStoneType) {
     const kinds = listedStoneRows.map((s) => stonelessKindOf(s.Stone)).filter(Boolean);
-    const kind = kinds.includes("Semi-Mount") ? "Semi-Mount" : kinds.includes("Mount") ? "Mount" : "Plain";
-    stoneless = { kind, listed: kinds.length > 0 };
+    const kind = kinds.includes("Semi-Mount") ? "Semi-Mount" : kinds.includes("Mount") ? "Mount" : unstuddedRows.length ? "Mount" : "Plain";
+    stoneless = { kind, listed: kinds.length > 0 || unstuddedRows.length > 0 };
   }
+  // Some lines studded and some not: the studded ones import as stones, and the setting-only line is added as one
+  // "Mount" line (the same line the calculator creates when Studded is switched to No).
+  const unstuddedLine = stones.length > 0 && unstuddedRows.length > 0 ? { kind: "Mount", count: unstuddedRows.length } : null;
 
   // --- Images (best-effort) ---
   // _VERSIONS and _CLIENT_REF_IMAGES are the largest fields in the JSON
@@ -494,16 +503,25 @@ function mapFormDataToCalculator(data, { alloys = [], diaSize = [] } = {}) {
   // partial job as if it were complete.
   const formPcs = num(String(derivedSummary.stoneQty || "").replace(/,/g, ""));
   const importedPcs = stones.reduce((a, st) => a + (st.qty || 0), 0);
+  // A line the form marks Studded = No is the setting, not stones -- but if it
+  // still lists a real stone type and pieces, say so rather than hiding those pcs.
+  const unstuddedWithStones = unstuddedRows.filter((s) => String(s.Stone || "").trim() && !stonelessKindOf(s.Stone) && qtyOf(s) > 0);
+  const unstuddedPcs = unstuddedWithStones.reduce((a, st) => a + qtyOf(st), 0);
+  if (unstuddedWithStones.length) {
+    importWarnings.unshift(
+      `${unstuddedWithStones.length} line(s) on the CAD form are marked Studded = No but still list ${unstuddedPcs} pcs of ${[...new Set(unstuddedWithStones.map((s) => s.Stone))].join(", ")}. They were NOT imported as stones - if they are real stones, switch the line to Studded = Yes.`
+    );
+  }
   if (formPcs > 0 && importedPcs !== formPcs) {
     importWarnings.unshift(
-      `The CAD form says ${formPcs} pcs but only ${importedPcs} pcs were read from its stone table (${stones.length} row(s)). Some stone rows may be missing or incomplete in the exported file - re-export from the CAD form or add them by hand before quoting.`
+      `The CAD form says ${formPcs} pcs but only ${importedPcs} pcs were read from its stone table (${stones.length} row(s)${unstuddedPcs ? `; ${unstuddedPcs} pcs sit on Studded = No lines` : ""}). Some stone rows may be missing or incomplete in the exported file - re-export from the CAD form or add them by hand before quoting.`
     );
   }
   if (formPcs > 0 && rawStones.length === 0) {
     importWarnings.push("The exported file has no stone table (_RAW_STONES) at all.");
   }
 
-  return { jobInfo, metals, metalWarnings, importWarnings, stones, stoneless, cadSheet, cadImageDataUrls, clientRefImageDataUrls, derivedSummary, rawJson: data };
+  return { jobInfo, metals, metalWarnings, importWarnings, stones, stoneless, unstuddedLine, cadSheet, cadImageDataUrls, clientRefImageDataUrls, derivedSummary, rawJson: data };
 }
 
 export function parseOrderFormJson(input, { alloys = [], diaSize = [] } = {}) {
