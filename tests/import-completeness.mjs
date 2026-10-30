@@ -44,11 +44,12 @@ assert.ok(d.importWarnings.length >= 1);
 d = run([{ Pos: "", Stone: "Mount", Shape: "", Qty: "" }, {}], {});
 assert.equal(d.importWarnings.length, 0); assert.ok(d.stoneless);
 
-// 8. job-7938 shape with the form's per-line Studded: Lab grown x5 marked Studded=No, form says 6 pcs
+// 8. job 7938: Lab grown lines marked Studded=No must still load (all 6 pcs), unpriced, with a note
 d = run([row({ Studded: "Yes" }), row({ Pos: "Side", Qty: 5, Source: "HO", Studded: "No" })], { _STONE_QTY: "6" });
-assert.equal(d.stones.length, 1);
-assert.ok(d.importWarnings.some((w) => /Studded = No but still list 5 pcs of Lab grown/.test(w)), "studded-no pcs surfaced");
-assert.ok(d.importWarnings.some((w) => /form says 6 pcs but only 1 pcs/.test(w)));
+assert.equal(d.stones.length, 2, "Studded=No stone lines are kept");
+assert.equal(d.stones[0].studded, true); assert.equal(d.stones[1].studded, false); assert.equal(d.stones[1].qty, 5);
+assert.equal(d.importWarnings.length, 0, "pcs add up, so no warning");
+assert.ok(d.importNotes.some((n) => /Studded = No/.test(n)));
 // a plain Mount line marked Studded=No is the normal case: no warning
 d = run([row({ Studded: "Yes" }), { Pos: "Setting", Stone: "Mount", Shape: "", Qty: "", Studded: "No" }], { _STONE_QTY: "1" });
 assert.equal(d.importWarnings.length, 0); assert.ok(d.unstuddedLine);

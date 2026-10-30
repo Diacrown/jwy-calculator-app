@@ -825,7 +825,7 @@ function JwyCalculatorApp() {
   }, [refreshRates]);
 
   const applyImportResult = async (fileName, resultData) => {
-    const { jobInfo: ji, metals, metalWarnings, importWarnings, stones, stoneless, unstuddedLine, cadSheet: importedSheet, cadImageDataUrls, clientRefImageDataUrls, derivedSummary } = resultData;
+    const { jobInfo: ji, metals, metalWarnings, importWarnings, importNotes, stones, stoneless, unstuddedLine, cadSheet: importedSheet, cadImageDataUrls, clientRefImageDataUrls, derivedSummary } = resultData;
     setCadSheet(importedSheet && importedSheet.stones && importedSheet.stones.length ? importedSheet : null);
     if (cadImageDataUrls?.length) {
       const compressed = await Promise.all(cadImageDataUrls.map((u) => compressDataUrl(u)));
@@ -869,10 +869,15 @@ function JwyCalculatorApp() {
       setSecondaryGramWt(roundUpMetalWt(metals.secondary.wt));
     }
 
-    const newRows = stones.map((s) => normalizeRow({
+    const newRows = stones.map((s) => {
+      const realType = STONE_TYPE_OPTIONS.includes(s.stoneType) || GEM_NAMES.includes(s.stoneType) ? s.stoneType : s.diamondMode === "lgd" ? "Lab grown" : "Mined";
+      return normalizeRow({
       ...emptyRow(),
       mode: s.diamondMode || "natural",
-      stoneTypeSel: STONE_TYPE_OPTIONS.includes(s.stoneType) || GEM_NAMES.includes(s.stoneType) ? s.stoneType : s.diamondMode === "lgd" ? "Lab grown" : "Mined",
+      // A line the CAD form marks Studded = No keeps its stone details but is the setting only: an unpriced Mount line
+      // that remembers its stone type, so Studded -> Yes brings it straight back.
+      stoneTypeSel: s.studded === false ? "Mount" : realType,
+      ...(s.studded === false ? { studdedPrev: { stoneTypeSel: realType, mode: s.diamondMode || "natural", typeCustom: false, customType: "" } } : {}),
       proposedQuality: GEM_NAMES.includes(s.stoneType) ? s.stoneType : "",
       shapeSel: s.isCustom ? CUSTOM_CODE : s.matchedShape || "",
       sizeCode: s.isCustom ? CUSTOM_CODE : s.sizeCode || "",
@@ -892,7 +897,8 @@ function JwyCalculatorApp() {
       source: s.source || "",
       lab: "",
       srcKey: stoneSrcKey(s),
-    }));
+    });
+    });
     linesDirtyRef.current = false;
     // A Plain / Mount / Semi-Mount piece with no stones on the CAD form gets one
     // "no stones" line instead of an empty stone schedule: the metal is priced
@@ -919,6 +925,7 @@ function JwyCalculatorApp() {
       jobInfo: ji,
       metalWarnings,
       importWarnings: importWarnings || [],
+      importNotes: importNotes || [],
       metals,
       stones,
       stoneless: stoneless || null,
@@ -2189,6 +2196,9 @@ function PdfImportReview({ pdfImport }) {
           </ul>
         </div>
       )}
+      {(pdfImport.importNotes || []).map((n, i) => (
+        <div key={i} style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>ℹ {n}</div>
+      ))}
       {pdfImport.stoneless && (
         <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
           {pdfImport.stoneless.listed
