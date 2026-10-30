@@ -361,12 +361,50 @@ function mapFormDataToCalculator(data, { alloys = [], diaSize = [] } = {}) {
     metalWarnings.push(`Secondary metal "${metals.secondary.short}" not found in alloy list — check mapping`);
 
   // --- Stones ---
+  // Nothing on the CAD stone table may vanish silently. A row counts when it
+  // has a Shape and a Qty. A row that has a real stone type, a shape or a qty
+  // but lacks the other half is an UNFINISHED line: it is still imported (flagged
+  // and unpriced) so the reviewer sees it and fixes it, instead of the job
+  // loading with fewer stones than the form lists. Only truly blank rows and
+  // bare Mount / Plain / Semi-Mount markers are left out.
   const rawStones = Array.isArray(data["_RAW_STONES"]) ? data["_RAW_STONES"] : [];
+  const stonelessKindOf = (t) => {
+    const v = String(t || "").trim();
+    if (/semi/i.test(v)) return "Semi-Mount";
+    if (/mount/i.test(v)) return "Mount";
+    if (/^plain$/i.test(v)) return "Plain";
+    return "";
+  };
+  const hasShape = (s) => !!String(s.Shape || "").trim();
+  const qtyOf = (s) => num(String(s.Qty == null ? "" : s.Qty).replace(/,/g, ""));
+  const isCounted = (s) => s && hasShape(s) && qtyOf(s) > 0;
+  const isUnfinished = (s) =>
+    s && !isCounted(s) && (hasShape(s) || qtyOf(s) > 0 || (String(s.Stone || "").trim() && !stonelessKindOf(s.Stone)));
+  const importWarnings = [];
   const stones = rawStones
-    .filter((s) => s.Shape && num(s.Qty) > 0)
-    .map((raw) => {
-      const s = { ...raw, Shape: fixShapeSpelling(raw.Shape) };
-      const bridge = bridgeStone(s, diaSize);
+    .filter((s) => isCounted(s) || isUnfinished(s))
+    .map((raw, idx) => {
+      const unfinished = !isCounted(raw);
+      const s = { ...raw, Shape: fixShapeSpelling(raw.Shape), Qty: qtyOf(raw) };
+      let bridge = hasShape(s) ? bridgeStone(s, diaSize) : {};
+      let incompleteFlag = "";
+      if (unfinished) {
+        const missing = [!hasShape(raw) && "shape", !(qtyOf(raw) > 0) && "quantity"].filter(Boolean).join(" and ");
+        incompleteFlag = `${missing} missing on the CAD form — fill in`;
+        bridge = {
+          ...bridge,
+          isCustom: true,
+          sizeCode: undefined,
+          matchedShape: undefined,
+          priced: false,
+          flag: incompleteFlag,
+          customShape: s.Shape || "",
+          customWt: num(s.AvgWt) || undefined,
+        };
+        importWarnings.push(
+          `Stone row ${raw.Pos || idx + 1} (${[raw.Stone, raw.Shape].filter(Boolean).join(" ") || "no details"}): ${missing} missing on the CAD form. Imported as an unfinished line - please complete it.`
+        );
+      }
       return {
         pos: s.Pos || "",
         stoneType: s.Stone || "",
@@ -378,6 +416,7 @@ function mapFormDataToCalculator(data, { alloys = [], diaSize = [] } = {}) {
         setting: s.Set || "",
         source: sourceOf(s),
         ...bridge,
+        unfinished,
       };
     });
 
@@ -388,13 +427,6 @@ function mapFormDataToCalculator(data, { alloys = [], diaSize = [] } = {}) {
   // type (Mined, LGD, CZ, ...) but no shape/quantity is an unfinished stone
   // table, not a stoneless item, so it is NOT treated this way.
   const listedStoneRows = rawStones.filter((s) => s && (s.Stone || s.Shape || num(s.Qty) > 0));
-  const stonelessKindOf = (t) => {
-    const v = String(t || "").trim();
-    if (/semi/i.test(v)) return "Semi-Mount";
-    if (/mount/i.test(v)) return "Mount";
-    if (/^plain$/i.test(v)) return "Plain";
-    return "";
-  };
   const hasRealStoneType = listedStoneRows.some((s) => s.Stone && !stonelessKindOf(s.Stone));
   let stoneless = null;
   if (stones.length === 0 && !hasRealStoneType) {
@@ -435,14 +467,14 @@ function mapFormDataToCalculator(data, { alloys = [], diaSize = [] } = {}) {
   // Export to Main File. Blank weights stay blank (printed as "-").
   const cadSheet = {
     stones: rawStones
-      .filter((s) => s.Shape && num(s.Qty) > 0)
+      .filter((s) => isCounted(s) || isUnfinished(s))
       .map((s) => ({
         pos: s.Pos || "",
         stone: s.Stone || "",
         shape: fixShapeSpelling(s.Shape),
         dims: [s.L, s.W, s.H].filter(Boolean).join(" x "),
         avgWt: s.AvgWt || "",
-        qty: num(s.Qty),
+        qty: qtyOf(s),
         totalWt: s.Tot || "",
         setting: s.Set || "",
         source: sourceOf(s),
@@ -457,7 +489,21 @@ function mapFormDataToCalculator(data, { alloys = [], diaSize = [] } = {}) {
     cadSheet.stones.forEach((st) => { if (!st.source) st.source = summarySources[0]; });
   }
 
-  return { jobInfo, metals, metalWarnings, stones, stoneless, cadSheet, cadImageDataUrls, clientRefImageDataUrls, derivedSummary, rawJson: data };
+  // Cross-check against the form's own pcs total: if the stone table we read
+  // does not add up to what the form says, say so loudly instead of loading a
+  // partial job as if it were complete.
+  const formPcs = num(String(derivedSummary.stoneQty || "").replace(/,/g, ""));
+  const importedPcs = stones.reduce((a, st) => a + (st.qty || 0), 0);
+  if (formPcs > 0 && importedPcs !== formPcs) {
+    importWarnings.unshift(
+      `The CAD form says ${formPcs} pcs but only ${importedPcs} pcs were read from its stone table (${stones.length} row(s)). Some stone rows may be missing or incomplete in the exported file - re-export from the CAD form or add them by hand before quoting.`
+    );
+  }
+  if (formPcs > 0 && rawStones.length === 0) {
+    importWarnings.push("The exported file has no stone table (_RAW_STONES) at all.");
+  }
+
+  return { jobInfo, metals, metalWarnings, importWarnings, stones, stoneless, cadSheet, cadImageDataUrls, clientRefImageDataUrls, derivedSummary, rawJson: data };
 }
 
 export function parseOrderFormJson(input, { alloys = [], diaSize = [] } = {}) {

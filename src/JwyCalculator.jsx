@@ -824,7 +824,7 @@ function JwyCalculatorApp() {
   }, [refreshRates]);
 
   const applyImportResult = async (fileName, resultData) => {
-    const { jobInfo: ji, metals, metalWarnings, stones, stoneless, cadSheet: importedSheet, cadImageDataUrls, clientRefImageDataUrls, derivedSummary } = resultData;
+    const { jobInfo: ji, metals, metalWarnings, importWarnings, stones, stoneless, cadSheet: importedSheet, cadImageDataUrls, clientRefImageDataUrls, derivedSummary } = resultData;
     setCadSheet(importedSheet && importedSheet.stones && importedSheet.stones.length ? importedSheet : null);
     if (cadImageDataUrls?.length) {
       const compressed = await Promise.all(cadImageDataUrls.map((u) => compressDataUrl(u)));
@@ -913,6 +913,7 @@ function JwyCalculatorApp() {
       fileName,
       jobInfo: ji,
       metalWarnings,
+      importWarnings: importWarnings || [],
       metals,
       stones,
       stoneless: stoneless || null,
@@ -2149,6 +2150,14 @@ function PdfImportReview({ pdfImport }) {
           {pdfImport.stoneless ? `No stones · ${pdfImport.stoneless.kind} · metal only` : `${stones.length} stone row(s)`}
         </span>
       </div>
+      {(pdfImport.importWarnings || []).length > 0 && (
+        <div style={{ ...styles.warnBanner, marginBottom: 10 }} role="alert">
+          <strong>⚠ This job did not load completely — check before quoting</strong>
+          <ul style={{ margin: "6px 0 0 18px", padding: 0 }}>
+            {pdfImport.importWarnings.map((w, i) => <li key={i}>{w}</li>)}
+          </ul>
+        </div>
+      )}
       {pdfImport.stoneless && (
         <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
           {pdfImport.stoneless.listed
